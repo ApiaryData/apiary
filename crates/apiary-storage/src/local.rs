@@ -392,4 +392,42 @@ mod tests {
         let data = backend.get("overwrite.txt").await.unwrap();
         assert_eq!(data, Bytes::from("v2"));
     }
+
+    #[tokio::test]
+    async fn test_put_if_not_exists_concurrent() {
+        let (backend, _tmp) = test_backend().await;
+        let backend = std::sync::Arc::new(backend);
+        
+        // Spawn 10 concurrent tasks all trying to write to the same key
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let backend_clone = backend.clone();
+            let data = format!("writer-{}", i);
+            let handle = tokio::spawn(async move {
+                backend_clone
+                    .put_if_not_exists("concurrent.txt", Bytes::from(data))
+                    .await
+                    .unwrap()
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all tasks to complete and collect results
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.await.unwrap());
+        }
+        
+        // Exactly one task should have succeeded
+        let success_count = results.iter().filter(|&&r| r).count();
+        assert_eq!(
+            success_count, 1,
+            "Expected exactly 1 successful write, got {}",
+            success_count
+        );
+        
+        // The file should exist and contain data from the winning writer
+        let data = backend.get("concurrent.txt").await.unwrap();
+        assert!(data.starts_with(b"writer-"));
+    }
 }
