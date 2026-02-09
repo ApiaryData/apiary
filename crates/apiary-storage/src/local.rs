@@ -395,31 +395,40 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_if_not_exists_concurrent() {
+        use futures::future::join_all;
+        
         let (backend, _tmp) = test_backend().await;
         let backend = std::sync::Arc::new(backend);
         
-        // Spawn 10 concurrent tasks all trying to write to the same key
-        let mut handles = Vec::new();
-        for i in 0..10 {
-            let backend_clone = backend.clone();
-            let data = format!("writer-{}", i);
-            let handle = tokio::spawn(async move {
-                backend_clone
-                    .put_if_not_exists("concurrent.txt", Bytes::from(data))
-                    .await
-                    .unwrap()
-            });
-            handles.push(handle);
-        }
+        // Create 10 concurrent tasks all trying to write to the same key
+        // Collect futures first, then await them together for maximum concurrency
+        let futures: Vec<_> = (0..10)
+            .map(|i| {
+                let backend_clone = backend.clone();
+                let data = format!("writer-{}", i);
+                tokio::spawn(async move {
+                    backend_clone
+                        .put_if_not_exists("concurrent.txt", Bytes::from(data))
+                        .await
+                })
+            })
+            .collect();
         
-        // Wait for all tasks to complete and collect results
-        let mut results = Vec::new();
-        for handle in handles {
-            results.push(handle.await.unwrap());
-        }
+        // Await all tasks concurrently
+        let results = join_all(futures).await;
+        
+        // Extract the actual results, handling any task panics or I/O errors
+        let outcomes: Vec<bool> = results
+            .into_iter()
+            .map(|join_result| {
+                join_result
+                    .expect("Task should not panic")
+                    .expect("Storage operation should not fail unexpectedly")
+            })
+            .collect();
         
         // Exactly one task should have succeeded
-        let success_count = results.iter().filter(|&&r| r).count();
+        let success_count = outcomes.iter().filter(|&&r| r).count();
         assert_eq!(
             success_count, 1,
             "Expected exactly 1 successful write, got {}",
