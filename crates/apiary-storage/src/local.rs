@@ -423,7 +423,7 @@ mod tests {
             .map(|join_result| {
                 join_result
                     .expect("Task should not panic")
-                    .expect("Storage operation should not fail unexpectedly")
+                    .unwrap_or_else(|e| panic!("Storage operation failed unexpectedly: {:?}", e))
             })
             .collect();
         
@@ -435,8 +435,17 @@ mod tests {
             success_count
         );
         
-        // The file should exist and contain data from the winning writer
+        // The file should exist and contain data from exactly one of the writers
         let data = backend.get("concurrent.txt").await.unwrap();
-        assert!(data.starts_with(b"writer-"));
+        let data_str = std::str::from_utf8(&data).expect("Data should be valid UTF-8");
+        
+        // Verify it's one of the expected writer values
+        let expected_values: Vec<String> = (0..10).map(|i| format!("writer-{}", i)).collect();
+        assert!(
+            expected_values.contains(&data_str.to_string()),
+            "Expected one of {:?}, got '{}'",
+            expected_values,
+            data_str
+        );
     }
 }
