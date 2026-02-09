@@ -4,7 +4,7 @@
 
 | Step | Name | Status | Date | Notes |
 |------|------|--------|------|-------|
-| 1 | Skeleton + StorageBackend | not started | | |
+| 1 | Skeleton + StorageBackend | complete | 2026-02-09 | All acceptance criteria met |
 | 2 | Registry + Namespace | not started | | |
 | 3 | Ledger + Cell Storage | not started | | |
 | 4 | DataFusion Integration | not started | | **SOLO MODE MILESTONE** |
@@ -19,7 +19,7 @@
 
 Record deviations from the architecture docs here:
 
-(none yet)
+- Updated Python bindings to use `PyDict::new_bound()` for PyO3 0.22 compatibility instead of deprecated `PyDict::new()`
 
 ## Open Questions
 
