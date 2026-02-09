@@ -206,7 +206,7 @@ Apiary is in early development. Contributions are welcome once the v1 core is es
 
 ### v2 — Direct Communication
 
-- SWIM gossip for sub-second failure detection
+- SWIM (Scalable Weakly-consistent Infection-style Membership) gossip for sub-second failure detection
 - Arrow Flight for low-latency data shuffles
 - Full 20-behavior biological model
 - Streaming ingestion
