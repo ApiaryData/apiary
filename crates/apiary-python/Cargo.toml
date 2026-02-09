@@ -1,0 +1,18 @@
+[package]
+name = "apiary-python"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "apiary"
+crate-type = ["cdylib"]
+
+[dependencies]
+apiary-core.workspace = true
+apiary-storage.workspace = true
+apiary-runtime.workspace = true
+pyo3.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true

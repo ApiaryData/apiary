@@ -1,0 +1,26 @@
+{
+    "rust-analyzer.check.command": "clippy",
+    "rust-analyzer.cargo.features": "all",
+    "rust-analyzer.diagnostics.experimental.enable": true,
+    "editor.formatOnSave": true,
+    "[rust]": {
+        "editor.defaultFormatter": "rust-lang.rust-analyzer"
+    },
+    "github.copilot.chat.codeGeneration.instructions": [
+        {
+            "file": ".github/copilot/instructions.md"
+        }
+    ],
+    "github.copilot.chat.reviewSelection.instructions": [
+        {
+            "file": ".github/copilot/prompts/review-step.prompt.md"
+        }
+    ],
+    "files.exclude": {
+        "**/target": true,
+        "**/.git": true
+    },
+    "search.exclude": {
+        "**/target": true
+    }
+}

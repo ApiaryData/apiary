@@ -1,0 +1,50 @@
+[workspace]
+members = [
+    "crates/apiary-core",
+    "crates/apiary-storage",
+    "crates/apiary-runtime",
+    "crates/apiary-python",
+    "crates/apiary-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Internal crates
+apiary-core = { path = "crates/apiary-core" }
+apiary-storage = { path = "crates/apiary-storage" }
+apiary-runtime = { path = "crates/apiary-runtime" }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Arrow ecosystem
+bytes = "1"
+futures = "0.3"
+object_store = { version = "0.11", features = ["aws"] }
+
+# Identity
+uuid = { version = "1", features = ["v4"] }
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Python
+pyo3 = { version = "0.22", features = ["extension-module"] }

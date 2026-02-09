@@ -1,0 +1,11 @@
+{
+    "recommendations": [
+        "github.copilot",
+        "github.copilot-chat",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates",
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+    ]
+}
