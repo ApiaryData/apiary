@@ -392,4 +392,60 @@ mod tests {
         let data = backend.get("overwrite.txt").await.unwrap();
         assert_eq!(data, Bytes::from("v2"));
     }
+
+    #[tokio::test]
+    async fn test_put_if_not_exists_concurrent() {
+        use futures::future::join_all;
+        
+        let (backend, _tmp) = test_backend().await;
+        let backend = std::sync::Arc::new(backend);
+        
+        // Create 10 concurrent tasks all trying to write to the same key
+        // Collect futures first, then await them together for maximum concurrency
+        let futures: Vec<_> = (0..10)
+            .map(|i| {
+                let backend_clone = backend.clone();
+                let data = format!("writer-{}", i);
+                tokio::spawn(async move {
+                    backend_clone
+                        .put_if_not_exists("concurrent.txt", Bytes::from(data))
+                        .await
+                })
+            })
+            .collect();
+        
+        // Await all tasks concurrently
+        let results = join_all(futures).await;
+        
+        // Extract the actual results, handling any task panics or I/O errors
+        let outcomes: Vec<bool> = results
+            .into_iter()
+            .map(|join_result| {
+                join_result
+                    .expect("Task should not panic")
+                    .unwrap_or_else(|e| panic!("Storage operation failed unexpectedly: {:?}", e))
+            })
+            .collect();
+        
+        // Exactly one task should have succeeded
+        let success_count = outcomes.iter().filter(|&&r| r).count();
+        assert_eq!(
+            success_count, 1,
+            "Expected exactly 1 successful write, got {}",
+            success_count
+        );
+        
+        // The file should exist and contain data from exactly one of the writers
+        let data = backend.get("concurrent.txt").await.unwrap();
+        let data_str = std::str::from_utf8(&data).expect("Data should be valid UTF-8");
+        
+        // Verify it's one of the expected writer values
+        let expected_values: Vec<String> = (0..10).map(|i| format!("writer-{}", i)).collect();
+        assert!(
+            expected_values.contains(&data_str.to_string()),
+            "Expected one of {:?}, got '{}'",
+            expected_values,
+            data_str
+        );
+    }
 }
