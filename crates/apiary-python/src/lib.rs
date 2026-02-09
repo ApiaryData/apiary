@@ -104,7 +104,7 @@ impl Apiary {
         };
 
         Python::with_gil(|py| {
-            let dict = pyo3::types::PyDict::new(py);
+            let dict = pyo3::types::PyDict::new_bound(py);
             dict.set_item("name", &self.name)?;
             dict.set_item("node_id", node.config.node_id.as_str())?;
             dict.set_item("cores", node.config.cores)?;
