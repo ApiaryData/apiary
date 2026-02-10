@@ -134,6 +134,12 @@ impl ApiaryNode {
         ));
         let world_view = world_view_builder.world_view();
 
+        // Write initial heartbeat and build initial world view synchronously
+        // so that swarm_status() works immediately after start().
+        heartbeat_writer.write_once().await?;
+        world_view_builder.poll_once().await?;
+        info!("Initial heartbeat written and world view built");
+
         // Create cancellation channel
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 

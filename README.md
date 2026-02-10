@@ -122,9 +122,10 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 | 3 | Ledger + Cell Storage | ✅ Complete |
 | 4 | DataFusion Integration | ✅ Complete |
 | 5 | Mason Bee Isolation | ✅ Complete |
-| 6+ | Advanced Features | 🚧 Not Started |
+| 6 | Heartbeat + World View | ✅ Complete |
+| 7+ | Advanced Features | 🚧 Not Started |
 
-### Current Capabilities (Step 5 Complete — Solo Mode with Bee Isolation)
+### Current Capabilities (Step 6 Complete — Multi-Node Awareness)
 
 - ✅ Rust workspace with 6 crates
 - ✅ Python SDK via PyO3
@@ -154,6 +155,13 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 - ✅ Task timeout enforcement
 - ✅ Scratch directory isolation per bee
 - ✅ SQL queries routed through BeePool
+- ✅ Heartbeat writer (background task writing node status to storage)
+- ✅ World view builder (discovers all nodes via heartbeat polling)
+- ✅ Node state detection (Alive, Suspect, Dead based on heartbeat age)
+- ✅ Graceful departure (heartbeat file deleted on shutdown)
+- ✅ Stale heartbeat cleanup (dead nodes cleaned after threshold)
+- ✅ `swarm_status()` Python API for swarm visibility
+- ✅ Solo mode works as a swarm of one (zero special-casing)
 
 ## Project Structure
 
@@ -267,4 +275,4 @@ Apiary draws inspiration from:
 
 ---
 
-**Status**: Early development. Step 5 of 10 complete. Solo mode with bee isolation operational! 🐝
+**Status**: Early development. Step 6 of 10 complete. Multi-node awareness operational! 🐝

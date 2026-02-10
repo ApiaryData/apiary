@@ -9,7 +9,7 @@
 | 3 | Ledger + Cell Storage | complete | 2026-02-10 | Transaction ledger, Parquet cells, partitioning, stats, write/read/overwrite |
 | 4 | DataFusion Integration | complete | 2026-02-10 | SQL queries via DataFusion, custom commands, cell pruning, **SOLO MODE MILESTONE** |
 | 5 | Mason Bee Isolation | complete | 2026-02-10 | BeePool, sealed chambers, memory budgets, task timeout, scratch isolation |
-| 6 | Heartbeat + World View | not started | | **MULTI-NODE MILESTONE** |
+| 6 | Heartbeat + World View | complete | 2026-02-10 | Heartbeat writer, world view builder, node lifecycle, swarm_status, **MULTI-NODE MILESTONE** |
 | 7 | Distributed Queries | not started | | |
 | 8 | Local Cell Cache | not started | | |
 | 9 | Behavioral Model | not started | | |
