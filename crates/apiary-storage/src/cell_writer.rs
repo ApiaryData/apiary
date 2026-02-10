@@ -492,11 +492,13 @@ fn bool_min_max(array: &dyn Array) -> (Option<serde_json::Value>, Option<serde_j
     if values.is_empty() {
         return (None, None);
     }
-    let min = values.iter().any(|v| !v);
-    let max = values.iter().any(|v| *v);
+    // Min is false if any value is false, otherwise true
+    let has_false = values.iter().any(|v| !v);
+    // Max is true if any value is true, otherwise false
+    let has_true = values.iter().any(|v| *v);
     (
-        Some(serde_json::Value::Bool(!min)),
-        Some(serde_json::Value::Bool(max)),
+        Some(serde_json::Value::Bool(!has_false)),
+        Some(serde_json::Value::Bool(has_true)),
     )
 }
 

@@ -527,7 +527,8 @@ impl Apiary {
     }
 }
 
-/// Deserialize Arrow IPC stream bytes to a RecordBatch.
+/// Deserialize Arrow IPC stream bytes into a single RecordBatch.
+/// If the stream contains multiple batches, they are merged into one.
 fn ipc_bytes_to_batch(data: &[u8]) -> PyResult<RecordBatch> {
     let cursor = std::io::Cursor::new(data);
     let reader = StreamReader::try_new(cursor, None)
@@ -554,7 +555,7 @@ fn ipc_bytes_to_batch(data: &[u8]) -> PyResult<RecordBatch> {
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to merge batches: {e}")))
 }
 
-/// Serialize a RecordBatch to Arrow IPC stream bytes.
+/// Serialize a RecordBatch to Arrow IPC stream bytes for transfer to Python.
 fn batch_to_ipc_bytes(batch: &RecordBatch) -> PyResult<Vec<u8>> {
     let mut buf: Vec<u8> = Vec::new();
     {

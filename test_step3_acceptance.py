@@ -156,6 +156,7 @@ def test_cell_statistics():
         # Read the ledger entry to verify stats are there
         import json
         ledger_dir = os.path.join(tmpdir, "h", "b", "f", "_ledger")
+        # Exclude checkpoint subdirectory files (start with "_checkpoint")
         ledger_files = sorted([f for f in os.listdir(ledger_dir) if f.endswith(".json") and not f.startswith("_")])
         check("Ledger entries exist", len(ledger_files) >= 2)
 
