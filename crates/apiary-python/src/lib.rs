@@ -562,6 +562,44 @@ impl Apiary {
         })
     }
 
+    /// Return the swarm status: all nodes visible to this node.
+    ///
+    /// Returns:
+    ///     dict: Swarm status with 'nodes' (list of node info dicts),
+    ///           'total_bees', and 'total_idle_bees'.
+    fn swarm_status(&self) -> PyResult<PyObject> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Node not started. Call start() first.")
+        })?;
+
+        let status = self
+            .runtime
+            .block_on(async { node.swarm_status().await });
+
+        Python::with_gil(|py| {
+            let nodes_list = pyo3::types::PyList::empty_bound(py);
+            for n in &status.nodes {
+                let d = pyo3::types::PyDict::new_bound(py);
+                d.set_item("node_id", &n.node_id)?;
+                d.set_item("state", &n.state)?;
+                d.set_item("bees", n.bees)?;
+                d.set_item("idle_bees", n.idle_bees)?;
+                d.set_item("memory_pressure", n.memory_pressure)?;
+                d.set_item("colony_temperature", n.colony_temperature)?;
+                nodes_list.append(d)?;
+            }
+            let result = pyo3::types::PyDict::new_bound(py);
+            result.set_item("nodes", nodes_list)?;
+            result.set_item("total_bees", status.total_bees)?;
+            result.set_item("total_idle_bees", status.total_idle_bees)?;
+            Ok(result.into())
+        })
+    }
+
     /// Alias for create_hive (traditional database terminology).
     fn create_database(&self, name: String) -> PyResult<()> {
         self.create_hive(name)

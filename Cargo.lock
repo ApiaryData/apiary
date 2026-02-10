@@ -136,6 +136,8 @@ dependencies = [
  "apiary-storage",
  "arrow",
  "async-trait",
+ "chrono",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

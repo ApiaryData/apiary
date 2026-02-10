@@ -2,12 +2,15 @@
 //!
 //! [`ApiaryNode`] is the main runtime entry point. It initialises the
 //! storage backend, detects system capacity, creates the bee pool,
-//! and manages the node lifecycle.
+//! starts the heartbeat writer and world view builder, and manages
+//! the node lifecycle.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
+use tokio::sync::RwLock;
 use tracing::info;
 
 use apiary_core::config::NodeConfig;
@@ -25,6 +28,7 @@ use apiary_storage::local::LocalBackend;
 use apiary_storage::s3::S3Backend;
 
 use crate::bee::{BeePool, BeeStatus};
+use crate::heartbeat::{HeartbeatWriter, NodeState, WorldView, WorldViewBuilder};
 
 /// An Apiary compute node — the runtime for one machine in the swarm.
 ///
@@ -47,6 +51,19 @@ pub struct ApiaryNode {
 
     /// Pool of bees for isolated task execution.
     pub bee_pool: Arc<BeePool>,
+
+    /// Heartbeat writer for this node.
+    heartbeat_writer: Arc<HeartbeatWriter>,
+
+    /// Shared world view (updated by the background builder).
+    world_view: Arc<RwLock<WorldView>>,
+
+    /// World view builder (kept alive for on-demand cleanup).
+    #[allow(dead_code)]
+    world_view_builder: Arc<WorldViewBuilder>,
+
+    /// Cancellation channel to stop background tasks on shutdown.
+    cancel_tx: tokio::sync::watch::Sender<bool>,
 }
 
 impl ApiaryNode {
@@ -102,15 +119,82 @@ impl ApiaryNode {
         let bee_pool = Arc::new(BeePool::new(&config));
         info!(bees = config.cores, "Bee pool initialized");
 
-        Ok(Self { config, storage, registry, query_ctx, bee_pool })
+        // Initialize heartbeat writer
+        let heartbeat_writer = Arc::new(HeartbeatWriter::new(
+            Arc::clone(&storage),
+            &config,
+            Arc::clone(&bee_pool),
+        ));
+
+        // Initialize world view builder
+        let world_view_builder = Arc::new(WorldViewBuilder::new(
+            Arc::clone(&storage),
+            config.heartbeat_interval, // poll at same rate as heartbeat
+            config.dead_threshold,
+        ));
+        let world_view = world_view_builder.world_view();
+
+        // Write initial heartbeat and build initial world view synchronously
+        // so that swarm_status() works immediately after start().
+        heartbeat_writer.write_once().await?;
+        world_view_builder.poll_once().await?;
+        info!("Initial heartbeat written and world view built");
+
+        // Create cancellation channel
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        // Start heartbeat writer background task
+        {
+            let writer = Arc::clone(&heartbeat_writer);
+            let rx = cancel_rx.clone();
+            tokio::spawn(async move {
+                writer.run(rx).await;
+            });
+        }
+
+        // Start world view builder background task
+        {
+            let builder = Arc::clone(&world_view_builder);
+            let rx = cancel_rx.clone();
+            tokio::spawn(async move {
+                builder.run(rx).await;
+            });
+        }
+
+        info!("Heartbeat and world view background tasks started");
+
+        Ok(Self {
+            config,
+            storage,
+            registry,
+            query_ctx,
+            bee_pool,
+            heartbeat_writer,
+            world_view,
+            world_view_builder,
+            cancel_tx,
+        })
     }
 
     /// Gracefully shut down the node.
     ///
-    /// In the future this will stop the heartbeat writer, drain in-progress
-    /// tasks, and clean up scratch directories. For now it logs the shutdown.
+    /// Stops background tasks (heartbeat writer, world view builder),
+    /// deletes the heartbeat file, and cleans up resources.
     pub async fn shutdown(&self) {
         info!(node_id = %self.config.node_id, "Apiary node shutting down");
+
+        // Signal background tasks to stop
+        let _ = self.cancel_tx.send(true);
+
+        // Allow background tasks a moment to stop
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Delete our heartbeat file (graceful departure)
+        if let Err(e) = self.heartbeat_writer.delete_heartbeat().await {
+            tracing::warn!(error = %e, "Failed to delete heartbeat during shutdown");
+        } else {
+            info!(node_id = %self.config.node_id, "Heartbeat deleted (graceful departure)");
+        }
     }
 
     /// Write data to a frame. This is the end-to-end write path:
@@ -333,6 +417,66 @@ impl ApiaryNode {
     pub async fn bee_status(&self) -> Vec<BeeStatus> {
         self.bee_pool.status().await
     }
+
+    /// Return the current world view snapshot.
+    pub async fn world_view(&self) -> WorldView {
+        self.world_view.read().await.clone()
+    }
+
+    /// Return swarm status: a summary of all nodes visible to this node.
+    pub async fn swarm_status(&self) -> SwarmStatus {
+        let view = self.world_view.read().await;
+        let mut nodes = Vec::new();
+
+        for status in view.nodes.values() {
+            nodes.push(SwarmNodeInfo {
+                node_id: status.node_id.as_str().to_string(),
+                state: match status.state {
+                    NodeState::Alive => "alive".to_string(),
+                    NodeState::Suspect => "suspect".to_string(),
+                    NodeState::Dead => "dead".to_string(),
+                },
+                bees: status.heartbeat.load.bees_total,
+                idle_bees: status.heartbeat.load.bees_idle,
+                memory_pressure: status.heartbeat.load.memory_pressure,
+                colony_temperature: status.heartbeat.load.colony_temperature,
+            });
+        }
+
+        // Sort by node_id for deterministic output
+        nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+
+        let total_bees: usize = nodes.iter().map(|n| n.bees).sum();
+        let total_idle_bees: usize = nodes.iter().map(|n| n.idle_bees).sum();
+
+        SwarmStatus {
+            nodes,
+            total_bees,
+            total_idle_bees,
+        }
+    }
+}
+
+/// Summary of the swarm as seen by this node.
+#[derive(Debug, Clone)]
+pub struct SwarmStatus {
+    /// Info for each known node.
+    pub nodes: Vec<SwarmNodeInfo>,
+    /// Total bees across all nodes.
+    pub total_bees: usize,
+    /// Total idle bees across all nodes.
+    pub total_idle_bees: usize,
+}
+
+/// Info about a single node in the swarm.
+#[derive(Debug, Clone)]
+pub struct SwarmNodeInfo {
+    pub node_id: String,
+    pub state: String,
+    pub bees: usize,
+    pub idle_bees: usize,
+    pub memory_pressure: f64,
+    pub colony_temperature: f64,
 }
 
 /// Best-effort home directory detection.
