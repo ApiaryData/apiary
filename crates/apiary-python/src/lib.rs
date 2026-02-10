@@ -481,6 +481,54 @@ impl Apiary {
         })
     }
 
+    /// Execute a SQL query and return results as Arrow IPC bytes.
+    ///
+    /// Supports standard SQL (SELECT, GROUP BY, etc.) and custom commands
+    /// (USE HIVE, USE BOX, SHOW HIVES, SHOW BOXES, SHOW FRAMES, DESCRIBE).
+    ///
+    /// Table references can be fully qualified (hive.box.frame) or use the
+    /// current context set by USE HIVE / USE BOX.
+    ///
+    /// Args:
+    ///     query: SQL query string.
+    ///
+    /// Returns:
+    ///     bytes: Arrow IPC stream bytes (deserialize with PyArrow), or None if empty result.
+    fn sql(&self, query: String) -> PyResult<PyObject> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Node not started. Call start() first.")
+        })?;
+
+        let batches = self
+            .runtime
+            .block_on(async { node.sql(&query).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("SQL error: {e}")))?;
+
+        Python::with_gil(|py| {
+            if batches.is_empty() {
+                return Ok(py.None());
+            }
+
+            // Concatenate all batches into one
+            let schema = batches[0].schema();
+            let merged = if batches.len() == 1 {
+                batches.into_iter().next().unwrap()
+            } else {
+                arrow::compute::concat_batches(&schema, &batches).map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to merge results: {e}"))
+                })?
+            };
+
+            let ipc_data = batch_to_ipc_bytes(&merged)?;
+            let py_bytes = PyBytes::new_bound(py, &ipc_data);
+            Ok(py_bytes.into())
+        })
+    }
+
     // --- Dual terminology aliases (database/schema/table) ---
 
     /// Alias for create_hive (traditional database terminology).

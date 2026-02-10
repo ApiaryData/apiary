@@ -16,6 +16,7 @@ use apiary_core::storage::StorageBackend;
 use apiary_core::{
     CellSizingPolicy, FrameSchema, LedgerAction, Result, WriteResult,
 };
+use apiary_query::ApiaryQueryContext;
 use apiary_storage::cell_reader::CellReader;
 use apiary_storage::cell_writer::CellWriter;
 use apiary_storage::ledger::Ledger;
@@ -36,7 +37,10 @@ pub struct ApiaryNode {
     pub storage: Arc<dyn StorageBackend>,
 
     /// Registry manager for DDL operations.
-    pub registry: RegistryManager,
+    pub registry: Arc<RegistryManager>,
+
+    /// DataFusion-based SQL query context.
+    pub query_ctx: std::sync::Mutex<ApiaryQueryContext>,
 }
 
 impl ApiaryNode {
@@ -78,11 +82,17 @@ impl ApiaryNode {
         );
 
         // Initialize registry
-        let registry = RegistryManager::new(Arc::clone(&storage));
+        let registry = Arc::new(RegistryManager::new(Arc::clone(&storage)));
         let _ = registry.load_or_create().await?;
         info!("Registry loaded");
 
-        Ok(Self { config, storage, registry })
+        // Initialize query context
+        let query_ctx = std::sync::Mutex::new(ApiaryQueryContext::new(
+            Arc::clone(&storage),
+            Arc::clone(&registry),
+        ));
+
+        Ok(Self { config, storage, registry, query_ctx })
     }
 
     /// Gracefully shut down the node.
@@ -279,6 +289,20 @@ impl ApiaryNode {
         .await?;
 
         Ok(())
+    }
+
+    /// Execute a SQL query and return results as RecordBatches.
+    ///
+    /// Supports:
+    /// - Standard SQL (SELECT, GROUP BY, ORDER BY, etc.) over frames
+    /// - Custom commands: USE HIVE, USE BOX, SHOW HIVES, SHOW BOXES, SHOW FRAMES, DESCRIBE
+    /// - 3-part table names: hive.box.frame
+    /// - 1-part names after USE HIVE / USE BOX
+    pub async fn sql(&self, query: &str) -> Result<Vec<RecordBatch>> {
+        let mut ctx = self.query_ctx.lock().map_err(|e| ApiaryError::Internal {
+            message: format!("Query context lock poisoned: {e}"),
+        })?;
+        ctx.sql(query).await
     }
 }
 
