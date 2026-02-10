@@ -3,15 +3,22 @@
 //! [`ApiaryNode`] is the main runtime entry point. It initialises the
 //! storage backend, detects system capacity, and manages the node lifecycle.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use arrow::record_batch::RecordBatch;
 use tracing::info;
 
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
-use apiary_core::Result;
+use apiary_core::{
+    CellSizingPolicy, FrameSchema, LedgerAction, Result, WriteResult,
+};
+use apiary_storage::cell_reader::CellReader;
+use apiary_storage::cell_writer::CellWriter;
+use apiary_storage::ledger::Ledger;
 use apiary_storage::local::LocalBackend;
 use apiary_storage::s3::S3Backend;
 
@@ -84,6 +91,194 @@ impl ApiaryNode {
     /// tasks, and clean up scratch directories. For now it logs the shutdown.
     pub async fn shutdown(&self) {
         info!(node_id = %self.config.node_id, "Apiary node shutting down");
+    }
+
+    /// Write data to a frame. This is the end-to-end write path:
+    /// 1. Resolve frame from registry
+    /// 2. Open/create ledger
+    /// 3. Validate schema
+    /// 4. Partition data
+    /// 5. Write cells to storage
+    /// 6. Commit ledger entry
+    pub async fn write_to_frame(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+        batch: &RecordBatch,
+    ) -> Result<WriteResult> {
+        let start = std::time::Instant::now();
+
+        // Resolve frame metadata
+        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
+        let schema = FrameSchema::from_json_value(&frame.schema)?;
+        let frame_path = format!("{}/{}/{}", hive, box_name, frame_name);
+
+        // Open or create ledger
+        let mut ledger = match Ledger::open(Arc::clone(&self.storage), &frame_path).await {
+            Ok(l) => l,
+            Err(_) => {
+                Ledger::create(
+                    Arc::clone(&self.storage),
+                    &frame_path,
+                    schema.clone(),
+                    frame.partition_by.clone(),
+                    &self.config.node_id,
+                )
+                .await?
+            }
+        };
+
+        // Write cells
+        let sizing = CellSizingPolicy::new(
+            self.config.target_cell_size,
+            self.config.max_cell_size,
+            self.config.min_cell_size,
+        );
+
+        let writer = CellWriter::new(
+            Arc::clone(&self.storage),
+            frame_path,
+            schema,
+            frame.partition_by.clone(),
+            sizing,
+        );
+
+        let cells = writer.write(batch).await?;
+
+        let cells_written = cells.len();
+        let rows_written: u64 = cells.iter().map(|c| c.rows).sum();
+        let bytes_written: u64 = cells.iter().map(|c| c.bytes).sum();
+
+        // Commit to ledger
+        let version = ledger
+            .commit(LedgerAction::AddCells { cells }, &self.config.node_id)
+            .await?;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        Ok(WriteResult {
+            version,
+            cells_written,
+            rows_written,
+            bytes_written,
+            duration_ms,
+        })
+    }
+
+    /// Read data from a frame, optionally filtering by partition values.
+    /// Returns all matching data as a merged RecordBatch.
+    pub async fn read_from_frame(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+        partition_filter: Option<&HashMap<String, String>>,
+    ) -> Result<Option<RecordBatch>> {
+        let frame_path = format!("{}/{}/{}", hive, box_name, frame_name);
+
+        let ledger = match Ledger::open(Arc::clone(&self.storage), &frame_path).await {
+            Ok(l) => l,
+            Err(ApiaryError::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        let cells = if let Some(filter) = partition_filter {
+            ledger.prune_cells(filter, &HashMap::new())
+        } else {
+            ledger.active_cells().iter().collect()
+        };
+
+        if cells.is_empty() {
+            return Ok(None);
+        }
+
+        let reader = CellReader::new(Arc::clone(&self.storage), frame_path);
+        reader.read_cells_merged(&cells, None).await
+    }
+
+    /// Overwrite all data in a frame with new data.
+    /// Commits a RewriteCells entry removing all existing cells and adding new ones.
+    pub async fn overwrite_frame(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+        batch: &RecordBatch,
+    ) -> Result<WriteResult> {
+        let start = std::time::Instant::now();
+
+        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
+        let schema = FrameSchema::from_json_value(&frame.schema)?;
+        let frame_path = format!("{}/{}/{}", hive, box_name, frame_name);
+
+        let mut ledger = Ledger::open(Arc::clone(&self.storage), &frame_path).await?;
+
+        let sizing = CellSizingPolicy::new(
+            self.config.target_cell_size,
+            self.config.max_cell_size,
+            self.config.min_cell_size,
+        );
+
+        let writer = CellWriter::new(
+            Arc::clone(&self.storage),
+            frame_path,
+            schema,
+            frame.partition_by.clone(),
+            sizing,
+        );
+
+        let new_cells = writer.write(batch).await?;
+
+        let cells_written = new_cells.len();
+        let rows_written: u64 = new_cells.iter().map(|c| c.rows).sum();
+        let bytes_written: u64 = new_cells.iter().map(|c| c.bytes).sum();
+
+        // Remove all old cells, add new ones
+        let removed: Vec<_> = ledger.active_cells().iter().map(|c| c.id.clone()).collect();
+
+        let version = ledger
+            .commit(
+                LedgerAction::RewriteCells {
+                    removed,
+                    added: new_cells,
+                },
+                &self.config.node_id,
+            )
+            .await?;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        Ok(WriteResult {
+            version,
+            cells_written,
+            rows_written,
+            bytes_written,
+            duration_ms,
+        })
+    }
+
+    /// Initialize the ledger for a frame (called after create_frame in registry).
+    pub async fn init_frame_ledger(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+    ) -> Result<()> {
+        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
+        let schema = FrameSchema::from_json_value(&frame.schema)?;
+        let frame_path = format!("{}/{}/{}", hive, box_name, frame_name);
+
+        Ledger::create(
+            Arc::clone(&self.storage),
+            &frame_path,
+            schema,
+            frame.partition_by.clone(),
+            &self.config.node_id,
+        )
+        .await?;
+
+        Ok(())
     }
 }
 

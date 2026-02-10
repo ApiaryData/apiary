@@ -111,7 +111,9 @@ version = "0.1.0"
 dependencies = [
  "apiary-core",
  "apiary-storage",
+ "arrow",
  "async-trait",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

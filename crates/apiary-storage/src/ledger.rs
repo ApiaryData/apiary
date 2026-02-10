@@ -152,6 +152,13 @@ impl Ledger {
 
         entry_files.sort_by_key(|(v, _)| *v);
 
+        // If no entries and no checkpoint found, the ledger doesn't exist
+        if entry_files.is_empty() && start_version == 0 && checkpoint_files.is_empty() {
+            return Err(ApiaryError::NotFound {
+                key: format!("{frame_path}/_ledger"),
+            });
+        }
+
         let mut current_version = start_version;
 
         for (version, path) in &entry_files {
