@@ -126,9 +126,9 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 | 7 | Distributed Query Execution | ✅ Complete |
 | 8 | Local Cell Cache | ✅ Complete |
 | 9 | Behavioral Model | ✅ Complete |
-| 10 | Testing + Hardening | 🚧 Not Started |
+| 10 | Testing + Hardening | ✅ Complete |
 
-### Current Capabilities (Step 9 Complete — Behavioral Model)
+### Current Capabilities (Step 10 Complete — v1 Release Candidate)
 
 - ✅ Rust workspace with 6 crates
 - ✅ Python SDK via PyO3
@@ -178,6 +178,9 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 - ✅ Temperature regulation classification (cold/ideal/warm/hot/critical)
 - ✅ Task abandonment tracker (retry logic with trial limits)
 - ✅ Behavioral model Python API (colony_status method)
+
+- ✅ Integration tests (solo mode, multi-node, mason isolation, concurrent writes, backpressure, chaos)
+- ✅ Documentation (getting started, concepts, Python SDK, SQL reference, architecture summary)
 
 ## Project Structure
 
@@ -270,6 +273,11 @@ See [docs/architecture/06-roadmap.md](docs/architecture/06-roadmap.md) for detai
 
 ## Documentation
 
+- [Getting Started](docs/getting-started.md)
+- [Concepts](docs/concepts.md)
+- [Python SDK Reference](docs/python-sdk.md)
+- [SQL Reference](docs/sql-reference.md)
+- [Architecture Summary](docs/architecture-summary.md)
 - [Architecture Overview](docs/architecture/01-architecture-overview.md)
 - [Storage Engine](docs/architecture/02-storage-engine.md)
 - [Swarm Coordination](docs/architecture/03-swarm-coordination.md)
@@ -291,4 +299,4 @@ Apiary draws inspiration from:
 
 ---
 
-**Status**: Early development. Step 9 of 10 complete. Behavioral model operational! 🐝
+**Status**: v1 Release Candidate. All 10 steps complete. 🐝
