@@ -9,6 +9,7 @@ use tracing::info;
 
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
+use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
 use apiary_core::Result;
 use apiary_storage::local::LocalBackend;
@@ -26,6 +27,9 @@ pub struct ApiaryNode {
 
     /// The shared storage backend (object storage or local filesystem).
     pub storage: Arc<dyn StorageBackend>,
+
+    /// Registry manager for DDL operations.
+    pub registry: RegistryManager,
 }
 
 impl ApiaryNode {
@@ -66,7 +70,12 @@ impl ApiaryNode {
             "Apiary node started"
         );
 
-        Ok(Self { config, storage })
+        // Initialize registry
+        let registry = RegistryManager::new(Arc::clone(&storage));
+        let _ = registry.load_or_create().await?;
+        info!("Registry loaded");
+
+        Ok(Self { config, storage, registry })
     }
 
     /// Gracefully shut down the node.
