@@ -24,13 +24,17 @@ import pyarrow.compute as pc
 def build_apiary():
     """Build and install the Python package with maturin."""
     import subprocess
+    import os
+    
+    # Get the current working directory (should be the repo root)
+    repo_root = os.getcwd()
     
     # Build the wheel
     result = subprocess.run(
         ["maturin", "build", "--release", "--out", "dist"],
         capture_output=True,
         text=True,
-        cwd="/home/runner/work/apiary/apiary"
+        cwd=repo_root
     )
     if result.returncode != 0:
         print("STDOUT:", result.stdout)
@@ -39,7 +43,7 @@ def build_apiary():
     
     # Find and install the wheel
     import glob
-    wheels = glob.glob("/home/runner/work/apiary/apiary/dist/*.whl")
+    wheels = glob.glob(os.path.join(repo_root, "dist", "*.whl"))
     if not wheels:
         raise RuntimeError("No wheel file found after build")
     

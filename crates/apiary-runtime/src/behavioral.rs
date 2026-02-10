@@ -148,14 +148,12 @@ impl ColonyThermometer {
         let cpu_util = busy_count / total_bees;
 
         // Memory pressure: average memory utilization across all bees
-        let memory_pressure = if total_bees > 0.0 {
+        let memory_pressure = {
             let sum: f64 = status
                 .iter()
                 .map(|s| s.memory_used as f64 / s.memory_budget as f64)
                 .sum();
             sum / total_bees
-        } else {
-            0.0
         };
 
         // Queue pressure: queued tasks / (total bees * 2)
