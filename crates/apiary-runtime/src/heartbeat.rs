@@ -312,7 +312,7 @@ impl WorldViewBuilder {
                             let age = now
                                 .signed_duration_since(hb.timestamp)
                                 .to_std()
-                                .unwrap_or(Duration::from_secs(u64::MAX));
+                                .unwrap_or(Duration::from_secs(86400 * 365));
 
                             let state = if age > self.dead_threshold {
                                 NodeState::Dead
