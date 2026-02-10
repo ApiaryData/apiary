@@ -12,6 +12,7 @@ apiary-core.workspace = true
 apiary-storage.workspace = true
 apiary-runtime.workspace = true
 pyo3.workspace = true
+pythonize.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
