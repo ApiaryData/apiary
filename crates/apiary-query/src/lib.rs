@@ -549,6 +549,9 @@ impl ApiaryQueryContext {
         // Create a fresh session for this query
         let session = SessionContext::new();
 
+        // Build a set for O(1) cell key lookups
+        let cell_key_set: std::collections::HashSet<&String> = cell_keys.iter().collect();
+
         // Resolve and register each table, filtering to only the assigned cells
         for table_ref in &table_refs {
             let (hive, box_name, frame_name, register_name) =
@@ -561,7 +564,7 @@ impl ApiaryQueryContext {
             let cells: Vec<_> = ledger.active_cells().iter()
                 .filter(|cell| {
                     let cell_storage_key = format!("{}/{}", frame_path, cell.path);
-                    cell_keys.contains(&cell_storage_key)
+                    cell_key_set.contains(&cell_storage_key)
                 })
                 .collect();
 

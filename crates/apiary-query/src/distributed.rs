@@ -230,6 +230,8 @@ fn leafcutter_split_assignments(
                 let mut kept_size: u64 = 0;
                 let mut keep = Vec::new();
                 for cell in cells.drain(..) {
+                    // A node must keep at least one cell even if it exceeds the
+                    // budget, to avoid orphaned cells with no assignment.
                     if kept_size + cell.bytes <= node.memory_per_bee || keep.is_empty() {
                         kept_size += cell.bytes;
                         keep.push(cell);

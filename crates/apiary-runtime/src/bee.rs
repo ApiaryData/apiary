@@ -233,6 +233,7 @@ impl BeePool {
                 let q = self.queue.lock().await;
                 q.len() as f64
             };
+            // Queue capacity is 2x bee count — allows some queuing before pressure rises
             let queue_pressure = (queue_size / (total * 2.0)).min(1.0);
             let temperature = 0.4 * cpu_util + 0.4 * mem_pressure + 0.2 * queue_pressure;
             if temperature > 0.95 {
