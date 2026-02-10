@@ -28,6 +28,7 @@ use apiary_storage::local::LocalBackend;
 use apiary_storage::s3::S3Backend;
 
 use crate::bee::{BeePool, BeeStatus};
+use crate::behavioral::{ColonyThermometer, AbandonmentTracker};
 use crate::cache::CellCache;
 use crate::heartbeat::{HeartbeatWriter, NodeState, WorldView, WorldViewBuilder};
 
@@ -55,6 +56,12 @@ pub struct ApiaryNode {
     
     /// Local cell cache with LRU eviction.
     pub cell_cache: Arc<CellCache>,
+    
+    /// Colony thermometer for measuring system health.
+    pub thermometer: ColonyThermometer,
+    
+    /// Abandonment tracker for task failure handling.
+    pub abandonment_tracker: Arc<AbandonmentTracker>,
 
     /// Heartbeat writer for this node.
     heartbeat_writer: Arc<HeartbeatWriter>,
@@ -201,6 +208,8 @@ impl ApiaryNode {
             query_ctx,
             bee_pool,
             cell_cache,
+            thermometer: ColonyThermometer::default(),
+            abandonment_tracker: Arc::new(AbandonmentTracker::default()),
             heartbeat_writer,
             world_view,
             world_view_builder,
@@ -488,6 +497,18 @@ impl ApiaryNode {
         }
     }
     
+    /// Return the current colony status: temperature and regulation state.
+    pub async fn colony_status(&self) -> ColonyStatus {
+        let temperature = self.thermometer.measure(&self.bee_pool).await;
+        let regulation = self.thermometer.regulation(temperature);
+        
+        ColonyStatus {
+            temperature,
+            regulation: regulation.as_str().to_string(),
+            setpoint: self.thermometer.setpoint(),
+        }
+    }
+    
     /// Execute a distributed query (v2 feature - explicit control).
     /// 
     /// This method is reserved for v2 when users want explicit control over
@@ -521,6 +542,17 @@ pub struct SwarmNodeInfo {
     pub idle_bees: usize,
     pub memory_pressure: f64,
     pub colony_temperature: f64,
+}
+
+/// Colony temperature and regulation status.
+#[derive(Debug, Clone)]
+pub struct ColonyStatus {
+    /// Current colony temperature (0.0 to 1.0).
+    pub temperature: f64,
+    /// Regulation state: "cold", "ideal", "warm", "hot", or "critical".
+    pub regulation: String,
+    /// Temperature setpoint.
+    pub setpoint: f64,
 }
 
 /// Best-effort home directory detection.

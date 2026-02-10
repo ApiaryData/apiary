@@ -182,6 +182,12 @@ impl BeePool {
         result
     }
 
+    /// Return the current number of queued tasks.
+    pub async fn queue_size(&self) -> usize {
+        let q = self.queue.lock().await;
+        q.len()
+    }
+
     /// Submit a task to the pool. If all bees are busy the task is queued.
     /// Returns the task result via the returned JoinHandle.
     pub async fn submit<F>(

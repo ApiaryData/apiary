@@ -6,16 +6,18 @@
 //! heartbeat / world view system for multi-node awareness.
 
 pub mod bee;
+pub mod behavioral;
 pub mod cache;
 pub mod heartbeat;
 pub mod node;
 
 pub use bee::{BeePool, BeeState, BeeStatus, MasonChamber};
+pub use behavioral::{AbandonmentTracker, AbandonmentDecision, ColonyThermometer, TemperatureRegulation};
 pub use cache::{CacheEntry, CellCache};
 pub use heartbeat::{
     Heartbeat, HeartbeatWriter, NodeState, NodeStatus, WorldView, WorldViewBuilder,
 };
-pub use node::ApiaryNode;
+pub use node::{ApiaryNode, SwarmStatus, SwarmNodeInfo, ColonyStatus};
 pub use apiary_query::ApiaryQueryContext;
 
 /// Convert WorldView to a vector of NodeInfo for distributed query planning.

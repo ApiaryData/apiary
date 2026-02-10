@@ -20,6 +20,7 @@ use apiary_core::types::NodeId;
 use apiary_core::Result;
 
 use crate::bee::BeePool;
+use crate::behavioral::ColonyThermometer;
 use crate::cache::CellCache;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ pub struct HeartbeatWriter {
     version: AtomicU64,
     bee_pool: Arc<BeePool>,
     cell_cache: Arc<CellCache>,
+    thermometer: ColonyThermometer,
     cores: usize,
     memory_total_bytes: u64,
     memory_per_bee: u64,
@@ -99,6 +101,7 @@ impl HeartbeatWriter {
             version: AtomicU64::new(0),
             bee_pool,
             cell_cache,
+            thermometer: ColonyThermometer::default(),
             cores: config.cores,
             memory_total_bytes: config.memory_bytes,
             memory_per_bee: config.memory_per_bee,
@@ -121,12 +124,11 @@ impl HeartbeatWriter {
             0.0
         };
 
-        // Colony temperature is a heuristic: fraction of bees busy
-        let colony_temperature = if bees_total > 0 {
-            bees_busy as f64 / bees_total as f64
-        } else {
-            0.0
-        };
+        // Use the colony thermometer to measure system health
+        let colony_temperature = self.thermometer.measure(&self.bee_pool).await;
+        
+        // Get queue depth from bee pool
+        let queue_depth = self.bee_pool.queue_size().await;
 
         let version = self.version.fetch_add(1, Ordering::Relaxed) + 1;
         
@@ -149,7 +151,7 @@ impl HeartbeatWriter {
                 bees_busy,
                 bees_idle,
                 memory_pressure,
-                queue_depth: 0, // TODO: expose queue depth from BeePool
+                queue_depth,
                 colony_temperature,
             },
             cache: HeartbeatCache {
