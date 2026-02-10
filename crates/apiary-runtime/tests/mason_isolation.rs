@@ -145,5 +145,8 @@ async fn test_one_bee_failure_others_continue() {
     // Other bee should process normally
     let ok_handle = pool.submit(|| Ok(vec![])).await;
     let ok_result = ok_handle.await.unwrap();
-    assert!(ok_result.is_ok(), "Other bee should still work after failure");
+    assert!(
+        ok_result.is_ok(),
+        "Other bee should still work after failure"
+    );
 }

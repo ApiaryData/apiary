@@ -47,12 +47,10 @@ impl Apiary {
     #[new]
     #[pyo3(signature = (name, storage=None))]
     fn new(name: String, storage: Option<String>) -> PyResult<Self> {
-        let storage_uri =
-            storage.unwrap_or_else(|| format!("local://~/.apiary/data/{name}"));
+        let storage_uri = storage.unwrap_or_else(|| format!("local://~/.apiary/data/{name}"));
 
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            PyRuntimeError::new_err(format!("Failed to create Tokio runtime: {e}"))
-        })?;
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Tokio runtime: {e}")))?;
 
         Ok(Self {
             name,
@@ -99,9 +97,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         let storage_type = if node.config.storage_uri.starts_with("s3://") {
             "s3"
@@ -158,9 +156,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         self.runtime
             .block_on(async { node.registry.create_hive(&name).await })
@@ -182,9 +180,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         self.runtime
             .block_on(async { node.registry.create_box(&hive, &name).await })
@@ -217,9 +215,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         // Convert Python dict to JSON value
         let schema_json: serde_json::Value = pythonize::depythonize(&schema)
@@ -237,9 +235,7 @@ impl Apiary {
 
         // Initialize the frame's ledger so DESCRIBE works immediately
         self.runtime
-            .block_on(async {
-                node.init_frame_ledger(&hive, &box_name, &name).await
-            })
+            .block_on(async { node.init_frame_ledger(&hive, &box_name, &name).await })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to init frame ledger: {e}")))?;
 
         Ok(())
@@ -254,9 +250,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         self.runtime
             .block_on(async { node.registry.list_hives().await })
@@ -275,9 +271,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         self.runtime
             .block_on(async { node.registry.list_boxes(&hive).await })
@@ -297,9 +293,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         self.runtime
             .block_on(async { node.registry.list_frames(&hive, &box_name).await })
@@ -320,9 +316,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         let frame = self
             .runtime
@@ -363,9 +359,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         // Deserialize Arrow IPC bytes to RecordBatch
         let data = ipc_data.as_bytes();
@@ -415,20 +411,15 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         let result = self
             .runtime
             .block_on(async {
-                node.read_from_frame(
-                    &hive,
-                    &box_name,
-                    &frame_name,
-                    partition_filter.as_ref(),
-                )
-                .await
+                node.read_from_frame(&hive, &box_name, &frame_name, partition_filter.as_ref())
+                    .await
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to read: {e}")))?;
 
@@ -463,9 +454,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         let data = ipc_data.as_bytes();
         let batch = ipc_bytes_to_batch(data)?;
@@ -508,9 +499,9 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
         let batches = self
             .runtime
@@ -527,9 +518,8 @@ impl Apiary {
             let merged = if batches.len() == 1 {
                 batches.into_iter().next().unwrap()
             } else {
-                arrow::compute::concat_batches(&schema, &batches).map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to merge results: {e}"))
-                })?
+                arrow::compute::concat_batches(&schema, &batches)
+                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to merge results: {e}")))?
             };
 
             let ipc_data = batch_to_ipc_bytes(&merged)?;
@@ -549,13 +539,11 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
-        let statuses = self
-            .runtime
-            .block_on(async { node.bee_status().await });
+        let statuses = self.runtime.block_on(async { node.bee_status().await });
 
         Python::with_gil(|py| {
             let list = pyo3::types::PyList::empty_bound(py);
@@ -581,13 +569,11 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
-        let status = self
-            .runtime
-            .block_on(async { node.swarm_status().await });
+        let status = self.runtime.block_on(async { node.swarm_status().await });
 
         Python::with_gil(|py| {
             let nodes_list = pyo3::types::PyList::empty_bound(py);
@@ -619,13 +605,11 @@ impl Apiary {
             .node
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
-        let node = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("Node not started. Call start() first.")
-        })?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
-        let status = self
-            .runtime
-            .block_on(async { node.colony_status().await });
+        let status = self.runtime.block_on(async { node.colony_status().await });
 
         Python::with_gil(|py| {
             let dict = pyo3::types::PyDict::new_bound(py);

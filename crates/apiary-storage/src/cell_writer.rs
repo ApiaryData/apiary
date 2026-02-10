@@ -69,9 +69,7 @@ impl CellWriter {
             let sub_batches = self.split_by_size(partition_batch)?;
 
             for sub_batch in &sub_batches {
-                let cell = self
-                    .write_cell(sub_batch, partition_values)
-                    .await?;
+                let cell = self.write_cell(sub_batch, partition_values).await?;
                 all_cells.push(cell);
             }
         }
@@ -93,17 +91,18 @@ impl CellWriter {
             let found = batch.schema().index_of(&field.name).ok();
             if found.is_none() && !field.nullable {
                 return Err(ApiaryError::Schema {
-                    message: format!(
-                        "Missing non-nullable column '{}' in write data",
-                        field.name
-                    ),
+                    message: format!("Missing non-nullable column '{}' in write data", field.name),
                 });
             }
         }
 
         // Check extra columns (warn but don't error)
         for batch_field in batch.schema().fields() {
-            let in_schema = self.schema.fields.iter().any(|f| f.name == *batch_field.name());
+            let in_schema = self
+                .schema
+                .fields
+                .iter()
+                .any(|f| f.name == *batch_field.name());
             if !in_schema {
                 warn!(
                     column = %batch_field.name(),
@@ -118,16 +117,17 @@ impl CellWriter {
                 let col = batch.column(col_idx);
                 if col.null_count() > 0 {
                     return Err(ApiaryError::Schema {
-                        message: format!(
-                            "Partition column '{}' contains null values",
-                            part_col
-                        ),
+                        message: format!("Partition column '{}' contains null values", part_col),
                     });
                 }
                 // Validate partition values don't contain path traversal characters
                 for row_idx in 0..batch.num_rows() {
                     let val = array_value_to_string(col, row_idx);
-                    if val.contains("..") || val.contains('/') || val.contains('\\') || val.contains('\0') {
+                    if val.contains("..")
+                        || val.contains('/')
+                        || val.contains('\\')
+                        || val.contains('\0')
+                    {
                         return Err(ApiaryError::Schema {
                             message: format!(
                                 "Partition column '{}' contains invalid characters (path separators or '..'): '{}'",
@@ -155,12 +155,13 @@ impl CellWriter {
         for row_idx in 0..batch.num_rows() {
             let mut key = HashMap::new();
             for col_name in &self.partition_by {
-                let col_idx = batch
-                    .schema()
-                    .index_of(col_name)
-                    .map_err(|_| ApiaryError::Schema {
-                        message: format!("Partition column '{}' not found in data", col_name),
-                    })?;
+                let col_idx =
+                    batch
+                        .schema()
+                        .index_of(col_name)
+                        .map_err(|_| ApiaryError::Schema {
+                            message: format!("Partition column '{}' not found in data", col_name),
+                        })?;
                 let col = batch.column(col_idx);
                 let val = array_value_to_string(col, row_idx);
                 key.insert(col_name.clone(), val);
@@ -182,20 +183,18 @@ impl CellWriter {
         // Build sub-batches
         let mut result = Vec::new();
         for (_, (partition_values, row_indices)) in groups {
-            let indices = UInt32Array::from(
-                row_indices.iter().map(|i| *i as u32).collect::<Vec<_>>(),
-            );
+            let indices =
+                UInt32Array::from(row_indices.iter().map(|i| *i as u32).collect::<Vec<_>>());
             let columns: Vec<ArrayRef> = batch
                 .columns()
                 .iter()
                 .map(|col| compute::take(col, &indices, None).unwrap())
                 .collect();
-            let sub_batch =
-                RecordBatch::try_new(batch.schema(), columns).map_err(|e| {
-                    ApiaryError::Internal {
-                        message: format!("Failed to create partition batch: {}", e),
-                    }
-                })?;
+            let sub_batch = RecordBatch::try_new(batch.schema(), columns).map_err(|e| {
+                ApiaryError::Internal {
+                    message: format!("Failed to create partition batch: {}", e),
+                }
+            })?;
             result.push((partition_values, sub_batch));
         }
 
@@ -375,23 +374,21 @@ fn write_parquet_bytes(batch: &RecordBatch) -> Result<Vec<u8>> {
 
     let mut buf: Vec<u8> = Vec::new();
     {
-        let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props))
-            .map_err(|e| ApiaryError::Storage {
-                message: format!("Failed to create Parquet writer: {}", e),
-                source: None,
+        let mut writer =
+            ArrowWriter::try_new(&mut buf, batch.schema(), Some(props)).map_err(|e| {
+                ApiaryError::Storage {
+                    message: format!("Failed to create Parquet writer: {}", e),
+                    source: None,
+                }
             })?;
-        writer
-            .write(batch)
-            .map_err(|e| ApiaryError::Storage {
-                message: format!("Failed to write Parquet data: {}", e),
-                source: None,
-            })?;
-        writer
-            .close()
-            .map_err(|e| ApiaryError::Storage {
-                message: format!("Failed to close Parquet writer: {}", e),
-                source: None,
-            })?;
+        writer.write(batch).map_err(|e| ApiaryError::Storage {
+            message: format!("Failed to write Parquet data: {}", e),
+            source: None,
+        })?;
+        writer.close().map_err(|e| ApiaryError::Storage {
+            message: format!("Failed to close Parquet writer: {}", e),
+            source: None,
+        })?;
     }
     Ok(buf)
 }
@@ -453,10 +450,7 @@ where
     T: ArrowPrimitiveType,
     T::Native: Into<i64>,
 {
-    let arr = array
-        .as_any()
-        .downcast_ref::<PrimitiveArray<T>>()
-        .unwrap();
+    let arr = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
     let values: Vec<T::Native> = arr.iter().flatten().collect();
     if values.is_empty() {
         return (None, None);
@@ -491,10 +485,7 @@ where
     T: ArrowPrimitiveType,
     T::Native: Into<f64>,
 {
-    let arr = array
-        .as_any()
-        .downcast_ref::<PrimitiveArray<T>>()
-        .unwrap();
+    let arr = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
     let values: Vec<f64> = arr.iter().flatten().map(|v| v.into()).collect();
     if values.is_empty() {
         return (None, None);
@@ -509,10 +500,7 @@ where
         .copied()
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap();
-    (
-        Some(serde_json::json!(min)),
-        Some(serde_json::json!(max)),
-    )
+    (Some(serde_json::json!(min)), Some(serde_json::json!(max)))
 }
 
 fn string_min_max(array: &dyn Array) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
@@ -589,10 +577,7 @@ fn array_value_to_string(array: &ArrayRef, idx: usize) -> String {
 }
 
 /// Build a canonical string from partition values for grouping.
-fn partition_key_string(
-    values: &HashMap<String, String>,
-    partition_by: &[String],
-) -> String {
+fn partition_key_string(values: &HashMap<String, String>, partition_by: &[String]) -> String {
     partition_by
         .iter()
         .map(|col| {
@@ -746,14 +731,9 @@ mod tests {
         );
 
         // Batch only has 'id' column, missing non-nullable 'name'
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]).unwrap();
 
         let result = writer.validate_schema(&batch);
         assert!(result.is_err());
@@ -800,14 +780,9 @@ mod tests {
         );
 
         // Batch only has 'id' column, missing nullable 'notes'
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]).unwrap();
 
         let result = writer.validate_schema(&batch);
         assert!(result.is_ok(), "Missing nullable column should not error");

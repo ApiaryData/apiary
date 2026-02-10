@@ -138,7 +138,7 @@ impl ColonyThermometer {
     pub async fn measure(&self, bee_pool: &BeePool) -> f64 {
         let status = bee_pool.status().await;
         let total_bees = status.len() as f64;
-        
+
         if total_bees == 0.0 {
             return 0.0;
         }

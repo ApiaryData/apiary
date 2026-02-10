@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow::ipc::writer::FileWriter;
 use arrow::ipc::reader::FileReader;
+use arrow::ipc::writer::FileWriter;
 use arrow::record_batch::RecordBatch;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -63,9 +63,7 @@ pub struct NodeInfo {
 #[derive(Clone, Debug)]
 pub enum QueryPlan {
     /// Execute locally on a single node (all cells fit in one bee's budget).
-    Local {
-        cells: Vec<CellInfo>,
-    },
+    Local { cells: Vec<CellInfo> },
     /// Distribute across multiple nodes.
     Distributed {
         assignments: HashMap<NodeId, Vec<CellInfo>>,
@@ -118,17 +116,18 @@ pub fn plan_query(
             message: "No alive nodes in world view".into(),
         });
     }
-    
+
     // Find local node info
-    let local_node = nodes.iter()
+    let local_node = nodes
+        .iter()
         .find(|n| &n.node_id == local_node_id)
         .ok_or_else(|| ApiaryError::Internal {
             message: format!("Local node {} not found in world view", local_node_id),
         })?;
-    
+
     // Calculate total size
     let total_size: u64 = cells.iter().map(|c| c.bytes).sum();
-    
+
     // If small enough for one bee and we have idle capacity, run locally
     if total_size < local_node.memory_per_bee && local_node.idle_bees > 0 {
         info!(
@@ -138,13 +137,13 @@ pub fn plan_query(
         );
         return Ok(QueryPlan::Local { cells });
     }
-    
+
     // If only one alive node, run locally (no distribution possible)
     if nodes.len() == 1 {
         info!("Only one node available, executing locally");
         return Ok(QueryPlan::Local { cells });
     }
-    
+
     // Distribute across nodes
     info!(
         total_cells = cells.len(),
@@ -152,15 +151,15 @@ pub fn plan_query(
         alive_nodes = nodes.len(),
         "Distributing query across swarm"
     );
-    
+
     let assignments = assign_cells_to_nodes(cells, &nodes);
-    
+
     if assignments.is_empty() {
         return Err(ApiaryError::Internal {
             message: "Failed to assign cells to any node".into(),
         });
     }
-    
+
     Ok(QueryPlan::Distributed { assignments })
 }
 
@@ -170,7 +169,8 @@ pub fn extract_alive_nodes<T>(
     world_view_nodes: &HashMap<NodeId, T>,
     node_extractor: impl Fn(&T) -> Option<NodeInfo>,
 ) -> Vec<NodeInfo> {
-    world_view_nodes.values()
+    world_view_nodes
+        .values()
         .filter_map(|node| node_extractor(node))
         .collect()
 }
@@ -181,32 +181,36 @@ fn assign_cells_to_nodes(
     nodes: &[NodeInfo],
 ) -> HashMap<NodeId, Vec<CellInfo>> {
     let mut assignments: HashMap<NodeId, Vec<CellInfo>> = HashMap::new();
-    
+
     for cell in cells {
         // Try to find a node that has this cell cached
-        let caching_node = nodes.iter()
+        let caching_node = nodes
+            .iter()
             .filter(|n| n.idle_bees > 0)
             .find(|n| n.cached_cells.contains_key(&cell.storage_key));
-        
+
         if let Some(node) = caching_node {
             // Assign to caching node
-            assignments.entry(node.node_id.clone())
+            assignments
+                .entry(node.node_id.clone())
                 .or_insert_with(Vec::new)
                 .push(cell);
             continue;
         }
-        
+
         // No cache hit, assign to node with most idle capacity
-        if let Some(best_node) = nodes.iter()
+        if let Some(best_node) = nodes
+            .iter()
             .filter(|n| n.idle_bees > 0)
             .max_by_key(|n| n.idle_bees)
         {
-            assignments.entry(best_node.node_id.clone())
+            assignments
+                .entry(best_node.node_id.clone())
                 .or_insert_with(Vec::new)
                 .push(cell);
         }
     }
-    
+
     // Apply leafcutter sizing: split assignments that exceed a bee's memory budget
     leafcutter_split_assignments(&mut assignments, nodes);
 
@@ -246,7 +250,8 @@ fn leafcutter_split_assignments(
 
     // Redistribute overflow cells to nodes with capacity
     for cell in overflow {
-        let best = nodes.iter()
+        let best = nodes
+            .iter()
             .filter(|n| n.idle_bees > 0)
             .filter(|n| {
                 let current: u64 = assignments
@@ -258,13 +263,19 @@ fn leafcutter_split_assignments(
             .max_by_key(|n| n.idle_bees);
 
         if let Some(node) = best {
-            assignments.entry(node.node_id.clone())
+            assignments
+                .entry(node.node_id.clone())
                 .or_insert_with(Vec::new)
                 .push(cell);
         } else {
             // No node has capacity — assign to node with most idle bees anyway
-            if let Some(node) = nodes.iter().filter(|n| n.idle_bees > 0).max_by_key(|n| n.idle_bees) {
-                assignments.entry(node.node_id.clone())
+            if let Some(node) = nodes
+                .iter()
+                .filter(|n| n.idle_bees > 0)
+                .max_by_key(|n| n.idle_bees)
+            {
+                assignments
+                    .entry(node.node_id.clone())
                     .or_insert_with(Vec::new)
                     .push(cell);
             }
@@ -276,7 +287,10 @@ fn leafcutter_split_assignments(
 ///
 /// In v1, all queries are passed through as-is without decomposition.
 /// Aggregation decomposition (partial + merge) will be added in v2.
-pub fn generate_sql_fragment(original_sql: &str, _is_aggregation: bool) -> (String, Option<String>) {
+pub fn generate_sql_fragment(
+    original_sql: &str,
+    _is_aggregation: bool,
+) -> (String, Option<String>) {
     // v1: Pass-through all queries without decomposition
     // Future: Implement aggregation decomposition when _is_aggregation is true
     (original_sql.to_string(), None)
@@ -304,7 +318,7 @@ pub fn create_manifest(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     QueryManifest {
         query_id,
         original_sql: original_sql.to_string(),
@@ -324,7 +338,7 @@ pub async fn write_manifest(
     let json = serde_json::to_vec(manifest).map_err(|e| ApiaryError::Internal {
         message: format!("Failed to serialize manifest: {}", e),
     })?;
-    
+
     storage.put(&path, json.into()).await?;
     info!(query_id = %manifest.query_id, "Query manifest written");
     Ok(())
@@ -355,28 +369,29 @@ pub async fn write_partial_result(
             message: "Cannot write empty partial result".into(),
         });
     }
-    
+
     let path = partial_result_path(query_id, node_id);
-    
+
     // Write to Arrow IPC format
     let mut buf = Vec::new();
     {
-        let mut writer = FileWriter::try_new(&mut buf, &batches[0].schema())
-            .map_err(|e| ApiaryError::Internal {
+        let mut writer = FileWriter::try_new(&mut buf, &batches[0].schema()).map_err(|e| {
+            ApiaryError::Internal {
                 message: format!("Failed to create Arrow writer: {}", e),
-            })?;
-        
+            }
+        })?;
+
         for batch in batches {
             writer.write(batch).map_err(|e| ApiaryError::Internal {
                 message: format!("Failed to write batch: {}", e),
             })?;
         }
-        
+
         writer.finish().map_err(|e| ApiaryError::Internal {
             message: format!("Failed to finish Arrow writer: {}", e),
         })?;
     }
-    
+
     storage.put(&path, buf.into()).await?;
     info!(query_id = %query_id, node_id = %node_id, "Partial result written");
     Ok(())
@@ -390,36 +405,34 @@ pub async fn read_partial_result(
 ) -> Result<Vec<RecordBatch>> {
     let path = partial_result_path(query_id, node_id);
     let bytes = storage.get(&path).await?;
-    
+
     let cursor = std::io::Cursor::new(bytes.to_vec());
-    let reader = FileReader::try_new(cursor, None)
-        .map_err(|e| ApiaryError::Internal {
-            message: format!("Failed to create Arrow reader: {}", e),
-        })?;
-    
+    let reader = FileReader::try_new(cursor, None).map_err(|e| ApiaryError::Internal {
+        message: format!("Failed to create Arrow reader: {}", e),
+    })?;
+
     let batches: Result<Vec<_>> = reader
-        .map(|result| result.map_err(|e| ApiaryError::Internal {
-            message: format!("Failed to read batch: {}", e),
-        }))
+        .map(|result| {
+            result.map_err(|e| ApiaryError::Internal {
+                message: format!("Failed to read batch: {}", e),
+            })
+        })
         .collect();
-    
+
     batches
 }
 
 /// Clean up query directory after completion.
-pub async fn cleanup_query(
-    storage: &Arc<dyn StorageBackend>,
-    query_id: &str,
-) -> Result<()> {
+pub async fn cleanup_query(storage: &Arc<dyn StorageBackend>, query_id: &str) -> Result<()> {
     let prefix = format!("_queries/{}/", query_id);
     let keys = storage.list(&prefix).await?;
-    
+
     for key in keys {
         if let Err(e) = storage.delete(&key).await {
             warn!(key = %key, error = %e, "Failed to delete query file");
         }
     }
-    
+
     info!(query_id = %query_id, "Query files cleaned up");
     Ok(())
 }
@@ -427,7 +440,7 @@ pub async fn cleanup_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     fn mock_cell_info(key: &str, bytes: u64) -> CellInfo {
         CellInfo {
             storage_key: key.to_string(),
@@ -435,17 +448,17 @@ mod tests {
             partition: vec![],
         }
     }
-    
+
     #[test]
     fn test_assign_cells_prefers_cache_locality() {
         let cells = vec![
             mock_cell_info("cell1", 100_000_000),
             mock_cell_info("cell2", 100_000_000),
         ];
-        
+
         let mut cached = HashMap::new();
         cached.insert("cell1".to_string(), 100_000_000);
-        
+
         let nodes = vec![
             NodeInfo {
                 node_id: NodeId::from("node1"),
@@ -472,23 +485,23 @@ mod tests {
                 cached_cells: HashMap::new(),
             },
         ];
-        
+
         let assignments = assign_cells_to_nodes(cells, &nodes);
-        
+
         // cell1 should go to node1 (cache hit)
         assert!(assignments.get(&NodeId::from("node1")).is_some());
         let node1_cells = assignments.get(&NodeId::from("node1")).unwrap();
         assert_eq!(node1_cells.len(), 1);
         assert_eq!(node1_cells[0].storage_key, "cell1");
     }
-    
+
     #[test]
     fn test_assign_cells_distributes_to_idle_nodes() {
         let cells = vec![
             mock_cell_info("cell1", 100_000_000),
             mock_cell_info("cell2", 100_000_000),
         ];
-        
+
         let nodes = vec![
             NodeInfo {
                 node_id: NodeId::from("node1"),
@@ -515,9 +528,9 @@ mod tests {
                 cached_cells: HashMap::new(),
             },
         ];
-        
+
         let assignments = assign_cells_to_nodes(cells, &nodes);
-        
+
         // Both cells should go to node2 (more idle capacity)
         assert!(assignments.get(&NodeId::from("node2")).is_some());
         let node2_cells = assignments.get(&NodeId::from("node2")).unwrap();
@@ -531,11 +544,14 @@ mod tests {
 
         // 3 cells of 100MB each assigned to node1 (300MB total > 200MB budget)
         let mut assignments = HashMap::new();
-        assignments.insert(node1_id.clone(), vec![
-            mock_cell_info("c1", 100_000_000),
-            mock_cell_info("c2", 100_000_000),
-            mock_cell_info("c3", 100_000_000),
-        ]);
+        assignments.insert(
+            node1_id.clone(),
+            vec![
+                mock_cell_info("c1", 100_000_000),
+                mock_cell_info("c2", 100_000_000),
+                mock_cell_info("c3", 100_000_000),
+            ],
+        );
 
         let nodes = vec![
             NodeInfo {
@@ -566,14 +582,21 @@ mod tests {
 
         leafcutter_split_assignments(&mut assignments, &nodes);
 
-        let node1_total: u64 = assignments.get(&node1_id)
+        let node1_total: u64 = assignments
+            .get(&node1_id)
             .map(|c| c.iter().map(|ci| ci.bytes).sum())
             .unwrap_or(0);
-        assert!(node1_total <= 200_000_000, "node1 should not exceed its budget");
+        assert!(
+            node1_total <= 200_000_000,
+            "node1 should not exceed its budget"
+        );
 
         // The overflow cell(s) should have been redistributed to node2
         let node2_cells = assignments.get(&node2_id).unwrap();
-        assert!(!node2_cells.is_empty(), "node2 should receive overflow cells");
+        assert!(
+            !node2_cells.is_empty(),
+            "node2 should receive overflow cells"
+        );
 
         // Total cells should still be 3
         let total_cells: usize = assignments.values().map(|c| c.len()).sum();
