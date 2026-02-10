@@ -140,6 +140,9 @@ pub struct WriteResult {
     pub bytes_written: u64,
     /// Duration of the write in milliseconds.
     pub duration_ms: u64,
+    /// Colony temperature at write time (0.0 to 1.0).
+    #[serde(default)]
+    pub temperature: f64,
 }
 
 /// A checkpoint captures the full active cell set at a given version.
@@ -250,5 +253,28 @@ mod tests {
         assert_eq!(policy.target_cell_size, 256 * 1024 * 1024); // 256 MB
         assert_eq!(policy.max_cell_size, 512 * 1024 * 1024); // 512 MB
         assert_eq!(policy.min_cell_size, 16 * 1024 * 1024); // 16 MB
+    }
+
+    #[test]
+    fn test_write_result_serialization_with_temperature() {
+        let wr = WriteResult {
+            version: 5,
+            cells_written: 2,
+            rows_written: 1000,
+            bytes_written: 4096,
+            duration_ms: 42,
+            temperature: 0.75,
+        };
+        let json = serde_json::to_string(&wr).unwrap();
+        let wr2: WriteResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(wr2.version, 5);
+        assert_eq!(wr2.cells_written, 2);
+        assert_eq!(wr2.rows_written, 1000);
+        assert!((wr2.temperature - 0.75).abs() < f64::EPSILON);
+
+        // temperature defaults to 0.0 when absent
+        let json_no_temp = r#"{"version":1,"cells_written":1,"rows_written":10,"bytes_written":100,"duration_ms":5}"#;
+        let wr3: WriteResult = serde_json::from_str(json_no_temp).unwrap();
+        assert!((wr3.temperature - 0.0).abs() < f64::EPSILON);
     }
 }

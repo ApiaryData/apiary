@@ -301,6 +301,7 @@ impl ApiaryNode {
             .await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
+        let temperature = self.thermometer.measure(&self.bee_pool).await;
 
         Ok(WriteResult {
             version,
@@ -308,6 +309,7 @@ impl ApiaryNode {
             rows_written,
             bytes_written,
             duration_ms,
+            temperature,
         })
     }
 
@@ -393,6 +395,7 @@ impl ApiaryNode {
             .await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
+        let temperature = self.thermometer.measure(&self.bee_pool).await;
 
         Ok(WriteResult {
             version,
@@ -400,6 +403,7 @@ impl ApiaryNode {
             rows_written,
             bytes_written,
             duration_ms,
+            temperature,
         })
     }
 

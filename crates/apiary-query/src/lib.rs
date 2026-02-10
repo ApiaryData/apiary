@@ -131,6 +131,16 @@ impl ApiaryQueryContext {
             return Ok(Some(vec![batch]));
         }
 
+        // SHOW BOXES (using current hive context)
+        if upper == "SHOW BOXES" {
+            let hive = self.current_hive.as_ref().ok_or_else(|| ApiaryError::Config {
+                message: "No hive selected. Run USE HIVE <name> first, or use SHOW BOXES IN <hive>.".into(),
+            })?;
+            let boxes = self.registry.list_boxes(hive).await?;
+            let batch = string_list_batch("box", &boxes);
+            return Ok(Some(vec![batch]));
+        }
+
         // SHOW FRAMES IN <hive>.<box>
         if let Some(rest) = upper.strip_prefix("SHOW FRAMES IN ") {
             let parts: Vec<&str> = rest.trim().split('.').collect();
@@ -142,6 +152,19 @@ impl ApiaryQueryContext {
             let hive = parts[0].trim().to_lowercase();
             let box_name = parts[1].trim().to_lowercase();
             let frames = self.registry.list_frames(&hive, &box_name).await?;
+            let batch = string_list_batch("frame", &frames);
+            return Ok(Some(vec![batch]));
+        }
+
+        // SHOW FRAMES (using current hive and box context)
+        if upper == "SHOW FRAMES" {
+            let hive = self.current_hive.as_ref().ok_or_else(|| ApiaryError::Config {
+                message: "No hive selected. Run USE HIVE <name> first, or use SHOW FRAMES IN <hive>.<box>.".into(),
+            })?;
+            let box_name = self.current_box.as_ref().ok_or_else(|| ApiaryError::Config {
+                message: "No box selected. Run USE BOX <name> first, or use SHOW FRAMES IN <hive>.<box>.".into(),
+            })?;
+            let frames = self.registry.list_frames(hive, box_name).await?;
             let batch = string_list_batch("frame", &frames);
             return Ok(Some(vec![batch]));
         }
@@ -506,16 +529,106 @@ impl ApiaryQueryContext {
     /// 
     /// # Arguments
     /// * `sql` - The SQL query to execute
-    /// * `cell_keys` - Storage keys of cells to scan (v2: will filter to these cells only)
-    /// 
-    /// # v1 Limitation
-    /// In v1, this executes the SQL query on all available cells. Cell-specific
-    /// filtering (registering only the specified cells as tables) will be implemented
-    /// in v2 for true work partitioning across nodes.
-    pub async fn execute_task(&self, sql: &str, _cell_keys: &[String]) -> Result<Vec<RecordBatch>> {
-        // v1: Execute SQL on all available cells
-        // v2: Will filter to only the cells specified in _cell_keys
-        self.execute_standard_sql(sql).await
+    /// * `cell_keys` - Storage keys of cells to scan. Only these cells are registered
+    ///   as the table for the query, enabling true work partitioning across nodes.
+    pub async fn execute_task(&self, sql: &str, cell_keys: &[String]) -> Result<Vec<RecordBatch>> {
+        if cell_keys.is_empty() {
+            // No cells assigned — fall back to standard execution
+            return self.execute_standard_sql(sql).await;
+        }
+
+        // Extract table references from SQL
+        let table_refs = extract_table_references(sql);
+
+        if table_refs.is_empty() {
+            return Err(ApiaryError::Config {
+                message: "No table references found in query".into(),
+            });
+        }
+
+        // Create a fresh session for this query
+        let session = SessionContext::new();
+
+        // Resolve and register each table, filtering to only the assigned cells
+        for table_ref in &table_refs {
+            let (hive, box_name, frame_name, register_name) =
+                self.resolve_table_ref(table_ref)?;
+
+            let frame_path = format!("{hive}/{box_name}/{frame_name}");
+            let ledger = Ledger::open(Arc::clone(&self.storage), &frame_path).await?;
+
+            // Filter active cells to only those in our assigned cell_keys
+            let cells: Vec<_> = ledger.active_cells().iter()
+                .filter(|cell| {
+                    let cell_storage_key = format!("{}/{}", frame_path, cell.path);
+                    cell_keys.contains(&cell_storage_key)
+                })
+                .collect();
+
+            info!(
+                frame = %frame_path,
+                total_cells = ledger.active_cells().len(),
+                assigned_cells = cells.len(),
+                "Cell filtering for distributed task"
+            );
+
+            if cells.is_empty() {
+                let arrow_schema = frame_schema_to_arrow(ledger.schema())?;
+                let empty_batch = RecordBatch::new_empty(Arc::new(arrow_schema));
+                let mem_table =
+                    datafusion::datasource::MemTable::try_new(
+                        empty_batch.schema(),
+                        vec![vec![empty_batch]],
+                    )
+                    .map_err(|e| ApiaryError::Internal {
+                        message: format!("Failed to create empty MemTable: {e}"),
+                    })?;
+                session
+                    .register_table(&register_name, Arc::new(mem_table))
+                    .map_err(|e| ApiaryError::Internal {
+                        message: format!("Failed to register table: {e}"),
+                    })?;
+                continue;
+            }
+
+            // Read only the assigned cells
+            let reader = CellReader::new(Arc::clone(&self.storage), frame_path);
+            let merged = reader.read_cells_merged(&cells, None).await?;
+
+            let batches = match merged {
+                Some(batch) => vec![vec![batch]],
+                None => {
+                    let arrow_schema = frame_schema_to_arrow(ledger.schema())?;
+                    vec![vec![RecordBatch::new_empty(Arc::new(arrow_schema))]]
+                }
+            };
+
+            let schema = batches[0][0].schema();
+            let mem_table =
+                datafusion::datasource::MemTable::try_new(schema, batches).map_err(|e| {
+                    ApiaryError::Internal {
+                        message: format!("Failed to create MemTable: {e}"),
+                    }
+                })?;
+
+            session
+                .register_table(&register_name, Arc::new(mem_table))
+                .map_err(|e| ApiaryError::Internal {
+                    message: format!("Failed to register table '{register_name}': {e}"),
+                })?;
+        }
+
+        // Rewrite the SQL to use the registered table names
+        let rewritten = rewrite_sql_table_refs(sql, &table_refs, &self.current_hive, &self.current_box);
+
+        // Execute via DataFusion
+        let df = session.sql(&rewritten).await.map_err(|e| ApiaryError::Internal {
+            message: format!("DataFusion query error: {e}"),
+        })?;
+
+        df.collect().await.map_err(|e| ApiaryError::Internal {
+            message: format!("DataFusion execution error: {e}"),
+        })
     }
 }
 
@@ -1114,5 +1227,34 @@ mod tests {
         assert!(check_unsupported_dml("DELETE FROM t").is_some());
         assert!(check_unsupported_dml("UPDATE t SET x = 1").is_some());
         assert!(check_unsupported_dml("SELECT * FROM t").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_show_boxes_without_qualifier() {
+        let (storage, registry, _dir) = make_test_env().await;
+        setup_frame(&storage, &registry).await;
+
+        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        ctx.sql("USE HIVE test_hive").await.unwrap();
+
+        let results = ctx.sql("SHOW BOXES").await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].num_rows() >= 1);
+        assert_eq!(results[0].schema().field(0).name(), "box");
+    }
+
+    #[tokio::test]
+    async fn test_show_frames_without_qualifier() {
+        let (storage, registry, _dir) = make_test_env().await;
+        setup_frame(&storage, &registry).await;
+
+        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        ctx.sql("USE HIVE test_hive").await.unwrap();
+        ctx.sql("USE BOX test_box").await.unwrap();
+
+        let results = ctx.sql("SHOW FRAMES").await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].num_rows() >= 1);
+        assert_eq!(results[0].schema().field(0).name(), "frame");
     }
 }

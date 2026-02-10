@@ -235,6 +235,13 @@ impl Apiary {
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create frame: {e}")))?;
 
+        // Initialize the frame's ledger so DESCRIBE works immediately
+        self.runtime
+            .block_on(async {
+                node.init_frame_ledger(&hive, &box_name, &name).await
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to init frame ledger: {e}")))?;
+
         Ok(())
     }
 
@@ -379,6 +386,7 @@ impl Apiary {
             dict.set_item("rows_written", result.rows_written)?;
             dict.set_item("bytes_written", result.bytes_written)?;
             dict.set_item("duration_ms", result.duration_ms)?;
+            dict.set_item("temperature", result.temperature)?;
             Ok(dict.into())
         })
     }
@@ -477,6 +485,7 @@ impl Apiary {
             dict.set_item("rows_written", result.rows_written)?;
             dict.set_item("bytes_written", result.bytes_written)?;
             dict.set_item("duration_ms", result.duration_ms)?;
+            dict.set_item("temperature", result.temperature)?;
             Ok(dict.into())
         })
     }
