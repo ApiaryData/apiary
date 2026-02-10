@@ -81,7 +81,7 @@ impl CellWriter {
 
     /// Validate the incoming batch against the frame schema.
     fn validate_schema(&self, batch: &RecordBatch) -> Result<()> {
-        // Check that partition columns have no nulls
+        // Check that partition columns have no nulls and no path traversal characters
         for part_col in &self.partition_by {
             if let Some(col_idx) = batch.schema().index_of(part_col).ok() {
                 let col = batch.column(col_idx);
@@ -92,6 +92,18 @@ impl CellWriter {
                             part_col
                         ),
                     });
+                }
+                // Validate partition values don't contain path traversal characters
+                for row_idx in 0..batch.num_rows() {
+                    let val = array_value_to_string(col, row_idx);
+                    if val.contains("..") || val.contains('/') || val.contains('\\') || val.contains('\0') {
+                        return Err(ApiaryError::Schema {
+                            message: format!(
+                                "Partition column '{}' contains invalid characters (path separators or '..'): '{}'",
+                                part_col, val
+                            ),
+                        });
+                    }
                 }
             }
         }
