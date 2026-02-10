@@ -116,14 +116,21 @@ impl CellCache {
     /// - **Cache miss**: Fetches the cell from storage, adds it to the cache, and returns the path.
     /// - Automatically evicts LRU entries if the cache exceeds its size limit.
     pub async fn get(&self, storage_key: &str) -> Result<PathBuf> {
-        // Check for cache hit
+        // Check for cache hit with read lock first
         {
-            let mut entries = self.entries.write().await;
-            if let Some(entry) = entries.get_mut(storage_key) {
-                // Update last accessed time
-                entry.last_accessed = Instant::now();
+            let entries = self.entries.read().await;
+            if let Some(entry) = entries.get(storage_key) {
+                let path = entry.local_path.clone();
+                drop(entries); // Release read lock before acquiring write lock
+                
+                // Update last accessed time with write lock
+                let mut entries_write = self.entries.write().await;
+                if let Some(entry) = entries_write.get_mut(storage_key) {
+                    entry.last_accessed = Instant::now();
+                }
+                
                 debug!(storage_key, "Cache hit");
-                return Ok(entry.local_path.clone());
+                return Ok(path);
             }
         }
         
@@ -176,6 +183,12 @@ impl CellCache {
     /// Evict the least recently used entries until the cache is under its size limit.
     ///
     /// This method is called automatically after adding a new entry to the cache.
+    /// 
+    /// Note: Current implementation clones and sorts all entries on each eviction.
+    /// This is acceptable for v1 since:
+    /// - Evictions are rare (only when cache exceeds limit)
+    /// - Typical cache sizes are manageable (hundreds of cells)
+    /// Future optimization: Use a linked hashmap or priority queue for O(1) LRU tracking
     async fn evict_if_needed(&self) -> Result<()> {
         let current = self.current_size.load(Ordering::SeqCst);
         if current <= self.max_size {
@@ -191,6 +204,7 @@ impl CellCache {
         let mut entries = self.entries.write().await;
         
         // Sort entries by last accessed time (oldest first)
+        // Note: This clones entries for sorting - acceptable for v1 scale
         let mut sorted: Vec<_> = entries.values().cloned().collect();
         sorted.sort_by_key(|e| e.last_accessed);
         

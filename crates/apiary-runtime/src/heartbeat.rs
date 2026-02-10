@@ -50,7 +50,8 @@ pub struct HeartbeatLoad {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatCache {
     pub size_bytes: u64,
-    /// Map of storage keys to cell sizes for query planning
+    /// Map of storage keys to cell sizes used for both heartbeat reporting
+    /// and cache-aware query planning in distributed execution
     pub cached_cells: HashMap<String, u64>,
 }
 

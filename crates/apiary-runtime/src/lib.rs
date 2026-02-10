@@ -24,6 +24,11 @@ pub fn world_view_to_node_info(world_view: &WorldView) -> Vec<apiary_query::dist
         .iter()
         .map(|node| {
             // Extract cached cells from heartbeat
+            // Note: This clones the HashMap, which is acceptable for v1 since:
+            // 1. Heartbeats are updated every 5 seconds, not on every query
+            // 2. Typical cache sizes are small (dozens to hundreds of cells)
+            // 3. Query planning is not on the critical path
+            // Future optimization: use Arc<HashMap> if this becomes a bottleneck
             let cached_cells = node.heartbeat.cache.cached_cells.clone();
             
             apiary_query::distributed::NodeInfo {
