@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod error;
+pub mod ledger_types;
 pub mod registry;
 pub mod registry_manager;
 pub mod storage;
@@ -14,7 +15,11 @@ pub mod types;
 
 pub use config::NodeConfig;
 pub use error::ApiaryError;
-pub use registry::{Registry, Hive, Box, Frame};
+pub use ledger_types::{
+    CellMetadata, CellSizingPolicy, ColumnStats, FieldDef, FrameSchema, LedgerAction,
+    LedgerCheckpoint, LedgerEntry, WriteResult,
+};
+pub use registry::{Box, Frame, Hive, Registry};
 pub use registry_manager::RegistryManager;
 pub use storage::StorageBackend;
 pub use types::*;

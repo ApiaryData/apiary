@@ -118,12 +118,12 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 | Step | Component | Status |
 |------|-----------|--------|
 | 1 | Skeleton + StorageBackend | ✅ Complete |
-| 2 | Registry + Namespace | 🚧 Not Started |
-| 3 | Ledger + Cell Storage | 🚧 Not Started |
+| 2 | Registry + Namespace | ✅ Complete |
+| 3 | Ledger + Cell Storage | ✅ Complete |
 | 4 | DataFusion Integration | 🚧 Not Started |
 | 5+ | Advanced Features | 🚧 Not Started |
 
-### Current Capabilities (Step 1 Complete)
+### Current Capabilities (Step 3 Complete)
 
 - ✅ Rust workspace with 5 crates
 - ✅ Python SDK via PyO3
@@ -132,6 +132,16 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 - ✅ StorageBackend trait with atomic operations
 - ✅ Node configuration with resource auto-detection
 - ✅ Typed identifiers (HiveId, BoxId, FrameId, etc.)
+- ✅ Registry with DDL operations (create/list hives, boxes, frames)
+- ✅ Dual terminology (bee-themed and traditional database naming)
+- ✅ Transaction ledger with optimistic concurrency
+- ✅ Parquet cell writing with LZ4 compression
+- ✅ Cell-level statistics for query pruning
+- ✅ Partitioning with partition pruning on read
+- ✅ Leafcutter cell sizing
+- ✅ Schema validation (null partition rejection)
+- ✅ Frame overwrite (atomic cell replacement)
+- ✅ Ledger checkpointing
 
 ## Project Structure
 
@@ -244,4 +254,4 @@ Apiary draws inspiration from:
 
 ---
 
-**Status**: Early development. Step 1 of 10 complete. Watch this space! 🐝
+**Status**: Early development. Step 3 of 10 complete. Watch this space! 🐝

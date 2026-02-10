@@ -6,7 +6,13 @@
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
+use std::collections::HashMap;
 use std::sync::Mutex;
+
+use arrow::ipc::reader::StreamReader;
+use arrow::ipc::writer::StreamWriter;
+use arrow::record_batch::RecordBatch;
 
 use apiary_core::config::NodeConfig;
 use apiary_runtime::ApiaryNode;
@@ -325,6 +331,244 @@ impl Apiary {
             Ok(dict.into())
         })
     }
+
+    /// Write data to a frame.
+    ///
+    /// Data is passed as Arrow IPC stream bytes (serialized PyArrow table).
+    /// In Python, use: `frame.write(table)` which handles serialization.
+    ///
+    /// Args:
+    ///     hive: The hive name.
+    ///     box_name: The box name.
+    ///     frame_name: The frame name.
+    ///     ipc_data: Arrow IPC stream bytes from PyArrow.
+    ///
+    /// Returns:
+    ///     dict: WriteResult with version, cells_written, rows_written, bytes_written, duration_ms.
+    fn write_to_frame(
+        &self,
+        hive: String,
+        box_name: String,
+        frame_name: String,
+        ipc_data: &Bound<'_, PyBytes>,
+    ) -> PyResult<PyObject> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Node not started. Call start() first.")
+        })?;
+
+        // Deserialize Arrow IPC bytes to RecordBatch
+        let data = ipc_data.as_bytes();
+        let batch = ipc_bytes_to_batch(data)?;
+
+        let result = self
+            .runtime
+            .block_on(async {
+                node.write_to_frame(&hive, &box_name, &frame_name, &batch)
+                    .await
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to write: {e}")))?;
+
+        Python::with_gil(|py| {
+            let dict = pyo3::types::PyDict::new_bound(py);
+            dict.set_item("version", result.version)?;
+            dict.set_item("cells_written", result.cells_written)?;
+            dict.set_item("rows_written", result.rows_written)?;
+            dict.set_item("bytes_written", result.bytes_written)?;
+            dict.set_item("duration_ms", result.duration_ms)?;
+            Ok(dict.into())
+        })
+    }
+
+    /// Read data from a frame.
+    ///
+    /// Returns Arrow IPC stream bytes that can be deserialized by PyArrow.
+    ///
+    /// Args:
+    ///     hive: The hive name.
+    ///     box_name: The box name.
+    ///     frame_name: The frame name.
+    ///     partition_filter: Optional dict of partition column → value for pruning.
+    ///
+    /// Returns:
+    ///     bytes: Arrow IPC stream bytes, or None if no data.
+    #[pyo3(signature = (hive, box_name, frame_name, partition_filter=None))]
+    fn read_from_frame(
+        &self,
+        hive: String,
+        box_name: String,
+        frame_name: String,
+        partition_filter: Option<HashMap<String, String>>,
+    ) -> PyResult<PyObject> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Node not started. Call start() first.")
+        })?;
+
+        let result = self
+            .runtime
+            .block_on(async {
+                node.read_from_frame(
+                    &hive,
+                    &box_name,
+                    &frame_name,
+                    partition_filter.as_ref(),
+                )
+                .await
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to read: {e}")))?;
+
+        Python::with_gil(|py| match result {
+            Some(batch) => {
+                let ipc_data = batch_to_ipc_bytes(&batch)?;
+                let py_bytes = PyBytes::new_bound(py, &ipc_data);
+                Ok(py_bytes.into())
+            }
+            None => Ok(py.None()),
+        })
+    }
+
+    /// Overwrite all data in a frame.
+    ///
+    /// Args:
+    ///     hive: The hive name.
+    ///     box_name: The box name.
+    ///     frame_name: The frame name.
+    ///     ipc_data: Arrow IPC stream bytes from PyArrow.
+    ///
+    /// Returns:
+    ///     dict: WriteResult with version, cells_written, etc.
+    fn overwrite_frame(
+        &self,
+        hive: String,
+        box_name: String,
+        frame_name: String,
+        ipc_data: &Bound<'_, PyBytes>,
+    ) -> PyResult<PyObject> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Node not started. Call start() first.")
+        })?;
+
+        let data = ipc_data.as_bytes();
+        let batch = ipc_bytes_to_batch(data)?;
+
+        let result = self
+            .runtime
+            .block_on(async {
+                node.overwrite_frame(&hive, &box_name, &frame_name, &batch)
+                    .await
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to overwrite: {e}")))?;
+
+        Python::with_gil(|py| {
+            let dict = pyo3::types::PyDict::new_bound(py);
+            dict.set_item("version", result.version)?;
+            dict.set_item("cells_written", result.cells_written)?;
+            dict.set_item("rows_written", result.rows_written)?;
+            dict.set_item("bytes_written", result.bytes_written)?;
+            dict.set_item("duration_ms", result.duration_ms)?;
+            Ok(dict.into())
+        })
+    }
+
+    // --- Dual terminology aliases (database/schema/table) ---
+
+    /// Alias for create_hive (traditional database terminology).
+    fn create_database(&self, name: String) -> PyResult<()> {
+        self.create_hive(name)
+    }
+
+    /// Alias for create_box (traditional database terminology).
+    fn create_schema(&self, database: String, name: String) -> PyResult<()> {
+        self.create_box(database, name)
+    }
+
+    /// Alias for create_frame (traditional database terminology).
+    #[pyo3(signature = (database, schema, name, columns, partition_by=None))]
+    fn create_table(
+        &self,
+        database: String,
+        schema: String,
+        name: String,
+        columns: Bound<'_, PyAny>,
+        partition_by: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        self.create_frame(database, schema, name, columns, partition_by)
+    }
+
+    /// Alias for list_hives.
+    fn list_databases(&self) -> PyResult<Vec<String>> {
+        self.list_hives()
+    }
+
+    /// Alias for list_boxes.
+    fn list_schemas(&self, database: String) -> PyResult<Vec<String>> {
+        self.list_boxes(database)
+    }
+
+    /// Alias for list_frames.
+    fn list_tables(&self, database: String, schema: String) -> PyResult<Vec<String>> {
+        self.list_frames(database, schema)
+    }
+
+    /// Alias for get_frame.
+    fn get_table(&self, database: String, schema: String, name: String) -> PyResult<PyObject> {
+        self.get_frame(database, schema, name)
+    }
+}
+
+/// Deserialize Arrow IPC stream bytes into a single RecordBatch.
+/// If the stream contains multiple batches, they are merged into one.
+fn ipc_bytes_to_batch(data: &[u8]) -> PyResult<RecordBatch> {
+    let cursor = std::io::Cursor::new(data);
+    let reader = StreamReader::try_new(cursor, None)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to read Arrow IPC: {e}")))?;
+
+    let mut batches = Vec::new();
+    for batch_result in reader {
+        let batch = batch_result
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to read batch: {e}")))?;
+        batches.push(batch);
+    }
+
+    if batches.is_empty() {
+        return Err(PyRuntimeError::new_err("No data in IPC stream"));
+    }
+
+    if batches.len() == 1 {
+        return Ok(batches.into_iter().next().unwrap());
+    }
+
+    // Merge multiple batches
+    let schema = batches[0].schema();
+    arrow::compute::concat_batches(&schema, &batches)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to merge batches: {e}")))
+}
+
+/// Serialize a RecordBatch to Arrow IPC stream bytes for transfer to Python.
+fn batch_to_ipc_bytes(batch: &RecordBatch) -> PyResult<Vec<u8>> {
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut buf, &batch.schema())
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create IPC writer: {e}")))?;
+        writer
+            .write(batch)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to write IPC: {e}")))?;
+        writer
+            .finish()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to finish IPC: {e}")))?;
+    }
+    Ok(buf)
 }
 
 /// The `apiary` Python module.
