@@ -401,7 +401,7 @@ impl ApiaryQueryContext {
         // 1. Create tasks from assignments
         let mut tasks = Vec::new();
         for (node_id, cells) in &assignments {
-            let task_id = format!("{}-{}", node_id.as_str(), uuid::Uuid::new_v4());
+            let task_id = format!("{}_{}", node_id.as_str(), uuid::Uuid::new_v4());
             let cell_keys: Vec<String> = cells.iter()
                 .map(|c| c.storage_key.clone())
                 .collect();
@@ -505,8 +505,9 @@ impl ApiaryQueryContext {
     /// Execute a task on a specific set of cells.
     /// 
     /// For v1, this executes the SQL normally without filtering to specific cells.
-    /// TODO: In a future version, register only the specified cells as tables.
-    pub async fn execute_task(&self, sql: &str, _cell_keys: &[String]) -> Result<Vec<RecordBatch>> {
+    /// In a future version, this should register only the specified cells as tables.
+    #[allow(unused_variables)]
+    pub async fn execute_task(&self, sql: &str, cell_keys: &[String]) -> Result<Vec<RecordBatch>> {
         // For v1, we execute the SQL and filter cells
         // This is a simplified implementation - in reality, we'd need to
         // register only the specified cells as tables
