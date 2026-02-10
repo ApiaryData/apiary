@@ -39,7 +39,7 @@ impl ApiaryQueryContext {
     pub fn new(storage: Arc<dyn StorageBackend>, registry: Arc<RegistryManager>) -> Self {
         Self::with_node_id(storage, registry, NodeId::from("local"))
     }
-    
+
     /// Create a new query context with a specific node ID.
     pub fn with_node_id(
         storage: Arc<dyn StorageBackend>,
@@ -74,10 +74,7 @@ impl ApiaryQueryContext {
     }
 
     /// Handle custom SQL commands (USE, SHOW, DESCRIBE).
-    async fn handle_custom_command(
-        &mut self,
-        sql: &str,
-    ) -> Result<Option<Vec<RecordBatch>>> {
+    async fn handle_custom_command(&mut self, sql: &str) -> Result<Option<Vec<RecordBatch>>> {
         let upper = sql.to_uppercase();
         let upper = upper.trim_end_matches(';').trim();
 
@@ -100,9 +97,12 @@ impl ApiaryQueryContext {
         // USE BOX <name>
         if let Some(name) = upper.strip_prefix("USE BOX ") {
             let name = name.trim().to_lowercase();
-            let hive = self.current_hive.as_ref().ok_or_else(|| ApiaryError::Config {
-                message: "No hive selected. Run USE HIVE <name> first.".into(),
-            })?;
+            let hive = self
+                .current_hive
+                .as_ref()
+                .ok_or_else(|| ApiaryError::Config {
+                    message: "No hive selected. Run USE HIVE <name> first.".into(),
+                })?;
             // Verify box exists
             let boxes = self.registry.list_boxes(hive).await?;
             if !boxes.iter().any(|b| b.to_lowercase() == name) {
@@ -133,9 +133,14 @@ impl ApiaryQueryContext {
 
         // SHOW BOXES (using current hive context)
         if upper == "SHOW BOXES" {
-            let hive = self.current_hive.as_ref().ok_or_else(|| ApiaryError::Config {
-                message: "No hive selected. Run USE HIVE <name> first, or use SHOW BOXES IN <hive>.".into(),
-            })?;
+            let hive = self
+                .current_hive
+                .as_ref()
+                .ok_or_else(|| ApiaryError::Config {
+                    message:
+                        "No hive selected. Run USE HIVE <name> first, or use SHOW BOXES IN <hive>."
+                            .into(),
+                })?;
             let boxes = self.registry.list_boxes(hive).await?;
             let batch = string_list_batch("box", &boxes);
             return Ok(Some(vec![batch]));
@@ -182,7 +187,9 @@ impl ApiaryQueryContext {
             let hive = parts[0].trim();
             let box_name = parts[1].trim();
             let frame_name = parts[2].trim();
-            return Ok(Some(vec![self.describe_frame(hive, box_name, frame_name).await?]));
+            return Ok(Some(vec![
+                self.describe_frame(hive, box_name, frame_name).await?,
+            ]));
         }
 
         Ok(None)
@@ -210,8 +217,7 @@ impl ApiaryQueryContext {
                 Err(_) => (0, 0, 0),
             };
 
-        let schema_json = serde_json::to_string(&frame.schema)
-            .unwrap_or_else(|_| "{}".into());
+        let schema_json = serde_json::to_string(&frame.schema).unwrap_or_else(|_| "{}".into());
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("property", DataType::Utf8, false),
@@ -224,7 +230,13 @@ impl ApiaryQueryContext {
             frame.partition_by.join(", ")
         };
 
-        let properties = vec!["schema", "partition_by", "cells", "total_rows", "total_bytes"];
+        let properties = vec![
+            "schema",
+            "partition_by",
+            "cells",
+            "total_rows",
+            "total_bytes",
+        ];
         let values = vec![
             schema_json,
             partition_str,
@@ -237,7 +249,10 @@ impl ApiaryQueryContext {
             schema,
             vec![
                 Arc::new(StringArray::from(
-                    properties.into_iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    properties
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>(),
                 )),
                 Arc::new(StringArray::from(values)),
             ],
@@ -266,8 +281,7 @@ impl ApiaryQueryContext {
 
         // Resolve and register each table
         for table_ref in &table_refs {
-            let (hive, box_name, frame_name, register_name) =
-                self.resolve_table_ref(table_ref)?;
+            let (hive, box_name, frame_name, register_name) = self.resolve_table_ref(table_ref)?;
 
             // Open ledger and prune cells
             let frame_path = format!("{hive}/{box_name}/{frame_name}");
@@ -275,8 +289,7 @@ impl ApiaryQueryContext {
 
             // Build partition and stat filters from predicates
             let partition_by: Vec<String> = ledger.partition_by().to_vec();
-            let (partition_filters, stat_filters) =
-                build_filters(&predicates, &partition_by);
+            let (partition_filters, stat_filters) = build_filters(&predicates, &partition_by);
 
             let cells = if partition_filters.is_empty() && stat_filters.is_empty() {
                 ledger.active_cells().iter().collect::<Vec<_>>()
@@ -294,16 +307,14 @@ impl ApiaryQueryContext {
             if cells.is_empty() {
                 // Register an empty table with the correct schema
                 let arrow_schema = frame_schema_to_arrow(ledger.schema())?;
-                let empty_batch =
-                    RecordBatch::new_empty(Arc::new(arrow_schema));
-                let mem_table =
-                    datafusion::datasource::MemTable::try_new(
-                        empty_batch.schema(),
-                        vec![vec![empty_batch]],
-                    )
-                    .map_err(|e| ApiaryError::Internal {
-                        message: format!("Failed to create empty MemTable: {e}"),
-                    })?;
+                let empty_batch = RecordBatch::new_empty(Arc::new(arrow_schema));
+                let mem_table = datafusion::datasource::MemTable::try_new(
+                    empty_batch.schema(),
+                    vec![vec![empty_batch]],
+                )
+                .map_err(|e| ApiaryError::Internal {
+                    message: format!("Failed to create empty MemTable: {e}"),
+                })?;
                 session
                     .register_table(&register_name, Arc::new(mem_table))
                     .map_err(|e| ApiaryError::Internal {
@@ -340,12 +351,16 @@ impl ApiaryQueryContext {
         }
 
         // Rewrite the SQL to use the registered table names
-        let rewritten = rewrite_sql_table_refs(sql, &table_refs, &self.current_hive, &self.current_box);
+        let rewritten =
+            rewrite_sql_table_refs(sql, &table_refs, &self.current_hive, &self.current_box);
 
         // Execute via DataFusion
-        let df = session.sql(&rewritten).await.map_err(|e| ApiaryError::Internal {
-            message: format!("DataFusion query error: {e}"),
-        })?;
+        let df = session
+            .sql(&rewritten)
+            .await
+            .map_err(|e| ApiaryError::Internal {
+                message: format!("DataFusion query error: {e}"),
+            })?;
 
         df.collect().await.map_err(|e| ApiaryError::Internal {
             message: format!("DataFusion execution error: {e}"),
@@ -353,10 +368,7 @@ impl ApiaryQueryContext {
     }
 
     /// Resolve a table reference to (hive, box, frame, register_name).
-    fn resolve_table_ref(
-        &self,
-        table_ref: &str,
-    ) -> Result<(String, String, String, String)> {
+    fn resolve_table_ref(&self, table_ref: &str) -> Result<(String, String, String, String)> {
         let parts: Vec<&str> = table_ref.split('.').collect();
 
         match parts.len() {
@@ -381,18 +393,20 @@ impl ApiaryQueryContext {
                 Ok((hive.clone(), box_name, frame_name, register_name))
             }
             1 => {
-                let hive = self.current_hive.as_ref().ok_or_else(|| {
-                    ApiaryError::Resolution {
+                let hive = self
+                    .current_hive
+                    .as_ref()
+                    .ok_or_else(|| ApiaryError::Resolution {
                         path: table_ref.into(),
                         reason: "No hive selected. Use 3-part name or run USE HIVE first.".into(),
-                    }
-                })?;
-                let box_name = self.current_box.as_ref().ok_or_else(|| {
-                    ApiaryError::Resolution {
-                        path: table_ref.into(),
-                        reason: "No box selected. Use 3-part name or run USE BOX first.".into(),
-                    }
-                })?;
+                    })?;
+                let box_name =
+                    self.current_box
+                        .as_ref()
+                        .ok_or_else(|| ApiaryError::Resolution {
+                            path: table_ref.into(),
+                            reason: "No box selected. Use 3-part name or run USE BOX first.".into(),
+                        })?;
                 let frame_name = parts[0].to_string();
                 let register_name = frame_name.clone();
                 Ok((hive.clone(), box_name.clone(), frame_name, register_name))
@@ -403,9 +417,9 @@ impl ApiaryQueryContext {
             }),
         }
     }
-    
+
     /// Execute a query using distributed execution (stub for Step 7).
-    /// 
+    ///
     /// For v1, this is a simplified implementation that:
     /// - Creates tasks from cell assignments
     /// - Generates SQL fragments (simple pass-through)
@@ -420,15 +434,13 @@ impl ApiaryQueryContext {
         assignments: HashMap<NodeId, Vec<distributed::CellInfo>>,
     ) -> Result<Vec<RecordBatch>> {
         use distributed::*;
-        
+
         // 1. Create tasks from assignments
         let mut tasks = Vec::new();
         for (node_id, cells) in &assignments {
             let task_id = format!("{}_{}", node_id.as_str(), uuid::Uuid::new_v4());
-            let cell_keys: Vec<String> = cells.iter()
-                .map(|c| c.storage_key.clone())
-                .collect();
-            
+            let cell_keys: Vec<String> = cells.iter().map(|c| c.storage_key.clone()).collect();
+
             tasks.push(PlannedTask {
                 task_id,
                 node_id: node_id.clone(),
@@ -436,22 +448,20 @@ impl ApiaryQueryContext {
                 sql_fragment: sql.to_string(), // For v1, use original SQL
             });
         }
-        
+
         // 2. Create and write manifest
         let manifest = create_manifest(sql, tasks.clone(), None, 60);
         write_manifest(&self.storage, &manifest).await?;
-        
+
         info!(
             query_id = %manifest.query_id,
             tasks = tasks.len(),
             "Distributed query manifest written"
         );
-        
+
         // 3. Execute local tasks
-        let local_tasks: Vec<_> = tasks.iter()
-            .filter(|t| t.node_id == self.node_id)
-            .collect();
-        
+        let local_tasks: Vec<_> = tasks.iter().filter(|t| t.node_id == self.node_id).collect();
+
         let mut local_results = Vec::new();
         for task in local_tasks {
             match self.execute_task(&task.sql_fragment, &task.cells).await {
@@ -465,7 +475,7 @@ impl ApiaryQueryContext {
                 }
             }
         }
-        
+
         // Write local partial result
         if !local_results.is_empty() {
             write_partial_result(
@@ -473,31 +483,33 @@ impl ApiaryQueryContext {
                 &manifest.query_id,
                 &self.node_id,
                 &local_results,
-            ).await?;
+            )
+            .await?;
         }
-        
+
         // 4. Poll for partial results from other nodes
-        let remote_nodes: Vec<_> = tasks.iter()
+        let remote_nodes: Vec<_> = tasks
+            .iter()
             .filter(|t| t.node_id != self.node_id)
             .map(|t| t.node_id.clone())
             .collect();
-        
+
         let timeout = std::time::Duration::from_secs(manifest.timeout_secs);
         let start = std::time::Instant::now();
         let mut collected_results = local_results;
-        
+
         for remote_node in &remote_nodes {
             let deadline = timeout.saturating_sub(start.elapsed());
             if start.elapsed() >= timeout {
                 warn!(query_id = %manifest.query_id, "Query timeout reached");
                 break;
             }
-            
+
             // Poll for partial result
             let poll_interval = std::time::Duration::from_millis(500);
             let mut attempts = 0;
             let max_attempts = (deadline.as_millis() / poll_interval.as_millis()) as usize;
-            
+
             while attempts < max_attempts {
                 match read_partial_result(&self.storage, &manifest.query_id, remote_node).await {
                     Ok(batches) => {
@@ -516,17 +528,17 @@ impl ApiaryQueryContext {
                 }
             }
         }
-        
+
         // 5. Cleanup
         if let Err(e) = cleanup_query(&self.storage, &manifest.query_id).await {
             warn!(query_id = %manifest.query_id, error = %e, "Failed to cleanup query");
         }
-        
+
         Ok(collected_results)
     }
-    
+
     /// Execute a task on a specific set of cells.
-    /// 
+    ///
     /// # Arguments
     /// * `sql` - The SQL query to execute
     /// * `cell_keys` - Storage keys of cells to scan. Only these cells are registered
@@ -554,14 +566,15 @@ impl ApiaryQueryContext {
 
         // Resolve and register each table, filtering to only the assigned cells
         for table_ref in &table_refs {
-            let (hive, box_name, frame_name, register_name) =
-                self.resolve_table_ref(table_ref)?;
+            let (hive, box_name, frame_name, register_name) = self.resolve_table_ref(table_ref)?;
 
             let frame_path = format!("{hive}/{box_name}/{frame_name}");
             let ledger = Ledger::open(Arc::clone(&self.storage), &frame_path).await?;
 
             // Filter active cells to only those in our assigned cell_keys
-            let cells: Vec<_> = ledger.active_cells().iter()
+            let cells: Vec<_> = ledger
+                .active_cells()
+                .iter()
                 .filter(|cell| {
                     let cell_storage_key = format!("{}/{}", frame_path, cell.path);
                     cell_key_set.contains(&cell_storage_key)
@@ -578,14 +591,13 @@ impl ApiaryQueryContext {
             if cells.is_empty() {
                 let arrow_schema = frame_schema_to_arrow(ledger.schema())?;
                 let empty_batch = RecordBatch::new_empty(Arc::new(arrow_schema));
-                let mem_table =
-                    datafusion::datasource::MemTable::try_new(
-                        empty_batch.schema(),
-                        vec![vec![empty_batch]],
-                    )
-                    .map_err(|e| ApiaryError::Internal {
-                        message: format!("Failed to create empty MemTable: {e}"),
-                    })?;
+                let mem_table = datafusion::datasource::MemTable::try_new(
+                    empty_batch.schema(),
+                    vec![vec![empty_batch]],
+                )
+                .map_err(|e| ApiaryError::Internal {
+                    message: format!("Failed to create empty MemTable: {e}"),
+                })?;
                 session
                     .register_table(&register_name, Arc::new(mem_table))
                     .map_err(|e| ApiaryError::Internal {
@@ -622,12 +634,16 @@ impl ApiaryQueryContext {
         }
 
         // Rewrite the SQL to use the registered table names
-        let rewritten = rewrite_sql_table_refs(sql, &table_refs, &self.current_hive, &self.current_box);
+        let rewritten =
+            rewrite_sql_table_refs(sql, &table_refs, &self.current_hive, &self.current_box);
 
         // Execute via DataFusion
-        let df = session.sql(&rewritten).await.map_err(|e| ApiaryError::Internal {
-            message: format!("DataFusion query error: {e}"),
-        })?;
+        let df = session
+            .sql(&rewritten)
+            .await
+            .map_err(|e| ApiaryError::Internal {
+                message: format!("DataFusion query error: {e}"),
+            })?;
 
         df.collect().await.map_err(|e| ApiaryError::Internal {
             message: format!("DataFusion execution error: {e}"),
@@ -794,10 +810,7 @@ fn parse_predicate(condition: &str) -> Option<Predicate> {
             let val = condition[pos + op_str.len()..].trim();
 
             // Clean the value: strip quotes
-            let val = val
-                .trim_matches('\'')
-                .trim_matches('"')
-                .to_string();
+            let val = val.trim_matches('\'').trim_matches('"').to_string();
 
             if !col.is_empty() && !val.is_empty() {
                 return Some(Predicate {
@@ -819,10 +832,7 @@ type StatFilters = HashMap<String, (Option<serde_json::Value>, Option<serde_json
 fn build_filters(
     predicates: &[Predicate],
     partition_columns: &[String],
-) -> (
-    HashMap<String, String>,
-    StatFilters,
-) {
+) -> (HashMap<String, String>, StatFilters) {
     let mut partition_filters = HashMap::new();
     let mut stat_filters: StatFilters = HashMap::new();
 
@@ -952,8 +962,11 @@ mod tests {
     use apiary_storage::local::LocalBackend;
     use arrow::array::{Float64Array, Int64Array};
 
-    async fn make_test_env() -> (Arc<dyn StorageBackend>, Arc<RegistryManager>, tempfile::TempDir)
-    {
+    async fn make_test_env() -> (
+        Arc<dyn StorageBackend>,
+        Arc<RegistryManager>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let backend = LocalBackend::new(dir.path().to_path_buf()).await.unwrap();
         let storage: Arc<dyn StorageBackend> = Arc::new(backend);
@@ -970,15 +983,9 @@ mod tests {
         })
     }
 
-    async fn setup_frame(
-        storage: &Arc<dyn StorageBackend>,
-        registry: &Arc<RegistryManager>,
-    ) {
+    async fn setup_frame(storage: &Arc<dyn StorageBackend>, registry: &Arc<RegistryManager>) {
         registry.create_hive("test_hive").await.unwrap();
-        registry
-            .create_box("test_hive", "test_box")
-            .await
-            .unwrap();
+        registry.create_box("test_hive", "test_box").await.unwrap();
         registry
             .create_frame(
                 "test_hive",
@@ -1024,11 +1031,7 @@ mod tests {
         .await
         .unwrap();
 
-        let sizing = CellSizingPolicy::new(
-            256 * 1024 * 1024,
-            512 * 1024 * 1024,
-            16 * 1024 * 1024,
-        );
+        let sizing = CellSizingPolicy::new(256 * 1024 * 1024, 512 * 1024 * 1024, 16 * 1024 * 1024);
 
         let writer = CellWriter::new(
             Arc::clone(storage),
@@ -1048,9 +1051,7 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(StringArray::from(vec![
-                    "north", "north", "south", "south",
-                ])),
+                Arc::new(StringArray::from(vec!["north", "north", "south", "south"])),
                 Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 40.0])),
                 Arc::new(Int64Array::from(vec![50, 60, 70, 80])),
             ],
@@ -1059,10 +1060,7 @@ mod tests {
 
         let cells = writer.write(&batch).await.unwrap();
         ledger
-            .commit(
-                apiary_core::LedgerAction::AddCells { cells },
-                &node_id,
-            )
+            .commit(apiary_core::LedgerAction::AddCells { cells }, &node_id)
             .await
             .unwrap();
     }
@@ -1217,7 +1215,8 @@ mod tests {
 
     #[test]
     fn test_extract_predicates() {
-        let preds = extract_where_predicates("SELECT * FROM t WHERE region = 'north' AND temp > 25");
+        let preds =
+            extract_where_predicates("SELECT * FROM t WHERE region = 'north' AND temp > 25");
         assert_eq!(preds.len(), 2);
         assert_eq!(preds[0].column, "region");
         assert_eq!(preds[0].value, "north");

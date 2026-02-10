@@ -175,8 +175,8 @@ async fn test_solo_overwrite_frame() {
         .unwrap();
 
     // Overwrite with new data
-    let batch2 = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![10, 20]))])
-        .unwrap();
+    let batch2 =
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![10, 20]))]).unwrap();
     let result = node
         .overwrite_frame("test", "data", "values", &batch2)
         .await

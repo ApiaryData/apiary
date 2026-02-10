@@ -2,6 +2,7 @@
 
 > A distributed data processing framework inspired by bee colony intelligence, designed for small compute that scales to the cloud.
 
+[![CI](https://github.com/ApiaryData/apiary/actions/workflows/ci.yml/badge.svg)](https://github.com/ApiaryData/apiary/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)

@@ -40,7 +40,7 @@ pub struct NodeConfig {
 
     /// Minimum cell size in bytes (floor to amortise S3 overhead).
     pub min_cell_size: u64,
-    
+
     /// Maximum cache size in bytes for local cell storage.
     pub max_cache_size: u64,
 

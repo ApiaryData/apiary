@@ -52,7 +52,10 @@ async fn test_temperature_rises_when_bees_busy() {
         busy_temp > idle_temp,
         "Temperature should rise under load: idle={idle_temp}, busy={busy_temp}"
     );
-    assert!(busy_temp >= 0.3, "Busy temp should be >= 0.3, got {busy_temp}");
+    assert!(
+        busy_temp >= 0.3,
+        "Busy temp should be >= 0.3, got {busy_temp}"
+    );
 }
 
 #[tokio::test]

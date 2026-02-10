@@ -126,12 +126,12 @@ impl HeartbeatWriter {
 
         // Use the colony thermometer to measure system health
         let colony_temperature = self.thermometer.measure(&self.bee_pool).await;
-        
+
         // Get queue depth from bee pool
         let queue_depth = self.bee_pool.queue_size().await;
 
         let version = self.version.fetch_add(1, Ordering::Relaxed) + 1;
-        
+
         // Get cached cells from cell cache
         let cached_cells = self.cell_cache.list_cached_cells().await;
         let cache_size = self.cell_cache.size();
@@ -310,37 +310,35 @@ impl WorldViewBuilder {
             }
 
             match self.storage.get(key).await {
-                Ok(data) => {
-                    match serde_json::from_slice::<Heartbeat>(&data) {
-                        Ok(hb) => {
-                            let age = now
-                                .signed_duration_since(hb.timestamp)
-                                .to_std()
-                                .unwrap_or(Duration::from_secs(86400 * 365));
+                Ok(data) => match serde_json::from_slice::<Heartbeat>(&data) {
+                    Ok(hb) => {
+                        let age = now
+                            .signed_duration_since(hb.timestamp)
+                            .to_std()
+                            .unwrap_or(Duration::from_secs(86400 * 365));
 
-                            let state = if age > self.dead_threshold {
-                                NodeState::Dead
-                            } else if age > self.dead_threshold / 2 {
-                                NodeState::Suspect
-                            } else {
-                                NodeState::Alive
-                            };
+                        let state = if age > self.dead_threshold {
+                            NodeState::Dead
+                        } else if age > self.dead_threshold / 2 {
+                            NodeState::Suspect
+                        } else {
+                            NodeState::Alive
+                        };
 
-                            let node_id = NodeId::new(&hb.node_id);
-                            nodes.insert(
-                                node_id.clone(),
-                                NodeStatus {
-                                    node_id,
-                                    heartbeat: hb,
-                                    state,
-                                },
-                            );
-                        }
-                        Err(e) => {
-                            warn!(key = %key, error = %e, "Failed to parse heartbeat");
-                        }
+                        let node_id = NodeId::new(&hb.node_id);
+                        nodes.insert(
+                            node_id.clone(),
+                            NodeStatus {
+                                node_id,
+                                heartbeat: hb,
+                                state,
+                            },
+                        );
                     }
-                }
+                    Err(e) => {
+                        warn!(key = %key, error = %e, "Failed to parse heartbeat");
+                    }
+                },
                 Err(e) => {
                     warn!(key = %key, error = %e, "Failed to read heartbeat file");
                 }
@@ -400,8 +398,7 @@ impl WorldViewBuilder {
                     .to_std()
                     .unwrap_or(Duration::from_secs(0));
                 if age > cleanup_age {
-                    let key =
-                        format!("_heartbeats/node_{}.json", status.heartbeat.node_id);
+                    let key = format!("_heartbeats/node_{}.json", status.heartbeat.node_id);
                     if let Err(e) = self.storage.delete(&key).await {
                         warn!(key = %key, error = %e, "Failed to clean up stale heartbeat");
                     } else {
@@ -445,12 +442,21 @@ mod tests {
         Arc::new(LocalBackend::new(tmp.path()).await.unwrap())
     }
 
-    fn make_config(node_id: &str, cores: usize, memory: u64, pool_tmp: &tempfile::TempDir) -> NodeConfig {
+    fn make_config(
+        node_id: &str,
+        cores: usize,
+        memory: u64,
+        pool_tmp: &tempfile::TempDir,
+    ) -> NodeConfig {
         let mut config = NodeConfig::detect("local://test");
         config.node_id = NodeId::new(node_id);
         config.cores = cores;
         config.memory_bytes = memory;
-        config.memory_per_bee = if cores > 0 { memory / cores as u64 } else { memory };
+        config.memory_per_bee = if cores > 0 {
+            memory / cores as u64
+        } else {
+            memory
+        };
         config.target_cell_size = config.memory_per_bee / 4;
         config.cache_dir = pool_tmp.path().to_path_buf();
         config
@@ -459,10 +465,14 @@ mod tests {
     fn make_pool(config: &NodeConfig) -> Arc<BeePool> {
         Arc::new(BeePool::new(config))
     }
-    
+
     async fn make_cache(config: &NodeConfig, storage: Arc<dyn StorageBackend>) -> Arc<CellCache> {
         let cache_dir = config.cache_dir.join("cells");
-        Arc::new(CellCache::new(cache_dir, config.max_cache_size, storage).await.unwrap())
+        Arc::new(
+            CellCache::new(cache_dir, config.max_cache_size, storage)
+                .await
+                .unwrap(),
+        )
     }
 
     #[tokio::test]
@@ -480,7 +490,10 @@ mod tests {
         writer.write_once().await.unwrap();
 
         // Read it back
-        let data = storage.get("_heartbeats/node_test-node.json").await.unwrap();
+        let data = storage
+            .get("_heartbeats/node_test-node.json")
+            .await
+            .unwrap();
         let hb: Heartbeat = serde_json::from_slice(&data).unwrap();
 
         assert_eq!(hb.node_id, "test-node");
@@ -523,10 +536,16 @@ mod tests {
         let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
 
         writer.write_once().await.unwrap();
-        assert!(storage.exists("_heartbeats/node_del-node.json").await.unwrap());
+        assert!(storage
+            .exists("_heartbeats/node_del-node.json")
+            .await
+            .unwrap());
 
         writer.delete_heartbeat().await.unwrap();
-        assert!(!storage.exists("_heartbeats/node_del-node.json").await.unwrap());
+        assert!(!storage
+            .exists("_heartbeats/node_del-node.json")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -538,7 +557,12 @@ mod tests {
         let pool = make_pool(&config_a);
         let cache1 = make_cache(&config_a, Arc::clone(&storage)).await;
 
-        let writer1 = HeartbeatWriter::new(Arc::clone(&storage), &config_a, Arc::clone(&pool), Arc::clone(&cache1));
+        let writer1 = HeartbeatWriter::new(
+            Arc::clone(&storage),
+            &config_a,
+            Arc::clone(&pool),
+            Arc::clone(&cache1),
+        );
 
         let config_b = make_config("node-b", 4, 2048, &pool_tmp);
         let cache2 = make_cache(&config_b, Arc::clone(&storage)).await;
@@ -761,7 +785,12 @@ mod tests {
         let pool = make_pool(&config_n1);
         let cache1 = make_cache(&config_n1, Arc::clone(&storage)).await;
 
-        let writer1 = HeartbeatWriter::new(Arc::clone(&storage), &config_n1, Arc::clone(&pool), Arc::clone(&cache1));
+        let writer1 = HeartbeatWriter::new(
+            Arc::clone(&storage),
+            &config_n1,
+            Arc::clone(&pool),
+            Arc::clone(&cache1),
+        );
 
         let config_n2 = make_config("n2", 4, 2048, &pool_tmp);
         let cache2 = make_cache(&config_n2, Arc::clone(&storage)).await;
@@ -835,7 +864,10 @@ mod tests {
         assert_eq!(cleaned, 1);
 
         // File should be gone
-        assert!(!storage.exists("_heartbeats/node_ancient-node.json").await.unwrap());
+        assert!(!storage
+            .exists("_heartbeats/node_ancient-node.json")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -870,7 +902,10 @@ mod tests {
         handle.await.unwrap();
 
         // Should have written at least the initial heartbeat
-        let data = storage.get("_heartbeats/node_cancel-node.json").await.unwrap();
+        let data = storage
+            .get("_heartbeats/node_cancel-node.json")
+            .await
+            .unwrap();
         let hb: Heartbeat = serde_json::from_slice(&data).unwrap();
         assert!(hb.version >= 1);
     }

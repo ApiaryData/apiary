@@ -20,7 +20,9 @@ async fn start_chaos_node(storage_path: &std::path::Path, idx: usize) -> ApiaryN
     config.cache_dir = storage_path.join(format!("cache_chaos_{idx}"));
     config.heartbeat_interval = std::time::Duration::from_millis(500);
     config.dead_threshold = std::time::Duration::from_secs(5);
-    ApiaryNode::start(config).await.expect("Chaos node should start")
+    ApiaryNode::start(config)
+        .await
+        .expect("Chaos node should start")
 }
 
 #[tokio::test]
@@ -52,7 +54,9 @@ async fn test_chaos_data_survives_node_shutdown() {
     let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema,
-        vec![Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))],
+        vec![Arc::new(Int64Array::from(vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+        ]))],
     )
     .unwrap();
 
@@ -131,8 +135,11 @@ async fn test_chaos_new_node_sees_historical_data() {
         .unwrap();
 
     let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
-    let batch =
-        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![100, 200, 300]))]).unwrap();
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(Int64Array::from(vec![100, 200, 300]))],
+    )
+    .unwrap();
 
     node0
         .write_to_frame("history", "data", "log", &batch)

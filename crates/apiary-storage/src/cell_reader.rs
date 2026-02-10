@@ -37,12 +37,13 @@ impl CellReader {
         let storage_key = format!("{}/{}", self.frame_path, cell.path);
         let data = self.storage.get(&storage_key).await?;
 
-        let reader_builder =
-            ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(data.to_vec()))
-                .map_err(|e| ApiaryError::Storage {
-                    message: format!("Failed to open Parquet reader: {}", e),
-                    source: None,
-                })?;
+        let reader_builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(
+            data.to_vec(),
+        ))
+        .map_err(|e| ApiaryError::Storage {
+            message: format!("Failed to open Parquet reader: {}", e),
+            source: None,
+        })?;
 
         // Apply projection if specified
         let reader = if let Some(cols) = projection {
@@ -52,10 +53,8 @@ impl CellReader {
                 .filter_map(|col_name| parquet_schema.index_of(col_name).ok())
                 .collect();
 
-            let mask = parquet::arrow::ProjectionMask::roots(
-                reader_builder.parquet_schema(),
-                indices,
-            );
+            let mask =
+                parquet::arrow::ProjectionMask::roots(reader_builder.parquet_schema(), indices);
             reader_builder
                 .with_projection(mask)
                 .build()
@@ -121,11 +120,10 @@ fn concat_batches(schema: &Arc<Schema>, batches: &[RecordBatch]) -> Result<Optio
         return Ok(None);
     }
 
-    let merged = arrow::compute::concat_batches(schema, batches).map_err(|e| {
-        ApiaryError::Internal {
+    let merged =
+        arrow::compute::concat_batches(schema, batches).map_err(|e| ApiaryError::Internal {
             message: format!("Failed to concatenate record batches: {}", e),
-        }
-    })?;
+        })?;
 
     Ok(Some(merged))
 }
@@ -134,10 +132,10 @@ fn concat_batches(schema: &Arc<Schema>, batches: &[RecordBatch]) -> Result<Optio
 mod tests {
     use super::*;
     use crate::cell_writer::CellWriter;
+    use crate::local::LocalBackend;
     use apiary_core::{CellSizingPolicy, FieldDef, FrameSchema};
     use arrow::array::*;
     use arrow::datatypes::{DataType, Field};
-    use crate::local::LocalBackend;
 
     async fn make_storage() -> (Arc<dyn StorageBackend>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -185,13 +183,7 @@ mod tests {
         let schema = test_schema();
         let sizing = CellSizingPolicy::new(256 * 1024 * 1024, 512 * 1024 * 1024, 16 * 1024 * 1024);
 
-        let writer = CellWriter::new(
-            storage.clone(),
-            frame_path.into(),
-            schema,
-            vec![],
-            sizing,
-        );
+        let writer = CellWriter::new(storage.clone(), frame_path.into(), schema, vec![], sizing);
 
         let batch = test_batch();
         let cells = writer.write(&batch).await.unwrap();
@@ -210,13 +202,7 @@ mod tests {
         let schema = test_schema();
         let sizing = CellSizingPolicy::new(256 * 1024 * 1024, 512 * 1024 * 1024, 16 * 1024 * 1024);
 
-        let writer = CellWriter::new(
-            storage.clone(),
-            frame_path.into(),
-            schema,
-            vec![],
-            sizing,
-        );
+        let writer = CellWriter::new(storage.clone(), frame_path.into(), schema, vec![], sizing);
 
         let batch = test_batch();
         let cells = writer.write(&batch).await.unwrap();
