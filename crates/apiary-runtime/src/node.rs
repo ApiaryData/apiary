@@ -28,6 +28,7 @@ use apiary_storage::local::LocalBackend;
 use apiary_storage::s3::S3Backend;
 
 use crate::bee::{BeePool, BeeStatus};
+use crate::cache::CellCache;
 use crate::heartbeat::{HeartbeatWriter, NodeState, WorldView, WorldViewBuilder};
 
 /// An Apiary compute node — the runtime for one machine in the swarm.
@@ -51,6 +52,9 @@ pub struct ApiaryNode {
 
     /// Pool of bees for isolated task execution.
     pub bee_pool: Arc<BeePool>,
+    
+    /// Local cell cache with LRU eviction.
+    pub cell_cache: Arc<CellCache>,
 
     /// Heartbeat writer for this node.
     heartbeat_writer: Arc<HeartbeatWriter>,
@@ -121,12 +125,25 @@ impl ApiaryNode {
         // Initialize bee pool
         let bee_pool = Arc::new(BeePool::new(&config));
         info!(bees = config.cores, "Bee pool initialized");
+        
+        // Initialize cell cache
+        let cache_dir = config.cache_dir.join("cells");
+        let cell_cache = Arc::new(CellCache::new(
+            cache_dir,
+            config.max_cache_size,
+            Arc::clone(&storage),
+        ).await?);
+        info!(
+            max_cache_mb = config.max_cache_size / (1024 * 1024),
+            "Cell cache initialized"
+        );
 
         // Initialize heartbeat writer
         let heartbeat_writer = Arc::new(HeartbeatWriter::new(
             Arc::clone(&storage),
             &config,
             Arc::clone(&bee_pool),
+            Arc::clone(&cell_cache),
         ));
 
         // Initialize world view builder
@@ -183,6 +200,7 @@ impl ApiaryNode {
             registry,
             query_ctx,
             bee_pool,
+            cell_cache,
             heartbeat_writer,
             world_view,
             world_view_builder,

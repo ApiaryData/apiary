@@ -40,6 +40,9 @@ pub struct NodeConfig {
 
     /// Minimum cell size in bytes (floor to amortise S3 overhead).
     pub min_cell_size: u64,
+    
+    /// Maximum cache size in bytes for local cell storage.
+    pub max_cache_size: u64,
 
     /// Interval between heartbeat writes.
     pub heartbeat_interval: Duration,
@@ -50,6 +53,9 @@ pub struct NodeConfig {
 
 /// Minimum cell size floor: 16 MB.
 const MIN_CELL_SIZE_FLOOR: u64 = 16 * 1024 * 1024;
+
+/// Default cache size: 2 GB.
+const DEFAULT_MAX_CACHE_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Default heartbeat interval: 5 seconds.
 const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -102,6 +108,7 @@ impl NodeConfig {
             target_cell_size,
             max_cell_size,
             min_cell_size,
+            max_cache_size: DEFAULT_MAX_CACHE_SIZE,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             dead_threshold: DEFAULT_DEAD_THRESHOLD,
         }
