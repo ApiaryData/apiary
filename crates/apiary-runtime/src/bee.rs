@@ -188,8 +188,32 @@ impl BeePool {
         q.len()
     }
 
+    /// Return the current number of busy bees.
+    pub async fn busy_count(&self) -> usize {
+        let mut count = 0;
+        for bee in &self.bees {
+            let state = bee.state.lock().await;
+            if *state != BeeState::Idle {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Return the average memory utilization across all bees.
+    pub fn avg_memory_utilisation(&self) -> f64 {
+        if self.bees.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = self.bees.iter().map(|b| b.chamber.utilisation()).sum();
+        sum / self.bees.len() as f64
+    }
+
     /// Submit a task to the pool. If all bees are busy the task is queued.
     /// Returns the task result via the returned JoinHandle.
+    ///
+    /// When colony temperature indicates Critical state (> 0.95), tasks are
+    /// rejected immediately to protect the system from overload.
     pub async fn submit<F>(
         &self,
         func: F,
@@ -198,6 +222,28 @@ impl BeePool {
         F: FnOnce() -> std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError> + Send + 'static,
     {
         let task_id = TaskId::generate();
+
+        // Temperature-based admission control: reject at Critical (> 0.95)
+        let total = self.bees.len() as f64;
+        if total > 0.0 {
+            let busy = self.busy_count().await as f64;
+            let cpu_util = busy / total;
+            let mem_pressure = self.avg_memory_utilisation();
+            let queue_size = {
+                let q = self.queue.lock().await;
+                q.len() as f64
+            };
+            // Queue capacity is 2x bee count — allows some queuing before pressure rises
+            let queue_pressure = (queue_size / (total * 2.0)).min(1.0);
+            let temperature = 0.4 * cpu_util + 0.4 * mem_pressure + 0.2 * queue_pressure;
+            if temperature > 0.95 {
+                return tokio::task::spawn(async {
+                    Err(ApiaryError::Internal {
+                        message: "Colony temperature critical (> 0.95). Task rejected to protect system stability.".to_string(),
+                    })
+                });
+            }
+        }
 
         // Try to find an idle bee
         for bee in &self.bees {
@@ -609,5 +655,35 @@ mod tests {
         assert!(scratch.exists());
         let entries: Vec<_> = std::fs::read_dir(&scratch).unwrap().collect();
         assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_busy_count_and_avg_memory_utilisation() {
+        let (config, _tmp) = test_config(3);
+        let pool = BeePool::new(&config);
+
+        // All bees idle initially
+        assert_eq!(pool.busy_count().await, 0);
+        assert!((pool.avg_memory_utilisation() - 0.0).abs() < f64::EPSILON);
+
+        // Submit a long-running task to occupy one bee
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = pool.submit(move || {
+            // Block until signalled
+            let _ = rx.blocking_recv();
+            Ok(vec![])
+        }).await;
+
+        // Give the pool a moment to dispatch
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(pool.busy_count().await, 1);
+
+        // Release the task
+        let _ = tx.send(());
+        handle.await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(pool.busy_count().await, 0);
     }
 }

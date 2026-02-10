@@ -18,7 +18,7 @@ use bytes::Bytes;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use apiary_core::{
@@ -80,7 +80,38 @@ impl CellWriter {
     }
 
     /// Validate the incoming batch against the frame schema.
+    ///
+    /// Rules (from architecture doc 02-storage-engine.md):
+    /// - Safely castable types → implicit cast handled at read time
+    /// - Extra columns in write data → dropped with warning
+    /// - Missing nullable column → filled with null
+    /// - Missing non-nullable column → error
+    /// - Null value in partition column → error
     fn validate_schema(&self, batch: &RecordBatch) -> Result<()> {
+        // Check for missing non-nullable columns
+        for field in &self.schema.fields {
+            let found = batch.schema().index_of(&field.name).ok();
+            if found.is_none() && !field.nullable {
+                return Err(ApiaryError::Schema {
+                    message: format!(
+                        "Missing non-nullable column '{}' in write data",
+                        field.name
+                    ),
+                });
+            }
+        }
+
+        // Check extra columns (warn but don't error)
+        for batch_field in batch.schema().fields() {
+            let in_schema = self.schema.fields.iter().any(|f| f.name == *batch_field.name());
+            if !in_schema {
+                warn!(
+                    column = %batch_field.name(),
+                    "Extra column in write data will be dropped"
+                );
+            }
+        }
+
         // Check that partition columns have no nulls and no path traversal characters
         for part_col in &self.partition_by {
             if let Some(col_idx) = batch.schema().index_of(part_col).ok() {
@@ -677,5 +708,108 @@ mod tests {
         let value_stats = &stats["value"];
         assert_eq!(value_stats.min, Some(serde_json::json!(10.5)));
         assert_eq!(value_stats.max, Some(serde_json::json!(30.2)));
+    }
+
+    #[test]
+    fn test_validate_schema_missing_non_nullable_column() {
+        let frame_schema = FrameSchema {
+            fields: vec![
+                FieldDef {
+                    name: "id".into(),
+                    data_type: "int64".into(),
+                    nullable: false,
+                },
+                FieldDef {
+                    name: "name".into(),
+                    data_type: "string".into(),
+                    nullable: false,
+                },
+            ],
+        };
+
+        let sizing = CellSizingPolicy::from_memory_per_bee(1024 * 1024 * 1024);
+        let storage: Arc<dyn StorageBackend> = Arc::new(
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(crate::local::LocalBackend::new(
+                    tempfile::TempDir::new().unwrap().into_path(),
+                ))
+                .unwrap(),
+        );
+
+        let writer = CellWriter::new(
+            storage,
+            "test/default/test_frame".into(),
+            frame_schema,
+            vec![],
+            sizing,
+        );
+
+        // Batch only has 'id' column, missing non-nullable 'name'
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let result = writer.validate_schema(&batch);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("Missing non-nullable column 'name'"),
+            "Error should mention missing non-nullable column, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_schema_missing_nullable_column_ok() {
+        let frame_schema = FrameSchema {
+            fields: vec![
+                FieldDef {
+                    name: "id".into(),
+                    data_type: "int64".into(),
+                    nullable: false,
+                },
+                FieldDef {
+                    name: "notes".into(),
+                    data_type: "string".into(),
+                    nullable: true, // nullable — should not error if missing
+                },
+            ],
+        };
+
+        let sizing = CellSizingPolicy::from_memory_per_bee(1024 * 1024 * 1024);
+        let storage: Arc<dyn StorageBackend> = Arc::new(
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(crate::local::LocalBackend::new(
+                    tempfile::TempDir::new().unwrap().into_path(),
+                ))
+                .unwrap(),
+        );
+
+        let writer = CellWriter::new(
+            storage,
+            "test/default/test_frame".into(),
+            frame_schema,
+            vec![],
+            sizing,
+        );
+
+        // Batch only has 'id' column, missing nullable 'notes'
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let result = writer.validate_schema(&batch);
+        assert!(result.is_ok(), "Missing nullable column should not error");
     }
 }

@@ -207,9 +207,69 @@ fn assign_cells_to_nodes(
         }
     }
     
-    // TODO: Apply leafcutter sizing to split large assignments
-    
+    // Apply leafcutter sizing: split assignments that exceed a bee's memory budget
+    leafcutter_split_assignments(&mut assignments, nodes);
+
     assignments
+}
+
+/// Apply leafcutter sizing: ensure no single node's assignment exceeds its bee memory budget.
+/// If a node's total assignment is too large, redistribute excess cells to other nodes.
+fn leafcutter_split_assignments(
+    assignments: &mut HashMap<NodeId, Vec<CellInfo>>,
+    nodes: &[NodeInfo],
+) {
+    let mut overflow = Vec::new();
+
+    // Check each assignment against the node's bee budget
+    for (node_id, cells) in assignments.iter_mut() {
+        if let Some(node) = nodes.iter().find(|n| &n.node_id == node_id) {
+            let total: u64 = cells.iter().map(|c| c.bytes).sum();
+            if total > node.memory_per_bee && cells.len() > 1 {
+                // Keep cells up to the budget, overflow the rest
+                let mut kept_size: u64 = 0;
+                let mut keep = Vec::new();
+                for cell in cells.drain(..) {
+                    // A node must keep at least one cell even if it exceeds the
+                    // budget, to avoid orphaned cells with no assignment.
+                    if kept_size + cell.bytes <= node.memory_per_bee || keep.is_empty() {
+                        kept_size += cell.bytes;
+                        keep.push(cell);
+                    } else {
+                        overflow.push(cell);
+                    }
+                }
+                *cells = keep;
+            }
+        }
+    }
+
+    // Redistribute overflow cells to nodes with capacity
+    for cell in overflow {
+        let best = nodes.iter()
+            .filter(|n| n.idle_bees > 0)
+            .filter(|n| {
+                let current: u64 = assignments
+                    .get(&n.node_id)
+                    .map(|c| c.iter().map(|ci| ci.bytes).sum())
+                    .unwrap_or(0);
+                current + cell.bytes <= n.memory_per_bee
+            })
+            .max_by_key(|n| n.idle_bees);
+
+        if let Some(node) = best {
+            assignments.entry(node.node_id.clone())
+                .or_insert_with(Vec::new)
+                .push(cell);
+        } else {
+            // No node has capacity — assign to node with most idle bees anyway
+            if let Some(node) = nodes.iter().filter(|n| n.idle_bees > 0).max_by_key(|n| n.idle_bees) {
+                assignments.entry(node.node_id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(cell);
+            }
+        }
+    }
 }
 
 /// Generate SQL fragment for a query (simplified for v1).
@@ -462,5 +522,61 @@ mod tests {
         assert!(assignments.get(&NodeId::from("node2")).is_some());
         let node2_cells = assignments.get(&NodeId::from("node2")).unwrap();
         assert_eq!(node2_cells.len(), 2);
+    }
+
+    #[test]
+    fn test_leafcutter_split_redistributes_excess() {
+        let node1_id = NodeId::from("node1");
+        let node2_id = NodeId::from("node2");
+
+        // 3 cells of 100MB each assigned to node1 (300MB total > 200MB budget)
+        let mut assignments = HashMap::new();
+        assignments.insert(node1_id.clone(), vec![
+            mock_cell_info("c1", 100_000_000),
+            mock_cell_info("c2", 100_000_000),
+            mock_cell_info("c3", 100_000_000),
+        ]);
+
+        let nodes = vec![
+            NodeInfo {
+                node_id: node1_id.clone(),
+                state: NodeState::Alive,
+                cores: 4,
+                memory_bytes: 4_000_000_000,
+                memory_per_bee: 200_000_000, // 200 MB
+                target_cell_size: 256_000_000,
+                bees_total: 4,
+                bees_busy: 0,
+                idle_bees: 4,
+                cached_cells: HashMap::new(),
+            },
+            NodeInfo {
+                node_id: node2_id.clone(),
+                state: NodeState::Alive,
+                cores: 4,
+                memory_bytes: 4_000_000_000,
+                memory_per_bee: 200_000_000, // 200 MB
+                target_cell_size: 256_000_000,
+                bees_total: 4,
+                bees_busy: 0,
+                idle_bees: 4,
+                cached_cells: HashMap::new(),
+            },
+        ];
+
+        leafcutter_split_assignments(&mut assignments, &nodes);
+
+        let node1_total: u64 = assignments.get(&node1_id)
+            .map(|c| c.iter().map(|ci| ci.bytes).sum())
+            .unwrap_or(0);
+        assert!(node1_total <= 200_000_000, "node1 should not exceed its budget");
+
+        // The overflow cell(s) should have been redistributed to node2
+        let node2_cells = assignments.get(&node2_id).unwrap();
+        assert!(!node2_cells.is_empty(), "node2 should receive overflow cells");
+
+        // Total cells should still be 3
+        let total_cells: usize = assignments.values().map(|c| c.len()).sum();
+        assert_eq!(total_cells, 3);
     }
 }
