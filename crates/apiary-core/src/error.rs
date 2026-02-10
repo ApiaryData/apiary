@@ -122,6 +122,17 @@ pub enum ApiaryError {
         /// Description of the internal error.
         message: String,
     },
+
+    /// A conflict occurred during a DDL operation after max retries.
+    #[error("Conflict: {message}")]
+    Conflict {
+        /// Description of the conflict.
+        message: String,
+    },
+
+    /// Serialization or deserialization error.
+    #[error("Serialization error: {0}")]
+    Serialization(String),
 }
 
 impl ApiaryError {

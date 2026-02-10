@@ -7,11 +7,15 @@
 
 pub mod config;
 pub mod error;
+pub mod registry;
+pub mod registry_manager;
 pub mod storage;
 pub mod types;
 
 pub use config::NodeConfig;
 pub use error::ApiaryError;
+pub use registry::{Registry, Hive, Box, Frame};
+pub use registry_manager::RegistryManager;
 pub use storage::StorageBackend;
 pub use types::*;
 
