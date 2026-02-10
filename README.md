@@ -125,9 +125,10 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 | 6 | Heartbeat + World View | ✅ Complete |
 | 7 | Distributed Query Execution | ✅ Complete |
 | 8 | Local Cell Cache | ✅ Complete |
-| 9+ | Advanced Features | 🚧 Not Started |
+| 9 | Behavioral Model | ✅ Complete |
+| 10 | Testing + Hardening | 🚧 Not Started |
 
-### Current Capabilities (Step 8 Complete — Local Cell Cache)
+### Current Capabilities (Step 9 Complete — Behavioral Model)
 
 - ✅ Rust workspace with 6 crates
 - ✅ Python SDK via PyO3
@@ -173,6 +174,10 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 - ✅ Local cell cache (LRU eviction, 2GB default)
 - ✅ Cache reporting in heartbeats (enables cache-aware planning)
 - ✅ Cache-aware distributed query planning (preferential assignment)
+- ✅ Colony temperature measurement (composite system health metric)
+- ✅ Temperature regulation classification (cold/ideal/warm/hot/critical)
+- ✅ Task abandonment tracker (retry logic with trial limits)
+- ✅ Behavioral model Python API (colony_status method)
 
 ## Project Structure
 
@@ -286,4 +291,4 @@ Apiary draws inspiration from:
 
 ---
 
-**Status**: Early development. Step 8 of 10 complete. Local cell cache operational! 🐝
+**Status**: Early development. Step 9 of 10 complete. Behavioral model operational! 🐝

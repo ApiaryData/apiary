@@ -600,6 +600,33 @@ impl Apiary {
         })
     }
 
+    /// Return the colony status: temperature and regulation state.
+    ///
+    /// Returns:
+    ///     dict: Colony status with 'temperature' (0.0-1.0), 'regulation'
+    ///           ("cold"/"ideal"/"warm"/"hot"/"critical"), and 'setpoint'.
+    fn colony_status(&self) -> PyResult<PyObject> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Node not started. Call start() first.")
+        })?;
+
+        let status = self
+            .runtime
+            .block_on(async { node.colony_status().await });
+
+        Python::with_gil(|py| {
+            let dict = pyo3::types::PyDict::new_bound(py);
+            dict.set_item("temperature", status.temperature)?;
+            dict.set_item("regulation", &status.regulation)?;
+            dict.set_item("setpoint", status.setpoint)?;
+            Ok(dict.into())
+        })
+    }
+
     /// Alias for create_hive (traditional database terminology).
     fn create_database(&self, name: String) -> PyResult<()> {
         self.create_hive(name)
