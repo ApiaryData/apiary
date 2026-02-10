@@ -80,6 +80,11 @@ define_id!(
     NodeId
 );
 
+define_id!(
+    /// Unique identifier for a Task (unit of work submitted to the bee pool).
+    TaskId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
