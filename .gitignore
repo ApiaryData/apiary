@@ -29,3 +29,8 @@ __pycache__/
 # Python compiled extensions with version-specific names
 *.cpython-*.so
 *.cpython-*.pyd
+
+# Python build artifacts
+dist/
+*.whl
+*.egg-info/
