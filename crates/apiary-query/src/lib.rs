@@ -5,6 +5,8 @@
 //! the frame's active Parquet cells.  Custom SQL commands (USE, SHOW,
 //! DESCRIBE) are intercepted before they reach DataFusion.
 
+pub mod distributed;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
