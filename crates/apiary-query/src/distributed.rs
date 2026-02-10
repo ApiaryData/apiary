@@ -215,6 +215,8 @@ fn assign_cells_to_nodes(
 /// Generate SQL fragment for a query (simplified for v1).
 ///
 /// For now, we support simple scans and basic aggregations.
+/// NOTE: This generates placeholder SQL that should NOT be executed in v1.
+/// The aggregation decomposition is left for a future implementation.
 pub fn generate_sql_fragment(original_sql: &str, is_aggregation: bool) -> (String, Option<String>) {
     // Simplified fragment generation for v1
     // In a real implementation, we'd parse the SQL and decompose aggregations
@@ -223,10 +225,12 @@ pub fn generate_sql_fragment(original_sql: &str, is_aggregation: bool) -> (Strin
         // For aggregations, generate partial aggregation fragment
         // This is a placeholder - real implementation would parse and transform
         let fragment = format!(
-            "SELECT * FROM __scan__ /* TODO: Transform to partial aggregation */"
+            "-- PLACEHOLDER: Do not execute\n\
+             -- SELECT * FROM __scan__ /* TODO: Transform to partial aggregation */"
         );
         let merge = Some(format!(
-            "SELECT * FROM __partials__ /* TODO: Transform to final aggregation */"
+            "-- PLACEHOLDER: Do not execute\n\
+             -- SELECT * FROM __partials__ /* TODO: Transform to final aggregation */"
         ));
         (fragment, merge)
     } else {

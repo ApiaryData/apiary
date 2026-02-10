@@ -110,10 +110,13 @@ impl ApiaryNode {
         info!("Registry loaded");
 
         // Initialize query context
-        let query_ctx = Arc::new(tokio::sync::Mutex::new(ApiaryQueryContext::new(
-            Arc::clone(&storage),
-            Arc::clone(&registry),
-        )));
+        let query_ctx = Arc::new(tokio::sync::Mutex::new(
+            ApiaryQueryContext::with_node_id(
+                Arc::clone(&storage),
+                Arc::clone(&registry),
+                config.node_id.clone(),
+            )
+        ));
 
         // Initialize bee pool
         let bee_pool = Arc::new(BeePool::new(&config));
@@ -161,7 +164,18 @@ impl ApiaryNode {
             });
         }
 
-        info!("Heartbeat and world view background tasks started");
+        // Start query worker task poller (for distributed execution)
+        {
+            let storage = Arc::clone(&storage);
+            let query_ctx = Arc::clone(&query_ctx);
+            let node_id = config.node_id.clone();
+            let rx = cancel_rx.clone();
+            tokio::spawn(async move {
+                run_query_worker_poller(storage, query_ctx, node_id, rx).await;
+            });
+        }
+
+        info!("Heartbeat, world view, and query worker background tasks started");
 
         Ok(Self {
             config,
@@ -455,6 +469,29 @@ impl ApiaryNode {
             total_idle_bees,
         }
     }
+    
+    /// Execute a distributed query (Step 7 integration).
+    /// 
+    /// This method demonstrates the distributed execution flow:
+    /// 1. Collects cells from the frame(s) referenced in the query
+    /// 2. Plans the query using the world view
+    /// 3. If distributed, executes via the distributed coordinator
+    /// 4. If local, falls back to normal execution
+    ///
+    /// For v1, this is a simplified entry point for testing.
+    #[allow(dead_code)] // Will be used by tests/examples
+    pub async fn sql_distributed(&self, _query: &str) -> Result<Vec<RecordBatch>> {
+        // NOTE: This is a placeholder for Step 7 distributed query entry point
+        // Full implementation would:
+        // 1. Parse query to extract frame references
+        // 2. Collect CellInfo from ledgers
+        // 3. Get NodeInfo from world view
+        // 4. Call plan_query to decide local vs distributed
+        // 5. Execute accordingly
+        
+        // For now, just use regular sql() method
+        self.sql(_query).await
+    }
 }
 
 /// Summary of the swarm as seen by this node.
@@ -491,6 +528,124 @@ fn home_dir() -> Option<std::path::PathBuf> {
     {
         std::env::var("HOME").ok().map(std::path::PathBuf::from)
     }
+}
+
+/// Background task that polls for distributed query manifests and executes assigned tasks.
+async fn run_query_worker_poller(
+    storage: Arc<dyn StorageBackend>,
+    query_ctx: Arc<tokio::sync::Mutex<ApiaryQueryContext>>,
+    node_id: apiary_core::types::NodeId,
+    cancel: tokio::sync::watch::Receiver<bool>,
+) {
+    use apiary_query::distributed;
+    
+    info!(node_id = %node_id, "Query worker poller started");
+    
+    let poll_interval = Duration::from_millis(500);
+    
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(poll_interval) => {
+                // List query manifests
+                match storage.list("_queries/").await {
+                    Ok(keys) => {
+                        // Find manifest files
+                        for key in keys {
+                            if !key.ends_with("/manifest.json") {
+                                continue;
+                            }
+                            
+                            // Extract query_id from path: _queries/{query_id}/manifest.json
+                            let parts: Vec<&str> = key.split('/').collect();
+                            if parts.len() < 3 {
+                                continue;
+                            }
+                            let query_id = parts[1];
+                            
+                            // Try to read the manifest
+                            match distributed::read_manifest(&storage, query_id).await {
+                                Ok(manifest) => {
+                                    // Check if any tasks are assigned to this node
+                                    let my_tasks: Vec<_> = manifest.tasks.iter()
+                                        .filter(|t| t.node_id == node_id)
+                                        .collect();
+                                    
+                                    if my_tasks.is_empty() {
+                                        continue;
+                                    }
+                                    
+                                    // Check if we've already written our partial result
+                                    let partial_path = distributed::partial_result_path(query_id, &node_id);
+                                    if storage.get(&partial_path).await.is_ok() {
+                                        // Already completed
+                                        continue;
+                                    }
+                                    
+                                    // Execute tasks and write partial result
+                                    info!(
+                                        query_id = %query_id,
+                                        tasks = my_tasks.len(),
+                                        "Executing distributed query tasks"
+                                    );
+                                    
+                                    let mut results = Vec::new();
+                                    let ctx = query_ctx.lock().await;
+                                    
+                                    for task in my_tasks {
+                                        match ctx.execute_task(&task.sql_fragment, &task.cells).await {
+                                            Ok(batches) => {
+                                                results.extend(batches);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    task_id = %task.task_id,
+                                                    error = %e,
+                                                    "Task execution failed"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Write partial result
+                                    if !results.is_empty() {
+                                        if let Err(e) = distributed::write_partial_result(
+                                            &storage,
+                                            query_id,
+                                            &node_id,
+                                            &results,
+                                        ).await {
+                                            tracing::warn!(
+                                                query_id = %query_id,
+                                                error = %e,
+                                                "Failed to write partial result"
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    // Manifest not readable yet or deleted
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to list query manifests");
+                    }
+                }
+            }
+            _ = wait_for_cancel(&cancel) => {
+                tracing::debug!(node_id = %node_id, "Query worker poller stopping");
+                break;
+            }
+        }
+    }
+}
+
+/// Helper to wait for cancellation.
+async fn wait_for_cancel(cancel: &tokio::sync::watch::Receiver<bool>) {
+    let mut rx = cancel.clone();
+    let _ = rx.wait_for(|&v| v).await;
 }
 
 #[cfg(test)]
