@@ -26,3 +26,6 @@ target
 __pycache__/
 *.so
 *.pyd
+# Python compiled extensions with version-specific names
+*.cpython-*.so
+*.cpython-*.pyd
