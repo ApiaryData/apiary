@@ -138,16 +138,12 @@ def test_temperature_changes_with_load():
             ap.create_hive("load_test")
             ap.create_box("load_test", "data")
             
-            schema = pa.schema([
-                pa.field("id", pa.int64()),
-                pa.field("value", pa.float64()),
-            ])
-            
+            # Use dict schema format
             ap.create_frame(
                 "load_test",
                 "data",
                 "measurements",
-                schema
+                {"id": "int64", "value": "float64"}
             )
             
             # Write data to create some load
@@ -156,11 +152,18 @@ def test_temperature_changes_with_load():
                 "value": [float(i) * 1.5 for i in range(1000)],
             })
             
+            # Serialize to IPC format
+            sink = pa.BufferOutputStream()
+            writer = pa.ipc.new_stream(sink, table.schema)
+            writer.write_table(table)
+            writer.close()
+            ipc_data = sink.getvalue().to_pybytes()
+            
             result = ap.write_to_frame(
                 "load_test",
                 "data",
                 "measurements",
-                table.to_batches()[0]
+                ipc_data
             )
             
             assert result["rows_written"] == 1000
@@ -198,22 +201,31 @@ def test_behavioral_model_integration():
             ap.create_hive("integration")
             ap.create_box("integration", "test")
             
-            schema = pa.schema([
-                pa.field("x", pa.int64()),
-                pa.field("y", pa.float64()),
-            ])
-            
-            ap.create_frame("integration", "test", "data", schema)
+            ap.create_frame(
+                "integration",
+                "test",
+                "data",
+                {"x": "int64", "y": "float64"}
+            )
             
             table = pa.table({
                 "x": [1, 2, 3, 4, 5],
                 "y": [1.1, 2.2, 3.3, 4.4, 5.5],
             })
             
-            ap.write_to_frame("integration", "test", "data", table.to_batches()[0])
+            # Serialize to IPC format
+            sink = pa.BufferOutputStream()
+            writer = pa.ipc.new_stream(sink, table.schema)
+            writer.write_table(table)
+            writer.close()
+            ipc_data = sink.getvalue().to_pybytes()
+            
+            ap.write_to_frame("integration", "test", "data", ipc_data)
             
             # SQL query should still work
-            result = ap.sql("SELECT COUNT(*) as cnt FROM integration.test.data")
+            results_bytes = ap.sql("SELECT COUNT(*) as cnt FROM integration.test.data")
+            reader = pa.ipc.open_stream(results_bytes)
+            result = reader.read_all()
             assert result.num_rows == 1
             count_value = result.column("cnt")[0].as_py()
             assert count_value == 5

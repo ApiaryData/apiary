@@ -12,7 +12,7 @@
 | 6 | Heartbeat + World View | complete | 2026-02-10 | Heartbeat writer, world view builder, node lifecycle, swarm_status, **MULTI-NODE MILESTONE** |
 | 7 | Distributed Queries | complete | 2026-02-10 | Query planner, coordinator protocol, worker polling, result merging, **DISTRIBUTED EXECUTION MILESTONE** |
 | 8 | Local Cell Cache | complete | 2026-02-10 | LRU cache, cache reporting in heartbeats, cache-aware query planning |
-| 9 | Behavioral Model | not started | | |
+| 9 | Behavioral Model | complete | 2026-02-10 | Colony temperature, task abandonment tracker, Python API |
 | 10 | Testing + Hardening | not started | | **v1 RC MILESTONE** |
 
 ## Design Decisions Made During Implementation
