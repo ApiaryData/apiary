@@ -315,16 +315,10 @@ impl ApiaryNode {
     pub async fn sql(&self, query: &str) -> Result<Vec<RecordBatch>> {
         let query_ctx = Arc::clone(&self.query_ctx);
         let query_owned = query.to_string();
+        let rt_handle = tokio::runtime::Handle::current();
 
         let handle = self.bee_pool.submit(move || {
-            // Build a temporary tokio runtime for the blocking task
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| ApiaryError::Internal {
-                    message: format!("Failed to build task runtime: {e}"),
-                })?;
-            rt.block_on(async {
+            rt_handle.block_on(async {
                 let mut ctx = query_ctx.lock().await;
                 ctx.sql(&query_owned).await
             })

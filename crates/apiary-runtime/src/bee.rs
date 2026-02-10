@@ -121,9 +121,6 @@ struct QueuedTask {
     tx: oneshot::Sender<std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError>>,
 }
 
-// Safety: TaskFn is Send, oneshot::Sender is Send, TaskId is Send.
-unsafe impl Send for QueuedTask {}
-
 /// Pool of bees that routes tasks to idle workers.
 pub struct BeePool {
     bees: Vec<Arc<Bee>>,
