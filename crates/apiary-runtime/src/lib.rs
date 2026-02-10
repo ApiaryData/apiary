@@ -6,3 +6,4 @@
 pub mod node;
 
 pub use node::ApiaryNode;
+pub use apiary_query::ApiaryQueryContext;
