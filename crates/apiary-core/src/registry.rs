@@ -8,8 +8,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::types::{BoxId, FrameId, HiveId};
-
 /// A versioned registry of all hives, boxes, and frames in the system.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Registry {
@@ -114,6 +112,12 @@ impl Hive {
     }
 }
 
+impl Default for Hive {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A Box represents a schema within a hive.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Box {
@@ -136,6 +140,12 @@ impl Box {
             created_at: Utc::now(),
             properties: HashMap::new(),
         }
+    }
+}
+
+impl Default for Box {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

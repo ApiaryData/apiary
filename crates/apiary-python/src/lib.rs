@@ -4,6 +4,8 @@
 //! Python SDK. Wraps [`ApiaryNode`](apiary_runtime::ApiaryNode) with
 //! a Tokio runtime for async operations.
 
+#![allow(clippy::useless_conversion)]
+
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;

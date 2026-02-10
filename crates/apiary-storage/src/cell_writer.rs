@@ -113,7 +113,7 @@ impl CellWriter {
 
         // Check that partition columns have no nulls and no path traversal characters
         for part_col in &self.partition_by {
-            if let Some(col_idx) = batch.schema().index_of(part_col).ok() {
+            if let Ok(col_idx) = batch.schema().index_of(part_col) {
                 let col = batch.column(col_idx);
                 if col.null_count() > 0 {
                     return Err(ApiaryError::Schema {
@@ -217,8 +217,8 @@ impl CellWriter {
         }
 
         // Calculate how many chunks we need
-        let num_chunks = (estimated_size + target - 1) / target;
-        let rows_per_chunk = (batch.num_rows() + num_chunks - 1) / num_chunks;
+        let num_chunks = estimated_size.div_ceil(target);
+        let rows_per_chunk = batch.num_rows().div_ceil(num_chunks);
         let rows_per_chunk = rows_per_chunk.max(1);
 
         let mut batches = Vec::new();
@@ -717,7 +717,7 @@ mod tests {
             tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(crate::local::LocalBackend::new(
-                    tempfile::TempDir::new().unwrap().into_path(),
+                    tempfile::TempDir::new().unwrap().keep(),
                 ))
                 .unwrap(),
         );
@@ -766,7 +766,7 @@ mod tests {
             tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(crate::local::LocalBackend::new(
-                    tempfile::TempDir::new().unwrap().into_path(),
+                    tempfile::TempDir::new().unwrap().keep(),
                 ))
                 .unwrap(),
         );

@@ -247,7 +247,7 @@ impl Ledger {
                 );
 
                 // Write checkpoint every CHECKPOINT_INTERVAL versions
-                if next_version % CHECKPOINT_INTERVAL == 0 {
+                if next_version.is_multiple_of(CHECKPOINT_INTERVAL) {
                     self.write_checkpoint().await?;
                 }
 
@@ -394,7 +394,7 @@ mod tests {
 
     async fn make_storage() -> Arc<dyn StorageBackend> {
         let dir = tempfile::tempdir().unwrap();
-        let backend = LocalBackend::new(dir.into_path()).await.unwrap();
+        let backend = LocalBackend::new(dir.keep()).await.unwrap();
         Arc::new(backend)
     }
 

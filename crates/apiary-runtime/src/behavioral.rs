@@ -324,7 +324,7 @@ mod tests {
         // Give tasks time to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let temp = thermo.measure(&*pool).await;
+        let temp = thermo.measure(&pool).await;
         // Both bees busy → CPU util = 1.0, so temp should be at least 0.4
         assert!(temp >= 0.3, "Expected elevated temperature, got {temp}");
     }

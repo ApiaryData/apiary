@@ -171,7 +171,7 @@ pub fn extract_alive_nodes<T>(
 ) -> Vec<NodeInfo> {
     world_view_nodes
         .values()
-        .filter_map(|node| node_extractor(node))
+        .filter_map(node_extractor)
         .collect()
 }
 
@@ -193,7 +193,7 @@ fn assign_cells_to_nodes(
             // Assign to caching node
             assignments
                 .entry(node.node_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(cell);
             continue;
         }
@@ -206,7 +206,7 @@ fn assign_cells_to_nodes(
         {
             assignments
                 .entry(best_node.node_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(cell);
         }
     }
@@ -265,7 +265,7 @@ fn leafcutter_split_assignments(
         if let Some(node) = best {
             assignments
                 .entry(node.node_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(cell);
         } else {
             // No node has capacity — assign to node with most idle bees anyway
@@ -276,7 +276,7 @@ fn leafcutter_split_assignments(
             {
                 assignments
                     .entry(node.node_id.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(cell);
             }
         }
@@ -489,7 +489,7 @@ mod tests {
         let assignments = assign_cells_to_nodes(cells, &nodes);
 
         // cell1 should go to node1 (cache hit)
-        assert!(assignments.get(&NodeId::from("node1")).is_some());
+        assert!(assignments.contains_key(&NodeId::from("node1")));
         let node1_cells = assignments.get(&NodeId::from("node1")).unwrap();
         assert_eq!(node1_cells.len(), 1);
         assert_eq!(node1_cells[0].storage_key, "cell1");
@@ -532,7 +532,7 @@ mod tests {
         let assignments = assign_cells_to_nodes(cells, &nodes);
 
         // Both cells should go to node2 (more idle capacity)
-        assert!(assignments.get(&NodeId::from("node2")).is_some());
+        assert!(assignments.contains_key(&NodeId::from("node2")));
         let node2_cells = assignments.get(&NodeId::from("node2")).unwrap();
         assert_eq!(node2_cells.len(), 2);
     }

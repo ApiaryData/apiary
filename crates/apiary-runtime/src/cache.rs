@@ -194,6 +194,7 @@ impl CellCache {
     /// This is acceptable for v1 since:
     /// - Evictions are rare (only when cache exceeds limit)
     /// - Typical cache sizes are manageable (hundreds of cells)
+    ///
     /// Future optimization: Use a linked hashmap or priority queue for O(1) LRU tracking
     async fn evict_if_needed(&self) -> Result<()> {
         let current = self.current_size.load(Ordering::SeqCst);
