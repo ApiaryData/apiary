@@ -20,6 +20,7 @@ use apiary_core::types::NodeId;
 use apiary_core::Result;
 
 use crate::bee::BeePool;
+use crate::cache::CellCache;
 
 // ---------------------------------------------------------------------------
 // Heartbeat data structures
@@ -45,19 +46,13 @@ pub struct HeartbeatLoad {
     pub colony_temperature: f64,
 }
 
-/// A cache entry describing cached frame data on a node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheEntry {
-    pub frame: String,
-    pub cells: usize,
-    pub bytes: u64,
-}
-
 /// Cache summary for a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatCache {
     pub size_bytes: u64,
-    pub entries: Vec<CacheEntry>,
+    /// Map of storage keys to cell sizes used for both heartbeat reporting
+    /// and cache-aware query planning in distributed execution
+    pub cached_cells: HashMap<String, u64>,
 }
 
 /// A heartbeat written by a node to object storage.
@@ -82,6 +77,7 @@ pub struct HeartbeatWriter {
     interval: Duration,
     version: AtomicU64,
     bee_pool: Arc<BeePool>,
+    cell_cache: Arc<CellCache>,
     cores: usize,
     memory_total_bytes: u64,
     memory_per_bee: u64,
@@ -94,6 +90,7 @@ impl HeartbeatWriter {
         storage: Arc<dyn StorageBackend>,
         config: &apiary_core::config::NodeConfig,
         bee_pool: Arc<BeePool>,
+        cell_cache: Arc<CellCache>,
     ) -> Self {
         Self {
             storage,
@@ -101,6 +98,7 @@ impl HeartbeatWriter {
             interval: config.heartbeat_interval,
             version: AtomicU64::new(0),
             bee_pool,
+            cell_cache,
             cores: config.cores,
             memory_total_bytes: config.memory_bytes,
             memory_per_bee: config.memory_per_bee,
@@ -131,6 +129,10 @@ impl HeartbeatWriter {
         };
 
         let version = self.version.fetch_add(1, Ordering::Relaxed) + 1;
+        
+        // Get cached cells from cell cache
+        let cached_cells = self.cell_cache.list_cached_cells().await;
+        let cache_size = self.cell_cache.size();
 
         Heartbeat {
             node_id: self.node_id.as_str().to_string(),
@@ -151,8 +153,8 @@ impl HeartbeatWriter {
                 colony_temperature,
             },
             cache: HeartbeatCache {
-                size_bytes: 0,
-                entries: vec![],
+                size_bytes: cache_size,
+                cached_cells,
             },
         }
     }
@@ -455,6 +457,11 @@ mod tests {
     fn make_pool(config: &NodeConfig) -> Arc<BeePool> {
         Arc::new(BeePool::new(config))
     }
+    
+    async fn make_cache(config: &NodeConfig, storage: Arc<dyn StorageBackend>) -> Arc<CellCache> {
+        let cache_dir = config.cache_dir.join("cells");
+        Arc::new(CellCache::new(cache_dir, config.max_cache_size, storage).await.unwrap())
+    }
 
     #[tokio::test]
     async fn test_heartbeat_write_and_read() {
@@ -463,8 +470,9 @@ mod tests {
         let pool_tmp = tempfile::TempDir::new().unwrap();
         let config = make_config("test-node", 4, 4 * 1024 * 1024 * 1024, &pool_tmp);
         let pool = make_pool(&config);
+        let cache = make_cache(&config, Arc::clone(&storage)).await;
 
-        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool);
+        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
 
         // Write a heartbeat
         writer.write_once().await.unwrap();
@@ -488,8 +496,9 @@ mod tests {
         let pool_tmp = tempfile::TempDir::new().unwrap();
         let config = make_config("inc-node", 2, 1024, &pool_tmp);
         let pool = make_pool(&config);
+        let cache = make_cache(&config, Arc::clone(&storage)).await;
 
-        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool);
+        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
 
         writer.write_once().await.unwrap();
         writer.write_once().await.unwrap();
@@ -507,8 +516,9 @@ mod tests {
         let pool_tmp = tempfile::TempDir::new().unwrap();
         let config = make_config("del-node", 2, 1024, &pool_tmp);
         let pool = make_pool(&config);
+        let cache = make_cache(&config, Arc::clone(&storage)).await;
 
-        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool);
+        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
 
         writer.write_once().await.unwrap();
         assert!(storage.exists("_heartbeats/node_del-node.json").await.unwrap());
@@ -524,11 +534,13 @@ mod tests {
         let pool_tmp = tempfile::TempDir::new().unwrap();
         let config_a = make_config("node-a", 2, 1024, &pool_tmp);
         let pool = make_pool(&config_a);
+        let cache1 = make_cache(&config_a, Arc::clone(&storage)).await;
 
-        let writer1 = HeartbeatWriter::new(Arc::clone(&storage), &config_a, Arc::clone(&pool));
+        let writer1 = HeartbeatWriter::new(Arc::clone(&storage), &config_a, Arc::clone(&pool), Arc::clone(&cache1));
 
         let config_b = make_config("node-b", 4, 2048, &pool_tmp);
-        let writer2 = HeartbeatWriter::new(Arc::clone(&storage), &config_b, pool);
+        let cache2 = make_cache(&config_b, Arc::clone(&storage)).await;
+        let writer2 = HeartbeatWriter::new(Arc::clone(&storage), &config_b, pool, cache2);
 
         writer1.write_once().await.unwrap();
         writer2.write_once().await.unwrap();
@@ -576,7 +588,7 @@ mod tests {
             },
             cache: HeartbeatCache {
                 size_bytes: 0,
-                entries: vec![],
+                cached_cells: HashMap::new(),
             },
         };
 
@@ -626,7 +638,7 @@ mod tests {
             },
             cache: HeartbeatCache {
                 size_bytes: 0,
-                entries: vec![],
+                cached_cells: HashMap::new(),
             },
         };
 
@@ -656,8 +668,9 @@ mod tests {
         let pool_tmp = tempfile::TempDir::new().unwrap();
         let config = make_config("shared-node", 2, 1024, &pool_tmp);
         let pool = make_pool(&config);
+        let cache = make_cache(&config, Arc::clone(&storage)).await;
 
-        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool);
+        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
         writer.write_once().await.unwrap();
 
         let builder = WorldViewBuilder::new(
@@ -690,8 +703,9 @@ mod tests {
         let pool_tmp = tempfile::TempDir::new().unwrap();
         let config = make_config("departing-node", 2, 1024, &pool_tmp);
         let pool = make_pool(&config);
+        let cache = make_cache(&config, Arc::clone(&storage)).await;
 
-        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool);
+        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
 
         writer.write_once().await.unwrap();
 
@@ -718,8 +732,9 @@ mod tests {
         let pool_tmp = tempfile::TempDir::new().unwrap();
         let config = make_config("solo-node", 2, 1024, &pool_tmp);
         let pool = make_pool(&config);
+        let cache = make_cache(&config, Arc::clone(&storage)).await;
 
-        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool);
+        let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
         writer.write_once().await.unwrap();
 
         let builder = WorldViewBuilder::new(
@@ -742,11 +757,13 @@ mod tests {
         let pool_tmp = tempfile::TempDir::new().unwrap();
         let config_n1 = make_config("n1", 2, 1024, &pool_tmp);
         let pool = make_pool(&config_n1);
+        let cache1 = make_cache(&config_n1, Arc::clone(&storage)).await;
 
-        let writer1 = HeartbeatWriter::new(Arc::clone(&storage), &config_n1, Arc::clone(&pool));
+        let writer1 = HeartbeatWriter::new(Arc::clone(&storage), &config_n1, Arc::clone(&pool), Arc::clone(&cache1));
 
         let config_n2 = make_config("n2", 4, 2048, &pool_tmp);
-        let writer2 = HeartbeatWriter::new(Arc::clone(&storage), &config_n2, pool);
+        let cache2 = make_cache(&config_n2, Arc::clone(&storage)).await;
+        let writer2 = HeartbeatWriter::new(Arc::clone(&storage), &config_n2, pool, cache2);
 
         writer1.write_once().await.unwrap();
         writer2.write_once().await.unwrap();
@@ -789,7 +806,7 @@ mod tests {
             },
             cache: HeartbeatCache {
                 size_bytes: 0,
-                entries: vec![],
+                cached_cells: HashMap::new(),
             },
         };
 
@@ -827,11 +844,13 @@ mod tests {
         let mut config = make_config("cancel-node", 2, 1024, &pool_tmp);
         config.heartbeat_interval = Duration::from_millis(50);
         let pool = make_pool(&config);
+        let cache = make_cache(&config, Arc::clone(&storage)).await;
 
         let writer = Arc::new(HeartbeatWriter::new(
             Arc::clone(&storage),
             &config,
             pool,
+            cache,
         ));
 
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);

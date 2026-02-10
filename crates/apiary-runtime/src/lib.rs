@@ -5,13 +5,13 @@
 //! which manages isolated execution chambers (mason bee pattern), and the
 //! heartbeat / world view system for multi-node awareness.
 
-use std::collections::HashMap;
-
 pub mod bee;
+pub mod cache;
 pub mod heartbeat;
 pub mod node;
 
 pub use bee::{BeePool, BeeState, BeeStatus, MasonChamber};
+pub use cache::{CacheEntry, CellCache};
 pub use heartbeat::{
     Heartbeat, HeartbeatWriter, NodeState, NodeStatus, WorldView, WorldViewBuilder,
 };
@@ -23,9 +23,13 @@ pub fn world_view_to_node_info(world_view: &WorldView) -> Vec<apiary_query::dist
     world_view.alive_nodes()
         .iter()
         .map(|node| {
-            // For v1, we don't have detailed cell-level cache info
-            // Initialize with empty cache map
-            let cached_cells = HashMap::new();
+            // Extract cached cells from heartbeat
+            // Note: This clones the HashMap, which is acceptable for v1 since:
+            // 1. Heartbeats are updated every 5 seconds, not on every query
+            // 2. Typical cache sizes are small (dozens to hundreds of cells)
+            // 3. Query planning is not on the critical path
+            // Future optimization: use Arc<HashMap> if this becomes a bottleneck
+            let cached_cells = node.heartbeat.cache.cached_cells.clone();
             
             apiary_query::distributed::NodeInfo {
                 node_id: node.node_id.clone(),
