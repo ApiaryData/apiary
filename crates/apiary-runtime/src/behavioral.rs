@@ -138,7 +138,7 @@ impl ColonyThermometer {
     pub async fn measure(&self, bee_pool: &BeePool) -> f64 {
         let status = bee_pool.status().await;
         let total_bees = status.len() as f64;
-        
+
         if total_bees == 0.0 {
             return 0.0;
         }
@@ -324,7 +324,7 @@ mod tests {
         // Give tasks time to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let temp = thermo.measure(&*pool).await;
+        let temp = thermo.measure(&pool).await;
         // Both bees busy → CPU util = 1.0, so temp should be at least 0.4
         assert!(temp >= 0.3, "Expected elevated temperature, got {temp}");
     }

@@ -63,9 +63,7 @@ impl Ledger {
         let data = serde_json::to_vec_pretty(&entry)
             .map_err(|e| ApiaryError::Serialization(e.to_string()))?;
 
-        let wrote = storage
-            .put_if_not_exists(&key, Bytes::from(data))
-            .await?;
+        let wrote = storage.put_if_not_exists(&key, Bytes::from(data)).await?;
 
         if !wrote {
             // Ledger already exists — open it instead
@@ -85,10 +83,7 @@ impl Ledger {
     }
 
     /// Open an existing ledger by loading the latest checkpoint and replaying entries.
-    pub async fn open(
-        storage: Arc<dyn StorageBackend>,
-        frame_path: &str,
-    ) -> Result<Self> {
+    pub async fn open(storage: Arc<dyn StorageBackend>, frame_path: &str) -> Result<Self> {
         let (version, schema, partition_by, active_cells) =
             Self::load_state(&storage, frame_path).await?;
 
@@ -112,9 +107,7 @@ impl Ledger {
         let checkpoint_files = storage.list(&checkpoint_prefix).await?;
 
         let mut start_version = 0u64;
-        let mut schema = FrameSchema {
-            fields: Vec::new(),
-        };
+        let mut schema = FrameSchema { fields: Vec::new() };
         let mut partition_by = Vec::new();
         let mut active_cells: Vec<CellMetadata> = Vec::new();
 
@@ -138,9 +131,7 @@ impl Ledger {
 
         let mut entry_files: Vec<(u64, String)> = all_entries
             .iter()
-            .filter(|f| {
-                !f.contains("_checkpoint") && f.ends_with(".json")
-            })
+            .filter(|f| !f.contains("_checkpoint") && f.ends_with(".json"))
             .filter_map(|f| {
                 let filename = f.rsplit('/').next()?;
                 let version_str = filename.strip_suffix(".json")?;
@@ -256,7 +247,7 @@ impl Ledger {
                 );
 
                 // Write checkpoint every CHECKPOINT_INTERVAL versions
-                if next_version % CHECKPOINT_INTERVAL == 0 {
+                if next_version.is_multiple_of(CHECKPOINT_INTERVAL) {
                     self.write_checkpoint().await?;
                 }
 
@@ -334,7 +325,10 @@ impl Ledger {
     pub fn prune_cells(
         &self,
         partition_filters: &std::collections::HashMap<String, String>,
-        stat_filters: &std::collections::HashMap<String, (Option<serde_json::Value>, Option<serde_json::Value>)>,
+        stat_filters: &std::collections::HashMap<
+            String,
+            (Option<serde_json::Value>, Option<serde_json::Value>),
+        >,
     ) -> Vec<&CellMetadata> {
         self.active_cells
             .iter()
@@ -352,17 +346,13 @@ impl Ledger {
                 for (col, (min_filter, max_filter)) in stat_filters {
                     if let Some(col_stats) = cell.stats.get(col) {
                         // If filter has a minimum and cell's max is less, skip
-                        if let (Some(filter_min), Some(cell_max)) =
-                            (min_filter, &col_stats.max)
-                        {
+                        if let (Some(filter_min), Some(cell_max)) = (min_filter, &col_stats.max) {
                             if json_value_lt(cell_max, filter_min) {
                                 return false;
                             }
                         }
                         // If filter has a maximum and cell's min is greater, skip
-                        if let (Some(filter_max), Some(cell_min)) =
-                            (max_filter, &col_stats.min)
-                        {
+                        if let (Some(filter_max), Some(cell_min)) = (max_filter, &col_stats.min) {
                             if json_value_lt(filter_max, cell_min) {
                                 return false;
                             }
@@ -398,13 +388,13 @@ fn ledger_entry_key(frame_path: &str, version: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apiary_core::{CellId, ColumnStats, FieldDef};
     use crate::local::LocalBackend;
+    use apiary_core::{CellId, ColumnStats, FieldDef};
     use std::collections::HashMap;
 
     async fn make_storage() -> Arc<dyn StorageBackend> {
         let dir = tempfile::tempdir().unwrap();
-        let backend = LocalBackend::new(dir.into_path()).await.unwrap();
+        let backend = LocalBackend::new(dir.keep()).await.unwrap();
         Arc::new(backend)
     }
 
@@ -689,15 +679,10 @@ mod tests {
         let node_id = NodeId::new("test_node");
         let schema = test_schema();
 
-        let mut ledger = Ledger::create(
-            storage.clone(),
-            "hive/box/frame",
-            schema,
-            vec![],
-            &node_id,
-        )
-        .await
-        .unwrap();
+        let mut ledger =
+            Ledger::create(storage.clone(), "hive/box/frame", schema, vec![], &node_id)
+                .await
+                .unwrap();
 
         let cells = vec![
             CellMetadata {
@@ -743,10 +728,7 @@ mod tests {
 
         // Filter: temp > 25 (min_filter=25, no max_filter)
         let stat_filters: HashMap<String, (Option<serde_json::Value>, Option<serde_json::Value>)> =
-            HashMap::from([(
-                "temp".into(),
-                (Some(serde_json::json!(25.0)), None),
-            )]);
+            HashMap::from([("temp".into(), (Some(serde_json::json!(25.0)), None))]);
         let pruned = ledger.prune_cells(&HashMap::new(), &stat_filters);
         assert_eq!(pruned.len(), 1);
         assert_eq!(pruned[0].id.as_str(), "cell_high");

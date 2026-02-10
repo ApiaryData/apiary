@@ -11,18 +11,21 @@ pub mod cache;
 pub mod heartbeat;
 pub mod node;
 
+pub use apiary_query::ApiaryQueryContext;
 pub use bee::{BeePool, BeeState, BeeStatus, MasonChamber};
-pub use behavioral::{AbandonmentTracker, AbandonmentDecision, ColonyThermometer, TemperatureRegulation};
+pub use behavioral::{
+    AbandonmentDecision, AbandonmentTracker, ColonyThermometer, TemperatureRegulation,
+};
 pub use cache::{CacheEntry, CellCache};
 pub use heartbeat::{
     Heartbeat, HeartbeatWriter, NodeState, NodeStatus, WorldView, WorldViewBuilder,
 };
-pub use node::{ApiaryNode, SwarmStatus, SwarmNodeInfo, ColonyStatus};
-pub use apiary_query::ApiaryQueryContext;
+pub use node::{ApiaryNode, ColonyStatus, SwarmNodeInfo, SwarmStatus};
 
 /// Convert WorldView to a vector of NodeInfo for distributed query planning.
 pub fn world_view_to_node_info(world_view: &WorldView) -> Vec<apiary_query::distributed::NodeInfo> {
-    world_view.alive_nodes()
+    world_view
+        .alive_nodes()
         .iter()
         .map(|node| {
             // Extract cached cells from heartbeat
@@ -32,7 +35,7 @@ pub fn world_view_to_node_info(world_view: &WorldView) -> Vec<apiary_query::dist
             // 3. Query planning is not on the critical path
             // Future optimization: use Arc<HashMap> if this becomes a bottleneck
             let cached_cells = node.heartbeat.cache.cached_cells.clone();
-            
+
             apiary_query::distributed::NodeInfo {
                 node_id: node.node_id.clone(),
                 state: match node.state {

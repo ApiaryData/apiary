@@ -114,9 +114,11 @@ impl StorageBackend for S3Backend {
         let mut results = Vec::new();
         let mut stream = self.store.list(Some(&full_prefix));
 
-        while let Some(meta) = stream.try_next().await.map_err(|e| {
-            ApiaryError::storage(format!("S3 list failed for prefix {prefix}"), e)
-        })? {
+        while let Some(meta) = stream
+            .try_next()
+            .await
+            .map_err(|e| ApiaryError::storage(format!("S3 list failed for prefix {prefix}"), e))?
+        {
             let full_key = meta.location.to_string();
             // Strip the backend prefix to return keys relative to the storage root
             let key = if self.prefix.is_empty() {
@@ -174,10 +176,7 @@ impl StorageBackend for S3Backend {
         match self.store.head(&path).await {
             Ok(_) => Ok(true),
             Err(object_store::Error::NotFound { .. }) => Ok(false),
-            Err(e) => Err(ApiaryError::storage(
-                format!("S3 head failed for {key}"),
-                e,
-            )),
+            Err(e) => Err(ApiaryError::storage(format!("S3 head failed for {key}"), e)),
         }
     }
 }
@@ -241,8 +240,7 @@ mod tests {
 
     #[test]
     fn test_parse_s3_uri_with_query() {
-        let (bucket, prefix) =
-            parse_s3_uri("s3://my-bucket/prefix?region=eu-west-1").unwrap();
+        let (bucket, prefix) = parse_s3_uri("s3://my-bucket/prefix?region=eu-west-1").unwrap();
         assert_eq!(bucket, "my-bucket");
         assert_eq!(prefix, "prefix");
     }

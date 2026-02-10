@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 use tracing::info;
 
 use apiary_core::config::NodeConfig;
@@ -112,7 +112,11 @@ pub struct BeeStatus {
 }
 
 /// A task closure that can be submitted to the pool.
-type TaskFn = Box<dyn FnOnce() -> std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError> + Send + 'static>;
+type TaskFn = Box<
+    dyn FnOnce() -> std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError>
+        + Send
+        + 'static,
+>;
 
 /// A queued task waiting for a free bee.
 struct QueuedTask {
@@ -151,7 +155,11 @@ impl BeePool {
                 chamber,
             }));
         }
-        info!(bees = config.cores, memory_per_bee = config.memory_per_bee, "BeePool created");
+        info!(
+            bees = config.cores,
+            memory_per_bee = config.memory_per_bee,
+            "BeePool created"
+        );
         Self {
             bees,
             queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -217,9 +225,13 @@ impl BeePool {
     pub async fn submit<F>(
         &self,
         func: F,
-    ) -> tokio::task::JoinHandle<std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError>>
+    ) -> tokio::task::JoinHandle<
+        std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError>,
+    >
     where
-        F: FnOnce() -> std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError> + Send + 'static,
+        F: FnOnce() -> std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError>
+            + Send
+            + 'static,
     {
         let task_id = TaskId::generate();
 
@@ -269,9 +281,11 @@ impl BeePool {
 
         // Return a handle that awaits the queued result
         tokio::task::spawn(async move {
-            rx.await.unwrap_or_else(|_| Err(ApiaryError::Internal {
-                message: "Task channel closed before result".to_string(),
-            }))
+            rx.await.unwrap_or_else(|_| {
+                Err(ApiaryError::Internal {
+                    message: "Task channel closed before result".to_string(),
+                })
+            })
         })
     }
 
@@ -281,7 +295,9 @@ impl BeePool {
         bee: Arc<Bee>,
         task_id: TaskId,
         func: TaskFn,
-    ) -> tokio::task::JoinHandle<std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError>> {
+    ) -> tokio::task::JoinHandle<
+        std::result::Result<Vec<arrow::record_batch::RecordBatch>, ApiaryError>,
+    > {
         let timeout = self.default_timeout;
         let queue = Arc::clone(&self.queue);
         let bees = self.bees.clone();
@@ -362,8 +378,7 @@ fn drain_queue_once(
 
         // Spawn the queued task
         tokio::task::spawn(async move {
-            let result =
-                tokio::time::timeout(timeout, tokio::task::spawn_blocking(func)).await;
+            let result = tokio::time::timeout(timeout, tokio::task::spawn_blocking(func)).await;
 
             bee.chamber.reset();
             {
@@ -465,7 +480,11 @@ mod tests {
         let err = chamber.request_memory(200);
         assert!(err.is_err());
         match err.unwrap_err() {
-            ApiaryError::MemoryExceeded { bee_id: id, budget, requested } => {
+            ApiaryError::MemoryExceeded {
+                bee_id: id,
+                budget,
+                requested,
+            } => {
                 assert_eq!(id, bee_id);
                 assert_eq!(budget, 1000);
                 assert_eq!(requested, 200);
@@ -490,13 +509,15 @@ mod tests {
         let budget = config.memory_per_bee;
 
         // Submit task that fails with memory exceeded on one bee
-        let handle = pool.submit(move || {
-            Err(ApiaryError::MemoryExceeded {
-                bee_id: BeeId::new("bee-0"),
-                budget,
-                requested: budget + 1,
+        let handle = pool
+            .submit(move || {
+                Err(ApiaryError::MemoryExceeded {
+                    bee_id: BeeId::new("bee-0"),
+                    budget,
+                    requested: budget + 1,
+                })
             })
-        }).await;
+            .await;
 
         let result = handle.await.unwrap();
         assert!(result.is_err());
@@ -516,10 +537,12 @@ mod tests {
         let mut pool = BeePool::new(&config);
         pool.default_timeout = Duration::from_millis(100);
 
-        let handle = pool.submit(|| {
-            std::thread::sleep(Duration::from_secs(5));
-            Ok(vec![])
-        }).await;
+        let handle = pool
+            .submit(|| {
+                std::thread::sleep(Duration::from_secs(5));
+                Ok(vec![])
+            })
+            .await;
 
         let result = handle.await.unwrap();
         assert!(result.is_err());
@@ -549,10 +572,12 @@ mod tests {
 
         // Write a file in bee-0's scratch
         let scratch_0_clone = scratch_0.clone();
-        let handle = pool.submit(move || {
-            std::fs::write(scratch_0_clone.join("test.tmp"), b"hello").unwrap();
-            Ok(vec![])
-        }).await;
+        let handle = pool
+            .submit(move || {
+                std::fs::write(scratch_0_clone.join("test.tmp"), b"hello").unwrap();
+                Ok(vec![])
+            })
+            .await;
         handle.await.unwrap().unwrap();
 
         // After task completes, scratch should be cleaned
@@ -560,7 +585,10 @@ mod tests {
         // The directory should exist (recreated) but be empty
         assert!(scratch_0.exists());
         let entries: Vec<_> = std::fs::read_dir(&scratch_0).unwrap().collect();
-        assert!(entries.is_empty(), "Scratch dir should be cleaned after task");
+        assert!(
+            entries.is_empty(),
+            "Scratch dir should be cleaned after task"
+        );
     }
 
     #[tokio::test]
@@ -573,11 +601,13 @@ mod tests {
         let mut handles = vec![];
         for _ in 0..3 {
             let c = counter.clone();
-            let h = pool.submit(move || {
-                c.fetch_add(1, Ordering::Relaxed);
-                std::thread::sleep(Duration::from_millis(50));
-                Ok(vec![])
-            }).await;
+            let h = pool
+                .submit(move || {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(50));
+                    Ok(vec![])
+                })
+                .await;
             handles.push(h);
         }
 
@@ -599,11 +629,13 @@ mod tests {
         let mut handles = vec![];
         for _ in 0..3 {
             let c = counter.clone();
-            let h = pool.submit(move || {
-                c.fetch_add(1, Ordering::Relaxed);
-                std::thread::sleep(Duration::from_millis(20));
-                Ok(vec![])
-            }).await;
+            let h = pool
+                .submit(move || {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(20));
+                    Ok(vec![])
+                })
+                .await;
             handles.push(h);
         }
 
@@ -641,12 +673,7 @@ mod tests {
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(scratch.join("leftover.tmp"), b"data").unwrap();
 
-        let chamber = MasonChamber::new(
-            bee_id,
-            1000,
-            scratch.clone(),
-            Duration::from_secs(10),
-        );
+        let chamber = MasonChamber::new(bee_id, 1000, scratch.clone(), Duration::from_secs(10));
         chamber.request_memory(800).unwrap();
         assert_eq!(chamber.memory_used.load(Ordering::Relaxed), 800);
 
@@ -668,11 +695,13 @@ mod tests {
 
         // Submit a long-running task to occupy one bee
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let handle = pool.submit(move || {
-            // Block until signalled
-            let _ = rx.blocking_recv();
-            Ok(vec![])
-        }).await;
+        let handle = pool
+            .submit(move || {
+                // Block until signalled
+                let _ = rx.blocking_recv();
+                Ok(vec![])
+            })
+            .await;
 
         // Give the pool a moment to dispatch
         tokio::time::sleep(Duration::from_millis(50)).await;

@@ -17,9 +17,7 @@ use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
-use apiary_core::{
-    CellSizingPolicy, FrameSchema, LedgerAction, Result, WriteResult,
-};
+use apiary_core::{CellSizingPolicy, FrameSchema, LedgerAction, Result, WriteResult};
 use apiary_query::ApiaryQueryContext;
 use apiary_storage::cell_reader::CellReader;
 use apiary_storage::cell_writer::CellWriter;
@@ -28,7 +26,7 @@ use apiary_storage::local::LocalBackend;
 use apiary_storage::s3::S3Backend;
 
 use crate::bee::{BeePool, BeeStatus};
-use crate::behavioral::{ColonyThermometer, AbandonmentTracker};
+use crate::behavioral::{AbandonmentTracker, ColonyThermometer};
 use crate::cache::CellCache;
 use crate::heartbeat::{HeartbeatWriter, NodeState, WorldView, WorldViewBuilder};
 
@@ -53,13 +51,13 @@ pub struct ApiaryNode {
 
     /// Pool of bees for isolated task execution.
     pub bee_pool: Arc<BeePool>,
-    
+
     /// Local cell cache with LRU eviction.
     pub cell_cache: Arc<CellCache>,
-    
+
     /// Colony thermometer for measuring system health.
     pub thermometer: ColonyThermometer,
-    
+
     /// Abandonment tracker for task failure handling.
     pub abandonment_tracker: Arc<AbandonmentTracker>,
 
@@ -121,25 +119,20 @@ impl ApiaryNode {
         info!("Registry loaded");
 
         // Initialize query context
-        let query_ctx = Arc::new(tokio::sync::Mutex::new(
-            ApiaryQueryContext::with_node_id(
-                Arc::clone(&storage),
-                Arc::clone(&registry),
-                config.node_id.clone(),
-            )
-        ));
+        let query_ctx = Arc::new(tokio::sync::Mutex::new(ApiaryQueryContext::with_node_id(
+            Arc::clone(&storage),
+            Arc::clone(&registry),
+            config.node_id.clone(),
+        )));
 
         // Initialize bee pool
         let bee_pool = Arc::new(BeePool::new(&config));
         info!(bees = config.cores, "Bee pool initialized");
-        
+
         // Initialize cell cache
         let cache_dir = config.cache_dir.join("cells");
-        let cell_cache = Arc::new(CellCache::new(
-            cache_dir,
-            config.max_cache_size,
-            Arc::clone(&storage),
-        ).await?);
+        let cell_cache =
+            Arc::new(CellCache::new(cache_dir, config.max_cache_size, Arc::clone(&storage)).await?);
         info!(
             max_cache_mb = config.max_cache_size / (1024 * 1024),
             "Cell cache initialized"
@@ -446,12 +439,15 @@ impl ApiaryNode {
         let query_owned = query.to_string();
         let rt_handle = tokio::runtime::Handle::current();
 
-        let handle = self.bee_pool.submit(move || {
-            rt_handle.block_on(async {
-                let mut ctx = query_ctx.lock().await;
-                ctx.sql(&query_owned).await
+        let handle = self
+            .bee_pool
+            .submit(move || {
+                rt_handle.block_on(async {
+                    let mut ctx = query_ctx.lock().await;
+                    ctx.sql(&query_owned).await
+                })
             })
-        }).await;
+            .await;
 
         handle.await.map_err(|e| ApiaryError::Internal {
             message: format!("Task join error: {e}"),
@@ -500,21 +496,21 @@ impl ApiaryNode {
             total_idle_bees,
         }
     }
-    
+
     /// Return the current colony status: temperature and regulation state.
     pub async fn colony_status(&self) -> ColonyStatus {
         let temperature = self.thermometer.measure(&self.bee_pool).await;
         let regulation = self.thermometer.regulation(temperature);
-        
+
         ColonyStatus {
             temperature,
             regulation: regulation.as_str().to_string(),
             setpoint: self.thermometer.setpoint(),
         }
     }
-    
+
     /// Execute a distributed query (v2 feature - explicit control).
-    /// 
+    ///
     /// This method is reserved for v2 when users want explicit control over
     /// distributed execution strategy. In v1, distributed execution happens
     /// transparently within the query context based on query planning.
@@ -581,11 +577,11 @@ async fn run_query_worker_poller(
     cancel: tokio::sync::watch::Receiver<bool>,
 ) {
     use apiary_query::distributed;
-    
+
     info!(node_id = %node_id, "Query worker poller started");
-    
+
     let poll_interval = Duration::from_millis(500);
-    
+
     loop {
         tokio::select! {
             _ = tokio::time::sleep(poll_interval) => {
@@ -597,14 +593,14 @@ async fn run_query_worker_poller(
                             if !key.ends_with("/manifest.json") {
                                 continue;
                             }
-                            
+
                             // Extract query_id from path: _queries/{query_id}/manifest.json
                             let parts: Vec<&str> = key.split('/').collect();
                             if parts.len() < 3 {
                                 continue;
                             }
                             let query_id = parts[1];
-                            
+
                             // Try to read the manifest
                             match distributed::read_manifest(&storage, query_id).await {
                                 Ok(manifest) => {
@@ -612,28 +608,28 @@ async fn run_query_worker_poller(
                                     let my_tasks: Vec<_> = manifest.tasks.iter()
                                         .filter(|t| t.node_id == node_id)
                                         .collect();
-                                    
+
                                     if my_tasks.is_empty() {
                                         continue;
                                     }
-                                    
+
                                     // Check if we've already written our partial result
                                     let partial_path = distributed::partial_result_path(query_id, &node_id);
                                     if storage.get(&partial_path).await.is_ok() {
                                         // Already completed
                                         continue;
                                     }
-                                    
+
                                     // Execute tasks and write partial result
                                     info!(
                                         query_id = %query_id,
                                         tasks = my_tasks.len(),
                                         "Executing distributed query tasks"
                                     );
-                                    
+
                                     let mut results = Vec::new();
                                     let ctx = query_ctx.lock().await;
-                                    
+
                                     for task in my_tasks {
                                         match ctx.execute_task(&task.sql_fragment, &task.cells).await {
                                             Ok(batches) => {
@@ -648,7 +644,7 @@ async fn run_query_worker_poller(
                                             }
                                         }
                                     }
-                                    
+
                                     // Write partial result
                                     if !results.is_empty() {
                                         if let Err(e) = distributed::write_partial_result(
