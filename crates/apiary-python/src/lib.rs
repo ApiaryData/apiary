@@ -531,6 +531,37 @@ impl Apiary {
 
     // --- Dual terminology aliases (database/schema/table) ---
 
+    /// Return the status of each bee in the pool.
+    ///
+    /// Returns:
+    ///     list[dict]: A list of bee status dicts, each with bee_id, state, memory_used, memory_budget.
+    fn bee_status(&self) -> PyResult<PyObject> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Node not started. Call start() first.")
+        })?;
+
+        let statuses = self
+            .runtime
+            .block_on(async { node.bee_status().await });
+
+        Python::with_gil(|py| {
+            let list = pyo3::types::PyList::empty_bound(py);
+            for s in statuses {
+                let dict = pyo3::types::PyDict::new_bound(py);
+                dict.set_item("bee_id", &s.bee_id)?;
+                dict.set_item("state", &s.state)?;
+                dict.set_item("memory_used", s.memory_used)?;
+                dict.set_item("memory_budget", s.memory_budget)?;
+                list.append(dict)?;
+            }
+            Ok(list.into())
+        })
+    }
+
     /// Alias for create_hive (traditional database terminology).
     fn create_database(&self, name: String) -> PyResult<()> {
         self.create_hive(name)

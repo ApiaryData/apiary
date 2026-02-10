@@ -1,7 +1,8 @@
 //! The Apiary node — a stateless compute instance in the swarm.
 //!
 //! [`ApiaryNode`] is the main runtime entry point. It initialises the
-//! storage backend, detects system capacity, and manages the node lifecycle.
+//! storage backend, detects system capacity, creates the bee pool,
+//! and manages the node lifecycle.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,6 +24,8 @@ use apiary_storage::ledger::Ledger;
 use apiary_storage::local::LocalBackend;
 use apiary_storage::s3::S3Backend;
 
+use crate::bee::{BeePool, BeeStatus};
+
 /// An Apiary compute node — the runtime for one machine in the swarm.
 ///
 /// The node holds a reference to the storage backend and its configuration.
@@ -40,7 +43,10 @@ pub struct ApiaryNode {
     pub registry: Arc<RegistryManager>,
 
     /// DataFusion-based SQL query context.
-    pub query_ctx: tokio::sync::Mutex<ApiaryQueryContext>,
+    pub query_ctx: Arc<tokio::sync::Mutex<ApiaryQueryContext>>,
+
+    /// Pool of bees for isolated task execution.
+    pub bee_pool: Arc<BeePool>,
 }
 
 impl ApiaryNode {
@@ -87,12 +93,16 @@ impl ApiaryNode {
         info!("Registry loaded");
 
         // Initialize query context
-        let query_ctx = tokio::sync::Mutex::new(ApiaryQueryContext::new(
+        let query_ctx = Arc::new(tokio::sync::Mutex::new(ApiaryQueryContext::new(
             Arc::clone(&storage),
             Arc::clone(&registry),
-        ));
+        )));
 
-        Ok(Self { config, storage, registry, query_ctx })
+        // Initialize bee pool
+        let bee_pool = Arc::new(BeePool::new(&config));
+        info!(bees = config.cores, "Bee pool initialized");
+
+        Ok(Self { config, storage, registry, query_ctx, bee_pool })
     }
 
     /// Gracefully shut down the node.
@@ -293,14 +303,41 @@ impl ApiaryNode {
 
     /// Execute a SQL query and return results as RecordBatches.
     ///
+    /// The query is executed through the BeePool — assigned to an idle bee
+    /// or queued if all bees are busy. Each bee runs in its own sealed
+    /// chamber with memory budget and timeout enforcement.
+    ///
     /// Supports:
     /// - Standard SQL (SELECT, GROUP BY, ORDER BY, etc.) over frames
     /// - Custom commands: USE HIVE, USE BOX, SHOW HIVES, SHOW BOXES, SHOW FRAMES, DESCRIBE
     /// - 3-part table names: hive.box.frame
     /// - 1-part names after USE HIVE / USE BOX
     pub async fn sql(&self, query: &str) -> Result<Vec<RecordBatch>> {
-        let mut ctx = self.query_ctx.lock().await;
-        ctx.sql(query).await
+        let query_ctx = Arc::clone(&self.query_ctx);
+        let query_owned = query.to_string();
+
+        let handle = self.bee_pool.submit(move || {
+            // Build a temporary tokio runtime for the blocking task
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| ApiaryError::Internal {
+                    message: format!("Failed to build task runtime: {e}"),
+                })?;
+            rt.block_on(async {
+                let mut ctx = query_ctx.lock().await;
+                ctx.sql(&query_owned).await
+            })
+        }).await;
+
+        handle.await.map_err(|e| ApiaryError::Internal {
+            message: format!("Task join error: {e}"),
+        })?
+    }
+
+    /// Return the status of each bee in the pool.
+    pub async fn bee_status(&self) -> Vec<BeeStatus> {
+        self.bee_pool.status().await
     }
 }
 
