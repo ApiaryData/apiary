@@ -121,9 +121,10 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 | 2 | Registry + Namespace | ✅ Complete |
 | 3 | Ledger + Cell Storage | ✅ Complete |
 | 4 | DataFusion Integration | ✅ Complete |
-| 5+ | Advanced Features | 🚧 Not Started |
+| 5 | Mason Bee Isolation | ✅ Complete |
+| 6+ | Advanced Features | 🚧 Not Started |
 
-### Current Capabilities (Step 4 Complete — Solo Mode)
+### Current Capabilities (Step 5 Complete — Solo Mode with Bee Isolation)
 
 - ✅ Rust workspace with 6 crates
 - ✅ Python SDK via PyO3
@@ -131,7 +132,7 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 - ✅ S3Backend (S3-compatible object storage)
 - ✅ StorageBackend trait with atomic operations
 - ✅ Node configuration with resource auto-detection
-- ✅ Typed identifiers (HiveId, BoxId, FrameId, etc.)
+- ✅ Typed identifiers (HiveId, BoxId, FrameId, TaskId, etc.)
 - ✅ Registry with DDL operations (create/list hives, boxes, frames)
 - ✅ Dual terminology (bee-themed and traditional database naming)
 - ✅ Transaction ledger with optimistic concurrency
@@ -148,6 +149,11 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 - ✅ Projection pushdown via DataFusion
 - ✅ Aggregation (GROUP BY, AVG, SUM, COUNT, MIN, MAX)
 - ✅ DML blocking (DELETE/UPDATE with clear error messages)
+- ✅ Mason bee sealed chambers (memory-budgeted isolated execution per bee)
+- ✅ BeePool with task queuing and concurrent execution
+- ✅ Task timeout enforcement
+- ✅ Scratch directory isolation per bee
+- ✅ SQL queries routed through BeePool
 
 ## Project Structure
 
@@ -261,4 +267,4 @@ Apiary draws inspiration from:
 
 ---
 
-**Status**: Early development. Step 4 of 10 complete. Solo mode operational! 🐝
+**Status**: Early development. Step 5 of 10 complete. Solo mode with bee isolation operational! 🐝
