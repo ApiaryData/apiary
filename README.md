@@ -123,9 +123,10 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 | 4 | DataFusion Integration | ✅ Complete |
 | 5 | Mason Bee Isolation | ✅ Complete |
 | 6 | Heartbeat + World View | ✅ Complete |
-| 7+ | Advanced Features | 🚧 Not Started |
+| 7 | Distributed Query Execution | ✅ Complete |
+| 8+ | Advanced Features | 🚧 Not Started |
 
-### Current Capabilities (Step 6 Complete — Multi-Node Awareness)
+### Current Capabilities (Step 7 Complete — Distributed Query Execution)
 
 - ✅ Rust workspace with 6 crates
 - ✅ Python SDK via PyO3
@@ -162,6 +163,12 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 - ✅ Stale heartbeat cleanup (dead nodes cleaned after threshold)
 - ✅ `swarm_status()` Python API for swarm visibility
 - ✅ Solo mode works as a swarm of one (zero special-casing)
+- ✅ Distributed query planner (cache-aware, capacity-based cell assignment)
+- ✅ Query coordinator (manifest writing, task execution, result merging)
+- ✅ Worker task poller (background task polling for query manifests)
+- ✅ Storage-based coordination (query manifests via object storage)
+- ✅ Partial result exchange (Arrow IPC format)
+- ✅ Transparent distribution (single-node fallback for small queries)
 
 ## Project Structure
 
@@ -275,4 +282,4 @@ Apiary draws inspiration from:
 
 ---
 
-**Status**: Early development. Step 6 of 10 complete. Multi-node awareness operational! 🐝
+**Status**: Early development. Step 7 of 10 complete. Distributed query execution operational! 🐝

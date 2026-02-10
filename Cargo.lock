@@ -121,10 +121,12 @@ dependencies = [
  "arrow",
  "async-trait",
  "datafusion",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

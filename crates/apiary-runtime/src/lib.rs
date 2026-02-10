@@ -5,6 +5,8 @@
 //! which manages isolated execution chambers (mason bee pattern), and the
 //! heartbeat / world view system for multi-node awareness.
 
+use std::collections::HashMap;
+
 pub mod bee;
 pub mod heartbeat;
 pub mod node;
@@ -15,3 +17,32 @@ pub use heartbeat::{
 };
 pub use node::ApiaryNode;
 pub use apiary_query::ApiaryQueryContext;
+
+/// Convert WorldView to a vector of NodeInfo for distributed query planning.
+pub fn world_view_to_node_info(world_view: &WorldView) -> Vec<apiary_query::distributed::NodeInfo> {
+    world_view.alive_nodes()
+        .iter()
+        .map(|node| {
+            // For v1, we don't have detailed cell-level cache info
+            // Initialize with empty cache map
+            let cached_cells = HashMap::new();
+            
+            apiary_query::distributed::NodeInfo {
+                node_id: node.node_id.clone(),
+                state: match node.state {
+                    NodeState::Alive => apiary_query::distributed::NodeState::Alive,
+                    NodeState::Suspect => apiary_query::distributed::NodeState::Suspect,
+                    NodeState::Dead => apiary_query::distributed::NodeState::Dead,
+                },
+                cores: node.heartbeat.capacity.cores,
+                memory_bytes: node.heartbeat.capacity.memory_total_bytes,
+                memory_per_bee: node.heartbeat.capacity.memory_per_bee,
+                target_cell_size: node.heartbeat.capacity.target_cell_size,
+                bees_total: node.heartbeat.load.bees_total,
+                bees_busy: node.heartbeat.load.bees_busy,
+                idle_bees: node.heartbeat.load.bees_idle,
+                cached_cells,
+            }
+        })
+        .collect()
+}

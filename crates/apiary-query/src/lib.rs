@@ -5,6 +5,8 @@
 //! the frame's active Parquet cells.  Custom SQL commands (USE, SHOW,
 //! DESCRIBE) are intercepted before they reach DataFusion.
 
+pub mod distributed;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,11 +14,12 @@ use arrow::array::StringArray;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::prelude::*;
-use tracing::info;
+use tracing::{info, warn};
 
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
+use apiary_core::types::NodeId;
 use apiary_core::Result;
 use apiary_storage::cell_reader::CellReader;
 use apiary_storage::ledger::Ledger;
@@ -27,16 +30,28 @@ pub struct ApiaryQueryContext {
     registry: Arc<RegistryManager>,
     current_hive: Option<String>,
     current_box: Option<String>,
+    #[allow(dead_code)] // Will be used for distributed execution
+    node_id: NodeId,
 }
 
 impl ApiaryQueryContext {
     /// Create a new query context.
     pub fn new(storage: Arc<dyn StorageBackend>, registry: Arc<RegistryManager>) -> Self {
+        Self::with_node_id(storage, registry, NodeId::from("local"))
+    }
+    
+    /// Create a new query context with a specific node ID.
+    pub fn with_node_id(
+        storage: Arc<dyn StorageBackend>,
+        registry: Arc<RegistryManager>,
+        node_id: NodeId,
+    ) -> Self {
         Self {
             storage,
             registry,
             current_hive: None,
             current_box: None,
+            node_id,
         }
     }
 
@@ -364,6 +379,143 @@ impl ApiaryQueryContext {
                 reason: "Invalid table reference. Use hive.box.frame format.".into(),
             }),
         }
+    }
+    
+    /// Execute a query using distributed execution (stub for Step 7).
+    /// 
+    /// For v1, this is a simplified implementation that:
+    /// - Creates tasks from cell assignments
+    /// - Generates SQL fragments (simple pass-through)
+    /// - Writes the query manifest
+    /// - Executes local tasks
+    /// - Polls for partial results from other nodes
+    /// - Merges results (simple concatenation)
+    /// - Cleans up query files
+    pub async fn execute_distributed(
+        &self,
+        sql: &str,
+        assignments: HashMap<NodeId, Vec<distributed::CellInfo>>,
+    ) -> Result<Vec<RecordBatch>> {
+        use distributed::*;
+        
+        // 1. Create tasks from assignments
+        let mut tasks = Vec::new();
+        for (node_id, cells) in &assignments {
+            let task_id = format!("{}_{}", node_id.as_str(), uuid::Uuid::new_v4());
+            let cell_keys: Vec<String> = cells.iter()
+                .map(|c| c.storage_key.clone())
+                .collect();
+            
+            tasks.push(PlannedTask {
+                task_id,
+                node_id: node_id.clone(),
+                cells: cell_keys,
+                sql_fragment: sql.to_string(), // For v1, use original SQL
+            });
+        }
+        
+        // 2. Create and write manifest
+        let manifest = create_manifest(sql, tasks.clone(), None, 60);
+        write_manifest(&self.storage, &manifest).await?;
+        
+        info!(
+            query_id = %manifest.query_id,
+            tasks = tasks.len(),
+            "Distributed query manifest written"
+        );
+        
+        // 3. Execute local tasks
+        let local_tasks: Vec<_> = tasks.iter()
+            .filter(|t| t.node_id == self.node_id)
+            .collect();
+        
+        let mut local_results = Vec::new();
+        for task in local_tasks {
+            match self.execute_task(&task.sql_fragment, &task.cells).await {
+                Ok(batches) => {
+                    if !batches.is_empty() {
+                        local_results.extend(batches);
+                    }
+                }
+                Err(e) => {
+                    warn!(task_id = %task.task_id, error = %e, "Local task failed");
+                }
+            }
+        }
+        
+        // Write local partial result
+        if !local_results.is_empty() {
+            write_partial_result(
+                &self.storage,
+                &manifest.query_id,
+                &self.node_id,
+                &local_results,
+            ).await?;
+        }
+        
+        // 4. Poll for partial results from other nodes
+        let remote_nodes: Vec<_> = tasks.iter()
+            .filter(|t| t.node_id != self.node_id)
+            .map(|t| t.node_id.clone())
+            .collect();
+        
+        let timeout = std::time::Duration::from_secs(manifest.timeout_secs);
+        let start = std::time::Instant::now();
+        let mut collected_results = local_results;
+        
+        for remote_node in &remote_nodes {
+            let deadline = timeout.saturating_sub(start.elapsed());
+            if start.elapsed() >= timeout {
+                warn!(query_id = %manifest.query_id, "Query timeout reached");
+                break;
+            }
+            
+            // Poll for partial result
+            let poll_interval = std::time::Duration::from_millis(500);
+            let mut attempts = 0;
+            let max_attempts = (deadline.as_millis() / poll_interval.as_millis()) as usize;
+            
+            while attempts < max_attempts {
+                match read_partial_result(&self.storage, &manifest.query_id, remote_node).await {
+                    Ok(batches) => {
+                        info!(
+                            query_id = %manifest.query_id,
+                            node_id = %remote_node,
+                            "Partial result received"
+                        );
+                        collected_results.extend(batches);
+                        break;
+                    }
+                    Err(_) => {
+                        tokio::time::sleep(poll_interval).await;
+                        attempts += 1;
+                    }
+                }
+            }
+        }
+        
+        // 5. Cleanup
+        if let Err(e) = cleanup_query(&self.storage, &manifest.query_id).await {
+            warn!(query_id = %manifest.query_id, error = %e, "Failed to cleanup query");
+        }
+        
+        Ok(collected_results)
+    }
+    
+    /// Execute a task on a specific set of cells.
+    /// 
+    /// # Arguments
+    /// * `sql` - The SQL query to execute
+    /// * `cell_keys` - Storage keys of cells to scan (v2: will filter to these cells only)
+    /// 
+    /// # v1 Limitation
+    /// In v1, this executes the SQL query on all available cells. Cell-specific
+    /// filtering (registering only the specified cells as tables) will be implemented
+    /// in v2 for true work partitioning across nodes.
+    pub async fn execute_task(&self, sql: &str, _cell_keys: &[String]) -> Result<Vec<RecordBatch>> {
+        // v1: Execute SQL on all available cells
+        // v2: Will filter to only the cells specified in _cell_keys
+        self.execute_standard_sql(sql).await
     }
 }
 
