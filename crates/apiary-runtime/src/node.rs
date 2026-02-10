@@ -470,27 +470,16 @@ impl ApiaryNode {
         }
     }
     
-    /// Execute a distributed query (Step 7 integration).
+    /// Execute a distributed query (v2 feature - explicit control).
     /// 
-    /// This method demonstrates the distributed execution flow:
-    /// 1. Collects cells from the frame(s) referenced in the query
-    /// 2. Plans the query using the world view
-    /// 3. If distributed, executes via the distributed coordinator
-    /// 4. If local, falls back to normal execution
-    ///
-    /// For v1, this is a simplified entry point for testing.
-    #[allow(dead_code)] // Will be used by tests/examples
-    pub async fn sql_distributed(&self, _query: &str) -> Result<Vec<RecordBatch>> {
-        // NOTE: This is a placeholder for Step 7 distributed query entry point
-        // Full implementation would:
-        // 1. Parse query to extract frame references
-        // 2. Collect CellInfo from ledgers
-        // 3. Get NodeInfo from world view
-        // 4. Call plan_query to decide local vs distributed
-        // 5. Execute accordingly
-        
-        // For now, just use regular sql() method
-        self.sql(_query).await
+    /// This method is reserved for v2 when users want explicit control over
+    /// distributed execution strategy. In v1, distributed execution happens
+    /// transparently within the query context based on query planning.
+    #[allow(dead_code)] // Reserved for v2 explicit distribution control
+    pub async fn sql_distributed(&self, query: &str) -> Result<Vec<RecordBatch>> {
+        // v1: Distributed execution is transparent in query context
+        // v2: This will allow explicit control over distribution strategy
+        self.sql(query).await
     }
 }
 

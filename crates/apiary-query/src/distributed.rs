@@ -214,20 +214,12 @@ fn assign_cells_to_nodes(
 
 /// Generate SQL fragment for a query (simplified for v1).
 ///
-/// For now, we only support simple scans (is_aggregation=false).
-/// Aggregation queries will return an error in v1.
-pub fn generate_sql_fragment(original_sql: &str, is_aggregation: bool) -> (String, Option<String>) {
-    if is_aggregation {
-        // v1 does not support aggregation decomposition
-        // Return the original SQL and let it fail at runtime with a clear error
-        // A future implementation would parse and decompose the aggregation
-        let fragment = original_sql.to_string();
-        (fragment, None)
-    } else {
-        // For simple scans, pass through the original SQL
-        let fragment = original_sql.to_string();
-        (fragment, None)
-    }
+/// In v1, all queries are passed through as-is without decomposition.
+/// Aggregation decomposition (partial + merge) will be added in v2.
+pub fn generate_sql_fragment(original_sql: &str, _is_aggregation: bool) -> (String, Option<String>) {
+    // v1: Pass-through all queries without decomposition
+    // Future: Implement aggregation decomposition when _is_aggregation is true
+    (original_sql.to_string(), None)
 }
 
 /// Query manifest path in storage.

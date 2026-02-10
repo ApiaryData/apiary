@@ -504,15 +504,17 @@ impl ApiaryQueryContext {
     
     /// Execute a task on a specific set of cells.
     /// 
-    /// For v1, this executes the SQL normally without filtering to specific cells.
-    /// In a future version, this should register only the specified cells as tables.
-    #[allow(unused_variables)]
-    pub async fn execute_task(&self, sql: &str, cell_keys: &[String]) -> Result<Vec<RecordBatch>> {
-        // For v1, we execute the SQL and filter cells
-        // This is a simplified implementation - in reality, we'd need to
-        // register only the specified cells as tables
-        
-        // For now, just execute the SQL normally
+    /// # Arguments
+    /// * `sql` - The SQL query to execute
+    /// * `cell_keys` - Storage keys of cells to scan (v2: will filter to these cells only)
+    /// 
+    /// # v1 Limitation
+    /// In v1, this executes the SQL query on all available cells. Cell-specific
+    /// filtering (registering only the specified cells as tables) will be implemented
+    /// in v2 for true work partitioning across nodes.
+    pub async fn execute_task(&self, sql: &str, _cell_keys: &[String]) -> Result<Vec<RecordBatch>> {
+        // v1: Execute SQL on all available cells
+        // v2: Will filter to only the cells specified in _cell_keys
         self.execute_standard_sql(sql).await
     }
 }
