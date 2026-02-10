@@ -544,17 +544,19 @@ fn parse_predicate(condition: &str) -> Option<Predicate> {
     None
 }
 
+/// Stat filter: maps column name → (min bound, max bound).
+type StatFilters = HashMap<String, (Option<serde_json::Value>, Option<serde_json::Value>)>;
+
 /// Build partition and stat filters from predicates.
 fn build_filters(
     predicates: &[Predicate],
     partition_columns: &[String],
 ) -> (
     HashMap<String, String>,
-    HashMap<String, (Option<serde_json::Value>, Option<serde_json::Value>)>,
+    StatFilters,
 ) {
     let mut partition_filters = HashMap::new();
-    let mut stat_filters: HashMap<String, (Option<serde_json::Value>, Option<serde_json::Value>)> =
-        HashMap::new();
+    let mut stat_filters: StatFilters = HashMap::new();
 
     for pred in predicates {
         if partition_columns.contains(&pred.column) {

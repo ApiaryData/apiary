@@ -7,7 +7,7 @@
 | 1 | Skeleton + StorageBackend | complete | 2026-02-09 | All acceptance criteria met |
 | 2 | Registry + Namespace | complete | 2026-02-10 | DDL operations, versioning, Python API with dual terminology |
 | 3 | Ledger + Cell Storage | complete | 2026-02-10 | Transaction ledger, Parquet cells, partitioning, stats, write/read/overwrite |
-| 4 | DataFusion Integration | not started | | **SOLO MODE MILESTONE** |
+| 4 | DataFusion Integration | complete | 2026-02-10 | SQL queries via DataFusion, custom commands, cell pruning, **SOLO MODE MILESTONE** |
 | 5 | Mason Bee Isolation | not started | | |
 | 6 | Heartbeat + World View | not started | | **MULTI-NODE MILESTONE** |
 | 7 | Distributed Queries | not started | | |

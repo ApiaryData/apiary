@@ -120,12 +120,12 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 | 1 | Skeleton + StorageBackend | ✅ Complete |
 | 2 | Registry + Namespace | ✅ Complete |
 | 3 | Ledger + Cell Storage | ✅ Complete |
-| 4 | DataFusion Integration | 🚧 Not Started |
+| 4 | DataFusion Integration | ✅ Complete |
 | 5+ | Advanced Features | 🚧 Not Started |
 
-### Current Capabilities (Step 3 Complete)
+### Current Capabilities (Step 4 Complete — Solo Mode)
 
-- ✅ Rust workspace with 5 crates
+- ✅ Rust workspace with 6 crates
 - ✅ Python SDK via PyO3
 - ✅ LocalBackend (filesystem storage)
 - ✅ S3Backend (S3-compatible object storage)
@@ -142,6 +142,12 @@ Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for deta
 - ✅ Schema validation (null partition rejection)
 - ✅ Frame overwrite (atomic cell replacement)
 - ✅ Ledger checkpointing
+- ✅ SQL queries via Apache DataFusion
+- ✅ Custom SQL commands (USE, SHOW, DESCRIBE)
+- ✅ Cell pruning from WHERE predicates
+- ✅ Projection pushdown via DataFusion
+- ✅ Aggregation (GROUP BY, AVG, SUM, COUNT, MIN, MAX)
+- ✅ DML blocking (DELETE/UPDATE with clear error messages)
 
 ## Project Structure
 
@@ -151,12 +157,13 @@ apiary/
 │   ├── apiary-core/       # Core types and traits
 │   ├── apiary-storage/    # Storage backends
 │   ├── apiary-runtime/    # Node runtime
+│   ├── apiary-query/      # DataFusion SQL engine
 │   ├── apiary-python/     # PyO3 bindings
 │   └── apiary-cli/        # Command-line interface
 ├── python/                # Python package source
 ├── docs/
 │   └── architecture/      # Design documentation
-└── test_step1_acceptance.py  # Acceptance tests
+└── test_step*_acceptance.py  # Acceptance tests
 ```
 
 ## Technology Stack
@@ -254,4 +261,4 @@ Apiary draws inspiration from:
 
 ---
 
-**Status**: Early development. Step 3 of 10 complete. Watch this space! 🐝
+**Status**: Early development. Step 4 of 10 complete. Solo mode operational! 🐝

@@ -40,7 +40,7 @@ pub struct ApiaryNode {
     pub registry: Arc<RegistryManager>,
 
     /// DataFusion-based SQL query context.
-    pub query_ctx: std::sync::Mutex<ApiaryQueryContext>,
+    pub query_ctx: tokio::sync::Mutex<ApiaryQueryContext>,
 }
 
 impl ApiaryNode {
@@ -87,7 +87,7 @@ impl ApiaryNode {
         info!("Registry loaded");
 
         // Initialize query context
-        let query_ctx = std::sync::Mutex::new(ApiaryQueryContext::new(
+        let query_ctx = tokio::sync::Mutex::new(ApiaryQueryContext::new(
             Arc::clone(&storage),
             Arc::clone(&registry),
         ));
@@ -299,9 +299,7 @@ impl ApiaryNode {
     /// - 3-part table names: hive.box.frame
     /// - 1-part names after USE HIVE / USE BOX
     pub async fn sql(&self, query: &str) -> Result<Vec<RecordBatch>> {
-        let mut ctx = self.query_ctx.lock().map_err(|e| ApiaryError::Internal {
-            message: format!("Query context lock poisoned: {e}"),
-        })?;
+        let mut ctx = self.query_ctx.lock().await;
         ctx.sql(query).await
     }
 }
