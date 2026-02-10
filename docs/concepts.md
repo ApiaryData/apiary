@@ -78,13 +78,13 @@ Colony temperature is a composite health metric ranging from **0.0** (cold) to *
 - **Error rate** — how many tasks are failing?
 - **Storage latency** — how responsive is the meadow?
 
-| Temperature | Range       | Meaning |
-|-------------|-------------|---------|
-| Cold        | 0.0 – 0.2  | Underutilized. Resources sitting idle. |
-| Ideal       | 0.2 – 0.5  | Healthy. Normal operating range. |
-| Warm        | 0.5 – 0.7  | Busy. Approaching capacity. |
-| Hot         | 0.7 – 0.9  | Stressed. Backpressure should kick in. |
-| Critical    | 0.9 – 1.0  | Overloaded. Shed load or risk failures. |
+| Temperature | Range        | Meaning |
+|-------------|--------------|---------|
+| Cold        | 0.0 – 0.3   | Underutilized. Resources sitting idle. |
+| Ideal       | 0.3 – 0.7   | Healthy. Normal operating range. |
+| Warm        | 0.7 – 0.85  | Busy. Approaching capacity. |
+| Hot         | 0.85 – 0.95 | Stressed. Backpressure should kick in. |
+| Critical    | 0.95 – 1.0  | Overloaded. Shed load or risk failures. |
 
 ```python
 colony = ap.colony_status()

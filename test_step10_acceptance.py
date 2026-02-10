@@ -14,7 +14,7 @@ Verifies:
 import tempfile
 import os
 import subprocess
-import glob as globmod
+import glob as _glob
 
 import pyarrow as pa
 
@@ -34,7 +34,7 @@ def build_apiary():
         print("STDERR:", result.stderr)
         raise RuntimeError(f"maturin build failed: {result.stderr}")
 
-    wheels = globmod.glob(os.path.join(repo_root, "dist", "*.whl"))
+    wheels = _glob.glob(os.path.join(repo_root, "dist", "*.whl"))
     if not wheels:
         raise RuntimeError("No wheel file found after build")
 
