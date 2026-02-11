@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Rust 1.75+** — [Install via rustup](https://rustup.rs/)
+- **Rust 1.78+** — [Install via rustup](https://rustup.rs/)
 - **Python 3.9+** — with `pip`
 - **maturin** — Python/Rust build tool (`pip install maturin`)
 

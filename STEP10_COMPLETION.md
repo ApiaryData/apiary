@@ -53,7 +53,7 @@ All tests live in `crates/apiary-runtime/tests/`.
 ### Documentation (5 files)
 
 #### `docs/getting-started.md`
-- Prerequisites (Rust 1.75+, Python 3.9+)
+- Prerequisites (Rust 1.78+, Python 3.9+)
 - Installation: clone, build, install
 - Solo mode quick start
 - Multi-node mode setup
