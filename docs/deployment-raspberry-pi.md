@@ -301,6 +301,7 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi
 Environment="PATH=/home/pi/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+# ⚠️ SECURITY WARNING: Change these default credentials before deploying to production!
 Environment="AWS_ACCESS_KEY_ID=minioadmin"
 Environment="AWS_SECRET_ACCESS_KEY=minioadmin"
 Environment="AWS_ENDPOINT_URL=http://192.168.1.100:9000"
@@ -311,6 +312,9 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# ⚠️ IMPORTANT: Edit /etc/systemd/system/apiary.service to change default credentials!
+# sudo nano /etc/systemd/system/apiary.service
 
 # Reload systemd, enable and start the service
 sudo systemctl daemon-reload
