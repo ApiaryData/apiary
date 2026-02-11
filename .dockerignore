@@ -1,0 +1,15 @@
+target/
+.git/
+.github/
+.vscode/
+*.md
+!README.md
+*.pyc
+__pycache__/
+.venv/
+dist/
+*.whl
+*.egg-info/
+test_step*_acceptance.py
+STEP*_COMPLETION.md
+BUILD_STATUS.md

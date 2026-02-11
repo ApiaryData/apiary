@@ -38,17 +38,33 @@ Apiary is a **lakehouse for small compute**. It's designed to run on inexpensive
 
 ### Installation
 
+#### Pre-built Binaries (no build required)
+
+```bash
+# Linux / macOS (x86_64 or ARM64 / Raspberry Pi)
+curl -fsSL https://raw.githubusercontent.com/ApiaryData/apiary/main/scripts/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/ApiaryData/apiary/main/scripts/install.ps1 | iex
+```
+
+#### Docker
+
+```bash
+docker pull ghcr.io/apiarydata/apiary:latest   # or build locally
+docker build -t apiary:latest .
+```
+
+#### Build from Source
+
 **Prerequisites**: Rust 1.75+, Python 3.9+
 
 ```bash
-# Clone the repository
 git clone https://github.com/ApiaryData/apiary.git
 cd apiary
-
-# Build the Rust workspace
 cargo build --workspace
-
-# Build and install the Python package
 pip install maturin
 maturin develop
 ```
