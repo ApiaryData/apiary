@@ -57,9 +57,15 @@ detect_platform() {
 resolve_version() {
     if [ "$VERSION" = "latest" ]; then
         need_cmd curl
-        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-            | grep '"tag_name"' | head -1 | sed -E 's/.*"v?([^"]+)".*/\1/')
-        [ -n "$VERSION" ] || error "Could not determine latest release version"
+        local response
+        response=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest") \
+            || error "Could not fetch latest release info from GitHub"
+        if command -v jq >/dev/null 2>&1; then
+            VERSION=$(echo "$response" | jq -r '.tag_name')
+        else
+            VERSION=$(echo "$response" | grep '"tag_name"' | head -1 | sed -E 's/.*"v?([^"]+)".*/\1/')
+        fi
+        [ -n "$VERSION" ] && [ "$VERSION" != "null" ] || error "Could not determine latest release version"
     fi
     # Strip leading "v" if present
     VERSION="${VERSION#v}"

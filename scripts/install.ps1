@@ -82,4 +82,9 @@ if ($userPath -notlike "*$InstallDir*") {
 Info "Apiary v$Version installed to $InstallDir\apiary.exe"
 
 # Verify
-try { & "$InstallDir\apiary.exe" --version 2>$null } catch {}
+try {
+    $out = & "$InstallDir\apiary.exe" --version 2>&1
+    Info "Verified: $out"
+} catch {
+    Info "Note: Could not verify installation. You may need to restart your terminal."
+}
