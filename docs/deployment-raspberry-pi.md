@@ -206,9 +206,13 @@ mkdir -p ~/minio-data
 # Start MinIO (use screen or systemd to keep it running)
 minio server ~/minio-data --console-address ":9001"
 
-# Note the access credentials shown on first start
-# Create a bucket named "apiary" via the web console at http://<pi-ip>:9001
+# ⚠️ IMPORTANT: On first start, MinIO displays default credentials (minioadmin/minioadmin)
+# Change these immediately via the web console at http://<pi-ip>:9001
+# Go to Identity > Users to create new credentials
+# Create a bucket named "apiary" via the web console
 ```
+
+> **Security Note**: Never use default MinIO credentials (`minioadmin`/`minioadmin`) in production. Always create strong, unique credentials immediately after installation.
 
 #### Option B: AWS S3
 
@@ -234,8 +238,9 @@ import os
 from apiary import Apiary
 
 # Set MinIO credentials
-os.environ['AWS_ACCESS_KEY_ID'] = 'minioadmin'  # Change to your MinIO credentials
-os.environ['AWS_SECRET_ACCESS_KEY'] = 'minioadmin'
+# ⚠️ SECURITY: Change these default credentials! Use strong passwords in production.
+os.environ['AWS_ACCESS_KEY_ID'] = 'minioadmin'  # TODO: Change to your MinIO access key
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'minioadmin'  # TODO: Change to your MinIO secret key
 os.environ['AWS_ENDPOINT_URL'] = 'http://192.168.1.100:9000'  # Change to your MinIO server IP
 
 # Initialize with S3 storage
