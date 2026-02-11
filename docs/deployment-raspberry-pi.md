@@ -68,7 +68,15 @@ pip3 install maturin
 
 ## Building Apiary
 
-### Option 1: Build on Raspberry Pi (Recommended for single device)
+### Option 1: Install Pre-Built Binary (Fastest — no compilation)
+
+```bash
+# Downloads the aarch64-linux binary from GitHub Releases
+curl -fsSL https://raw.githubusercontent.com/ApiaryData/apiary/main/scripts/install.sh | bash
+apiary --version
+```
+
+### Option 2: Build on Raspberry Pi (Recommended for single device)
 
 ```bash
 # Clone the repository
@@ -85,7 +93,7 @@ maturin develop --release
 python3 -c "from apiary import Apiary; print('Apiary installed successfully')"
 ```
 
-### Option 2: Cross-Compile from x86_64 Linux (Faster for multiple devices)
+### Option 3: Cross-Compile from x86_64 Linux (Faster for multiple devices)
 
 If you're deploying to multiple Pi devices, cross-compile on a faster machine:
 

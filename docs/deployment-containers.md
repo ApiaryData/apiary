@@ -14,75 +14,9 @@ This guide covers deploying Apiary in containerized environments using Docker an
 
 ## Quick Start with Docker
 
-### 1. Create Dockerfile
+### 1. Build or Pull the Image
 
-Create a `Dockerfile` in your project directory:
-
-```dockerfile
-FROM rust:1.75-slim-bookworm AS builder
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libssl-dev \
-    pkg-config \
-    python3 \
-    python3-dev \
-    python3-pip \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install maturin
-RUN pip3 install --no-cache-dir maturin
-
-# Set working directory
-WORKDIR /build
-
-# Clone Apiary repository (or COPY if building from local source)
-RUN git clone https://github.com/ApiaryData/apiary.git .
-
-# Build Rust workspace
-RUN cargo build --release --workspace
-
-# Build Python wheel
-RUN maturin build --release
-
-# Runtime stage
-FROM python:3.11-slim-bookworm
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libssl3 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
-RUN useradd -m -u 1000 -s /bin/bash apiary
-
-# Copy Python wheel from builder
-COPY --from=builder /build/target/wheels/*.whl /tmp/
-
-# Install Apiary
-RUN pip3 install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
-
-# Install additional Python dependencies
-RUN pip3 install --no-cache-dir pyarrow pandas boto3
-
-# Switch to non-root user
-USER apiary
-WORKDIR /home/apiary
-
-# Create data directories
-RUN mkdir -p /home/apiary/data /home/apiary/cache
-
-# Expose port for future HTTP API (v2)
-EXPOSE 8080
-
-# Default command runs Python with Apiary
-CMD ["python3"]
-```
-
-### 2. Build the Image
+The repository includes a production-ready `Dockerfile` in the project root.
 
 ```bash
 # Build the image
@@ -131,186 +65,55 @@ time.sleep(3600)  # Run for 1 hour
 
 ### Basic Multi-Node Setup
 
-> **⚠️ Security Warning**: The example below uses default MinIO credentials (`minioadmin`/`minioadmin`) for demonstration purposes. **Never use these in production!** Always change to strong, unique credentials by updating the `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` environment variables.
+The repository includes a ready-to-use `docker-compose.yml` in the project root. You can use it directly or customise it for your environment.
 
-Create `docker-compose.yml`:
+> **⚠️ Security Warning**: The default MinIO credentials (`minioadmin`/`minioadmin`) are for development only. **Always use strong credentials in production** by setting `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` environment variables.
 
-```yaml
-version: '3.8'
+```bash
+# Use the provided docker-compose.yml
+docker compose up -d
 
-services:
-  # MinIO for local S3-compatible storage
-  minio:
-    image: minio/minio:latest
-    container_name: apiary-minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
+# Scale to multiple workers
+docker compose up -d --scale apiary-node=3
 
-  # MinIO setup - create bucket
-  minio-setup:
-    image: minio/mc:latest
-    depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c "
-      sleep 5;
-      /usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin;
-      /usr/bin/mc mb myminio/apiary --ignore-existing;
-      /usr/bin/mc policy set public myminio/apiary;
-      exit 0;
-      "
-
-  # Apiary Node 1
-  apiary-node-1:
-    image: apiary:latest
-    container_name: apiary-node-1
-    depends_on:
-      - minio
-      - minio-setup
-    environment:
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      AWS_ENDPOINT_URL: http://minio:9000
-      RUST_LOG: info
-    volumes:
-      - apiary-node-1-cache:/home/apiary/cache
-      - ./apiary-node.py:/home/apiary/apiary-node.py
-    command: python3 /home/apiary/apiary-node.py
-    restart: unless-stopped
-
-  # Apiary Node 2
-  apiary-node-2:
-    image: apiary:latest
-    container_name: apiary-node-2
-    depends_on:
-      - minio
-      - minio-setup
-    environment:
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      AWS_ENDPOINT_URL: http://minio:9000
-      RUST_LOG: info
-    volumes:
-      - apiary-node-2-cache:/home/apiary/cache
-      - ./apiary-node.py:/home/apiary/apiary-node.py
-    command: python3 /home/apiary/apiary-node.py
-    restart: unless-stopped
-
-  # Apiary Node 3
-  apiary-node-3:
-    image: apiary:latest
-    container_name: apiary-node-3
-    depends_on:
-      - minio
-      - minio-setup
-    environment:
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      AWS_ENDPOINT_URL: http://minio:9000
-      RUST_LOG: info
-    volumes:
-      - apiary-node-3-cache:/home/apiary/cache
-      - ./apiary-node.py:/home/apiary/apiary-node.py
-    command: python3 /home/apiary/apiary-node.py
-    restart: unless-stopped
-
-volumes:
-  minio-data:
-  apiary-node-1-cache:
-  apiary-node-2-cache:
-  apiary-node-3-cache:
+# Override default credentials
+MINIO_ROOT_USER=myuser MINIO_ROOT_PASSWORD=mypassword docker compose up -d
 ```
 
-Create `apiary-node.py`:
+You can also download the compose file independently:
 
-```python
-#!/usr/bin/env python3
-import os
-import time
-import signal
-import sys
-from apiary import Apiary
-
-# Initialize Apiary with S3 storage
-ap = Apiary("production", storage="s3://apiary/data")
-ap.start()
-
-# Print initial status
-status = ap.status()
-print(f"Node {status['node_id']} started:")
-print(f"  Cores: {status['cores']}")
-print(f"  Memory: {status['memory_gb']:.2f}GB")
-
-# Setup signal handlers for graceful shutdown
-def signal_handler(sig, frame):
-    print("\nReceived shutdown signal, stopping node...")
-    ap.shutdown()
-    print("Node stopped")
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
-# Main loop - periodically report status
-try:
-    while True:
-        time.sleep(60)
-        swarm = ap.swarm_status()
-        print(f"Swarm status: {swarm['alive']} nodes alive, {swarm['total_bees']} total bees")
-except Exception as e:
-    print(f"Error: {e}")
-    ap.shutdown()
-    sys.exit(1)
+```bash
+curl -fsSL https://raw.githubusercontent.com/ApiaryData/apiary/main/docker-compose.yml -o docker-compose.yml
+docker compose up -d
 ```
 
 ### Start the Swarm
 
 ```bash
-# Build the image first
+# Build the image first (if not using a pre-built image)
 docker build -t apiary:latest .
 
-# Make the node script executable
-chmod +x apiary-node.py
-
 # Start all services
-docker-compose up -d
+docker compose up -d
+
+# Scale to multiple nodes
+docker compose up -d --scale apiary-node=3
 
 # Check status
-docker-compose ps
+docker compose ps
 
 # View logs
-docker-compose logs -f apiary-node-1
-docker-compose logs -f apiary-node-2
-docker-compose logs -f apiary-node-3
+docker compose logs -f apiary-node
 
 # Access MinIO console
 # Open http://localhost:9001 in browser
-# Login: minioadmin / minioadmin
 ```
 
 ### Add More Nodes
 
-To add additional nodes to the swarm:
-
 ```bash
 # Scale up the apiary nodes
-docker-compose up -d --scale apiary-node-3=5
-
-# Or add specific new nodes in docker-compose.yml
-# Then run:
-docker-compose up -d
+docker compose up -d --scale apiary-node=5
 ```
 
 The new nodes will automatically discover existing nodes through the shared storage and join the swarm.

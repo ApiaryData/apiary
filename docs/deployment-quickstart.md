@@ -9,7 +9,10 @@ This is a quick reference for deploying Apiary on new compute nodes. For detaile
 ### On Raspberry Pi
 
 ```bash
-# 1. Install dependencies
+# Install from pre-built binary (no compilation required)
+curl -fsSL https://raw.githubusercontent.com/ApiaryData/apiary/main/scripts/install.sh | bash
+
+# Or build from source (takes 20-40 min on a Pi)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 sudo apt install -y python3 python3-pip git build-essential libssl-dev pkg-config
@@ -43,10 +46,13 @@ EOF
 ### With Docker
 
 ```bash
-# 1. Build image
-git clone https://github.com/ApiaryData/apiary.git
-cd apiary
-docker build -t apiary:latest .
+# Use the provided docker-compose.yml (includes MinIO storage)
+curl -fsSL https://raw.githubusercontent.com/ApiaryData/apiary/main/docker-compose.yml -o docker-compose.yml
+docker compose up -d
+docker compose logs -f apiary-node
+
+# Or run a single container
+docker build -t apiary:latest .  # or pull a pre-built image
 
 # 2. Start Apiary
 docker run -it --rm \
