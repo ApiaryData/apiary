@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/ApiaryData/apiary/actions/workflows/ci.yml/badge.svg)](https://github.com/ApiaryData/apiary/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.78%2B-orange.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 
 ## What Is Apiary?
@@ -59,7 +59,7 @@ docker build -t apiary:latest .
 
 #### Build from Source
 
-**Prerequisites**: Rust 1.75+, Python 3.9+
+**Prerequisites**: Rust 1.78+, Python 3.9+
 
 ```bash
 git clone https://github.com/ApiaryData/apiary.git
