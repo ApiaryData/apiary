@@ -279,8 +279,9 @@ See [docs/architecture/06-roadmap.md](docs/architecture/06-roadmap.md) for detai
 - [Concepts](docs/concepts.md)
 
 ### Deployment Guides
-- [Raspberry Pi Deployment](docs/deployment-raspberry-pi.md) — Deploy on Raspberry Pi or edge devices
-- [Cloud Container Deployment](docs/deployment-containers.md) — Docker and Kubernetes deployments
+- [Quick Deployment Guide](docs/deployment-quickstart.md) — Fast setup for Pi and containers
+- [Raspberry Pi Deployment](docs/deployment-raspberry-pi.md) — Complete guide for edge devices
+- [Cloud Container Deployment](docs/deployment-containers.md) — Docker and Kubernetes
 
 ### API & SQL
 - [Python SDK Reference](docs/python-sdk.md)

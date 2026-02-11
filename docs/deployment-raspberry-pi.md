@@ -2,6 +2,8 @@
 
 This guide covers deploying Apiary on Raspberry Pi devices, from a single node setup to adding multiple Pi devices to form a distributed swarm.
 
+> **Quick Start**: For rapid deployment instructions, see the [Quick Deployment Guide](deployment-quickstart.md).
+
 ## Prerequisites
 
 ### Hardware Requirements
