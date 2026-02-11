@@ -310,9 +310,10 @@ ap = Apiary("production", storage="s3://apiary/data")
 ```python
 # Option 1: Environment variables
 import os
-# ⚠️ Replace with your actual AWS credentials (these are example values from AWS documentation)
-os.environ['AWS_ACCESS_KEY_ID'] = 'AKIAIOSFODNN7EXAMPLE'
-os.environ['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+# ⚠️ IMPORTANT: These are placeholder values from AWS documentation and will NOT work.
+# Replace with your actual AWS credentials before running!
+os.environ['AWS_ACCESS_KEY_ID'] = 'AKIAIOSFODNN7EXAMPLE'  # Replace with your key
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'  # Replace with your secret
 os.environ['AWS_REGION'] = 'us-east-1'
 
 ap = Apiary("production", storage="s3://my-bucket/apiary")
