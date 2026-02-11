@@ -131,6 +131,8 @@ time.sleep(3600)  # Run for 1 hour
 
 ### Basic Multi-Node Setup
 
+> **⚠️ Security Warning**: The example below uses default MinIO credentials (`minioadmin`/`minioadmin`) for demonstration purposes. **Never use these in production!** Always change to strong, unique credentials by updating the `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` environment variables.
+
 Create `docker-compose.yml`:
 
 ```yaml
