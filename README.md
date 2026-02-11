@@ -274,10 +274,19 @@ See [docs/architecture/06-roadmap.md](docs/architecture/06-roadmap.md) for detai
 
 ## Documentation
 
+### Getting Started
 - [Getting Started](docs/getting-started.md)
 - [Concepts](docs/concepts.md)
+
+### Deployment Guides
+- [Raspberry Pi Deployment](docs/deployment-raspberry-pi.md) — Deploy on Raspberry Pi or edge devices
+- [Cloud Container Deployment](docs/deployment-containers.md) — Docker and Kubernetes deployments
+
+### API & SQL
 - [Python SDK Reference](docs/python-sdk.md)
 - [SQL Reference](docs/sql-reference.md)
+
+### Architecture
 - [Architecture Summary](docs/architecture-summary.md)
 - [Architecture Overview](docs/architecture/01-architecture-overview.md)
 - [Storage Engine](docs/architecture/02-storage-engine.md)
