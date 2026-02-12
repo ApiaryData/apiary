@@ -303,6 +303,10 @@ See [docs/architecture/06-roadmap.md](docs/architecture/06-roadmap.md) for detai
 - [Python SDK Reference](docs/python-sdk.md)
 - [SQL Reference](docs/sql-reference.md)
 
+### Performance & Testing
+- [Performance Benchmarks](BENCHMARKS.md) — Current performance metrics
+- [Running Benchmarks](docs/benchmarking.md) — How to run performance tests
+
 ### Architecture
 - [Architecture Summary](docs/architecture-summary.md)
 - [Architecture Overview](docs/architecture/01-architecture-overview.md)
