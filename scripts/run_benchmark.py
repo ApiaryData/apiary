@@ -64,18 +64,20 @@ class ApiaryBenchmark:
     
     def _run_with_docker(self, script_path: str) -> subprocess.CompletedProcess:
         """Run a Python script inside the Docker container."""
-        script_name = os.path.basename(script_path)
+        # Read the script content and pipe it to docker run
+        with open(script_path, 'r') as f:
+            script_content = f.read()
         
-        # Run the script in Docker
+        # Run the script in Docker by piping it to python3
         cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{script_path}:/tmp/{script_name}",
+            "docker", "run", "--rm", "-i",
             self.apiary_image,
-            "python3", f"/tmp/{script_name}"
+            "python3"
         ]
         
         return subprocess.run(
             cmd,
+            input=script_content,
             capture_output=True,
             text=True,
             timeout=300  # 5 minute timeout
@@ -99,7 +101,7 @@ class ApiaryBenchmark:
             if self.use_docker:
                 # Create a temporary script to run in Docker
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                    f.write(f"""
+                    script_content = f"""
 import sys
 import time
 import tempfile
@@ -119,7 +121,7 @@ try:
     ap.create_hive("bench_hive")
     ap.create_box("bench_hive", "bench_box")
     ap.create_frame("bench_hive", "bench_box", "bench_frame", 
-                   ["user_id", "value", "timestamp"])
+                   {{"user_id": "string", "value": "float64", "timestamp": "string"}})
     
     # Generate data
     import random
@@ -134,20 +136,28 @@ try:
         "timestamp": timestamps,
     }})
     
+    # Serialize table to IPC stream bytes
+    sink = pa.BufferOutputStream()
+    writer = pa.ipc.new_stream(sink, table.schema)
+    writer.write_table(table)
+    writer.close()
+    ipc_data = sink.getvalue().to_pybytes()
+    
     # Benchmark write
     start_time = time.time()
-    ap.write_to_frame("bench_hive", "bench_box", "bench_frame", table)
+    ap.write_to_frame("bench_hive", "bench_box", "bench_frame", ipc_data)
     elapsed = time.time() - start_time
     
     # Output metrics
     print(f"rows={num_rows}")
     print(f"elapsed={{elapsed:.4f}}")
-    print(f"throughput={{num_rows / elapsed:.2f}}")
+    print(f"throughput={{{num_rows} / elapsed:.2f}}")
     
     ap.shutdown()
 finally:
     shutil.rmtree(tmpdir, ignore_errors=True)
-""")
+"""
+                    f.write(script_content)
                     script_path = f.name
                 
                 proc = self._run_with_docker(script_path)
@@ -157,15 +167,17 @@ finally:
                     result.error = f"Docker script failed: {proc.stderr}"
                     return result
                 
-                # Parse output
+                # Parse output - skip log lines and only parse metrics
                 metrics = {}
                 for line in proc.stdout.strip().split('\n'):
-                    if '=' in line:
+                    # Skip ANSI escape codes and log lines
+                    if '=' in line and not line.strip().startswith('\x1b'):
                         key, value = line.split('=', 1)
                         try:
                             metrics[key] = float(value)
                         except ValueError:
-                            metrics[key] = value
+                            # Skip non-numeric values
+                            pass
                 
                 result.metrics = metrics
                 result.success = True
@@ -180,7 +192,7 @@ finally:
                     ap.create_hive("bench_hive")
                     ap.create_box("bench_hive", "bench_box")
                     ap.create_frame("bench_hive", "bench_box", "bench_frame",
-                                   ["user_id", "value", "timestamp"])
+                                   {"user_id": "string", "value": "float64", "timestamp": "string"})
                     
                     # Generate data
                     import random
@@ -194,8 +206,15 @@ finally:
                         "timestamp": timestamps,
                     })
                     
+                    # Serialize table to IPC stream bytes
+                    sink = pa.BufferOutputStream()
+                    writer = pa.ipc.new_stream(sink, table.schema)
+                    writer.write_table(table)
+                    writer.close()
+                    ipc_data = sink.getvalue().to_pybytes()
+                    
                     start_time = time.time()
-                    ap.write_to_frame("bench_hive", "bench_box", "bench_frame", table)
+                    ap.write_to_frame("bench_hive", "bench_box", "bench_frame", ipc_data)
                     elapsed = time.time() - start_time
                     
                     result.metrics = {
@@ -231,7 +250,7 @@ finally:
         try:
             if self.use_docker:
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                    f.write(f"""
+                    script_content = f"""
 import sys
 import time
 import tempfile
@@ -249,7 +268,7 @@ try:
     ap.create_hive("bench_hive")
     ap.create_box("bench_hive", "bench_box")
     ap.create_frame("bench_hive", "bench_box", "bench_frame", 
-                   ["user_id", "value", "timestamp"])
+                   {{"user_id": "string", "value": "float64", "timestamp": "string"}})
     
     # Write data
     import random
@@ -263,25 +282,38 @@ try:
         "value": values,
         "timestamp": timestamps,
     }})
-    ap.write_to_frame("bench_hive", "bench_box", "bench_frame", table)
+    
+    # Serialize table to IPC stream bytes
+    sink = pa.BufferOutputStream()
+    writer = pa.ipc.new_stream(sink, table.schema)
+    writer.write_table(table)
+    writer.close()
+    ipc_data = sink.getvalue().to_pybytes()
+    
+    ap.write_to_frame("bench_hive", "bench_box", "bench_frame", ipc_data)
     
     # Benchmark query
     start_time = time.time()
-    results = ap.query("SELECT user_id, AVG(value) as avg_value FROM bench_frame GROUP BY user_id")
+    results_bytes = ap.sql("SELECT user_id, AVG(value) as avg_value FROM bench_hive.bench_box.bench_frame GROUP BY user_id")
     elapsed = time.time() - start_time
     
+    # Deserialize results to get row count
+    reader = pa.ipc.open_stream(results_bytes)
+    results_table = reader.read_all()
+    result_rows = len(results_table)
+    
     rows_scanned = {num_rows}
-    result_rows = len(results)
     
     print(f"rows_scanned={{rows_scanned}}")
     print(f"result_rows={{result_rows}}")
     print(f"elapsed={{elapsed:.4f}}")
-    print(f"throughput={{rows_scanned / elapsed:.2f}}")
+    print(f"throughput={{{num_rows} / elapsed:.2f}}")
     
     ap.shutdown()
 finally:
     shutil.rmtree(tmpdir, ignore_errors=True)
-""")
+"""
+                    f.write(script_content)
                     script_path = f.name
                 
                 proc = self._run_with_docker(script_path)
@@ -293,12 +325,14 @@ finally:
                 
                 metrics = {}
                 for line in proc.stdout.strip().split('\n'):
-                    if '=' in line:
+                    # Skip ANSI escape codes and log lines
+                    if '=' in line and not line.strip().startswith('\x1b'):
                         key, value = line.split('=', 1)
                         try:
                             metrics[key] = float(value)
                         except ValueError:
-                            metrics[key] = value
+                            # Skip non-numeric values
+                            pass
                 
                 result.metrics = metrics
                 result.success = True
@@ -312,7 +346,7 @@ finally:
                     ap.create_hive("bench_hive")
                     ap.create_box("bench_hive", "bench_box")
                     ap.create_frame("bench_hive", "bench_box", "bench_frame",
-                                   ["user_id", "value", "timestamp"])
+                                   {"user_id": "string", "value": "float64", "timestamp": "string"})
                     
                     import random
                     user_ids = [f"user_{random.randint(0, 999)}" for _ in range(num_rows)]
@@ -324,15 +358,28 @@ finally:
                         "value": values,
                         "timestamp": timestamps,
                     })
-                    ap.write_to_frame("bench_hive", "bench_box", "bench_frame", table)
+                    
+                    # Serialize table to IPC stream bytes
+                    sink = pa.BufferOutputStream()
+                    writer = pa.ipc.new_stream(sink, table.schema)
+                    writer.write_table(table)
+                    writer.close()
+                    ipc_data = sink.getvalue().to_pybytes()
+                    
+                    ap.write_to_frame("bench_hive", "bench_box", "bench_frame", ipc_data)
                     
                     start_time = time.time()
-                    results = ap.query("SELECT user_id, AVG(value) as avg_value FROM bench_frame GROUP BY user_id")
+                    results_bytes = ap.sql("SELECT user_id, AVG(value) as avg_value FROM bench_hive.bench_box.bench_frame GROUP BY user_id")
                     elapsed = time.time() - start_time
+                    
+                    # Deserialize results to get row count
+                    reader = pa.ipc.open_stream(results_bytes)
+                    results_table = reader.read_all()
+                    result_rows = len(results_table)
                     
                     result.metrics = {
                         "rows_scanned": num_rows,
-                        "result_rows": len(results),
+                        "result_rows": result_rows,
                         "elapsed": elapsed,
                         "throughput": num_rows / elapsed,
                     }

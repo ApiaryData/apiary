@@ -130,7 +130,7 @@ Tier 3 — Object Storage: S3/GCS/MinIO/filesystem (canonical truth)
 
 ## Development Status
 
-Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for detailed progress.
+Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for detailed progress and [BENCHMARKS.md](BENCHMARKS.md) for performance metrics.
 
 | Step | Component | Status |
 |------|-----------|--------|
