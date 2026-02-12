@@ -11,7 +11,7 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: read
+  contents: write  # Needed for GitHub Pages deployment
 
 jobs:
   benchmark:
@@ -39,7 +39,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          pip install pyarrow pandas
+          pip install pyarrow pandas PyYAML
 
       - name: Run benchmarks
         run: |
@@ -108,3 +108,76 @@ jobs:
         run: |
           echo "Note: Performance regression detection will be implemented in future PRs"
           echo "For now, manually review the benchmark results artifact"
+
+      - name: Run multi-node benchmarks
+        run: |
+          python3 scripts/run_multinode_benchmark.py \
+            --nodes 2 \
+            --image apiary:benchmark \
+            --sizes 5000,10000 \
+            --output multinode_benchmark_results.json
+
+      - name: Display multi-node benchmark summary
+        if: always()
+        run: |
+          if [ -f multinode_benchmark_results.json ]; then
+            echo "## Multi-Node Benchmark Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+            echo "- Nodes: 2" >> $GITHUB_STEP_SUMMARY
+            echo "- Storage: MinIO (S3-compatible)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            python3 << 'EOF'
+          import json
+          
+          with open('multinode_benchmark_results.json', 'r') as f:
+              data = json.load(f)
+          
+          print("### Distributed Write Performance\n")
+          print("| Dataset Size | Throughput (rows/sec) | Elapsed Time (sec) | Verified Nodes |")
+          print("|--------------|----------------------|-------------------|----------------|")
+          
+          for result in data['results']:
+              if result['name'] == 'distributed_write_benchmark' and result['success']:
+                  metrics = result['metrics']
+                  rows = int(metrics.get('rows', 0))
+                  throughput = metrics.get('throughput', 0)
+                  elapsed = metrics.get('elapsed', 0)
+                  verified = metrics.get('verified_nodes', 0)
+                  print(f"| {rows:,} | {throughput:,.2f} | {elapsed:.4f} | {verified} |")
+          
+          print("\n### Distributed Query Performance\n")
+          print("| Dataset Size | Throughput (rows/sec) | Avg Elapsed (sec) | Nodes Alive | Total Bees |")
+          print("|--------------|----------------------|-------------------|-------------|------------|")
+          
+          for result in data['results']:
+              if result['name'] == 'distributed_query_benchmark' and result['success']:
+                  metrics = result['metrics']
+                  rows = int(metrics.get('rows_queried', 0))
+                  throughput = metrics.get('throughput', 0)
+                  elapsed = metrics.get('avg_elapsed', 0)
+                  nodes = metrics.get('nodes_alive', 0)
+                  bees = metrics.get('total_bees', 0)
+                  print(f"| {rows:,} | {throughput:,.2f} | {elapsed:.4f} | {nodes} | {bees} |")
+          EOF
+          fi
+
+      - name: Generate HTML report
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          python3 scripts/generate_benchmark_report.py \
+            --single-node benchmark_results.json \
+            --multi-node multinode_benchmark_results.json \
+            --output benchmark-report/index.html \
+            --run-number "${{ github.run_number }}" \
+            --commit-sha "${{ github.sha }}" \
+            --platform "ubuntu-latest"
+
+      - name: Deploy to GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./benchmark-report
+          commit_message: "Update benchmark results - Run #${{ github.run_number }}"

@@ -101,11 +101,17 @@ Note: These thresholds are preliminary and will be refined as more data is colle
 
 ## CI Integration
 
-Benchmarks are automatically run as part of the CI pipeline and results are uploaded as artifacts. To view historical results:
+Benchmarks are automatically run as part of the CI pipeline:
 
-1. Go to the [Actions tab](https://github.com/ApiaryData/apiary/actions)
-2. Select a workflow run
-3. Download the `benchmark-results` artifact
+- **Single-Node Benchmarks**: Run on every push and PR
+- **Multi-Node Benchmarks**: Run on every push to main
+- **Results Publishing**: Published to [GitHub Pages](https://apiarydata.github.io/apiary/) on main branch pushes
+
+To view historical results:
+
+1. Visit the [benchmark results page](https://apiarydata.github.io/apiary/)
+2. Or go to the [Actions tab](https://github.com/ApiaryData/apiary/actions) and select a workflow run
+3. Download the `benchmark-results` artifact for raw JSON data
 
 ## Contributing
 
@@ -117,9 +123,39 @@ When making performance-related changes:
 
 ## Future Enhancements
 
-- [ ] Multi-node benchmark tests
+- [x] Multi-node benchmark tests
 - [ ] Different query patterns (filters, joins, etc.)
 - [ ] Memory usage tracking
 - [ ] Disk I/O metrics
 - [ ] Network latency impact (for multi-node)
 - [ ] Comparison with other systems (DuckDB, SQLite)
+
+## Multi-Node Benchmarks
+
+Multi-node benchmarks test Apiary's distributed query capabilities with multiple nodes sharing the same storage backend.
+
+### How to Run Multi-Node Benchmarks
+
+```bash
+# Build the Docker image
+docker build -t apiary:latest .
+
+# Run multi-node benchmarks (requires Docker Compose)
+python3 scripts/run_multinode_benchmark.py --nodes 2 --image apiary:latest --output multinode_results.json
+```
+
+### Test Scenarios
+
+1. **Distributed Write**: Data written on one node is immediately visible and queryable from all other nodes
+2. **Distributed Query**: Query execution coordinated across multiple nodes with swarm intelligence
+3. **Node Discovery**: Nodes automatically discover each other through shared storage heartbeats
+
+### Latest Multi-Node Results
+
+Results are continuously updated and published at: [https://apiarydata.github.io/apiary/](https://apiarydata.github.io/apiary/)
+
+Multi-node benchmarks demonstrate:
+- Zero-configuration multi-node coordination
+- Immediate data visibility across nodes
+- Distributed query execution without node-to-node communication
+- Cache-aware query planning
