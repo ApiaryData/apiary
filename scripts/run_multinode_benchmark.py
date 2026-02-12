@@ -253,7 +253,7 @@ ap.shutdown()
                         pass
             
             # Verify data is visible from all nodes
-            verify_script = """
+            verify_script = f"""
 import sys
 import time
 import pyarrow as pa
@@ -270,9 +270,9 @@ try:
     reader = pa.ipc.open_stream(results_bytes)
     results_table = reader.read_all()
     count = results_table.column(0)[0].as_py()
-    print(f"count={count}")
+    print(f"count={{count}}")
 except Exception as e:
-    print(f"error={e}", file=sys.stderr)
+    print(f"error={{e}}", file=sys.stderr)
     sys.exit(1)
 finally:
     ap.shutdown()
@@ -402,8 +402,8 @@ time.sleep({NODE_READY_WAIT_SECONDS})
 # Get swarm status
 try:
     swarm = ap.swarm_status()
-    print(f"nodes_alive={swarm['alive']}")
-    print(f"total_bees={swarm['total_bees']}")
+    print(f"nodes_alive={{swarm['alive']}}")
+    print(f"total_bees={{swarm['total_bees']}}")
 except:
     pass
 
@@ -420,8 +420,8 @@ reader = pa.ipc.open_stream(results_bytes)
 results_table = reader.read_all()
 result_rows = len(results_table)
 
-print(f"elapsed={elapsed:.4f}")
-print(f"result_rows={result_rows}")
+print(f"elapsed={{elapsed:.4f}}")
+print(f"result_rows={{result_rows}}")
 
 ap.shutdown()
 """

@@ -110,6 +110,7 @@ jobs:
           echo "For now, manually review the benchmark results artifact"
 
       - name: Run multi-node benchmarks
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           python3 scripts/run_multinode_benchmark.py \
             --nodes 2 \
@@ -118,7 +119,7 @@ jobs:
             --output multinode_benchmark_results.json
 
       - name: Display multi-node benchmark summary
-        if: always()
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           if [ -f multinode_benchmark_results.json ]; then
             echo "## Multi-Node Benchmark Results" >> $GITHUB_STEP_SUMMARY
