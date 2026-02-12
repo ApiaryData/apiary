@@ -24,6 +24,13 @@ except ImportError:
     sys.exit(1)
 
 
+# Constants for multi-node benchmark configuration
+ANSI_ESCAPE_PREFIX = '\x1b'  # ANSI escape sequences for terminal colors
+CLUSTER_STARTUP_WAIT_SECONDS = 10  # Time to wait for Docker Compose services to start
+NODE_READY_WAIT_SECONDS = 2  # Time to wait for Apiary node initialization
+CONTAINER_EXEC_TIMEOUT_SECONDS = 60  # Timeout for executing commands in containers
+
+
 class BenchmarkResult:
     """Holds results from a single benchmark run."""
     
@@ -133,7 +140,7 @@ class MultiNodeBenchmark:
         
         # Wait for services to be healthy
         print("Waiting for services to be ready...", file=sys.stderr)
-        time.sleep(10)  # Give services time to start
+        time.sleep(CLUSTER_STARTUP_WAIT_SECONDS)
         
         print(f"✓ Cluster started with {self.num_nodes} nodes", file=sys.stderr)
     
@@ -153,7 +160,7 @@ class MultiNodeBenchmark:
             "exec", "-T", container,
             "python3", "-c", script
         ]
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=CONTAINER_EXEC_TIMEOUT_SECONDS)
     
     def run_distributed_write_benchmark(self, num_rows: int = 10000) -> BenchmarkResult:
         """Benchmark distributed data writing.
@@ -177,7 +184,7 @@ ap = Apiary("multinode-benchmark", storage="s3://apiary/multinode-bench")
 ap.start()
 
 # Wait for node to be ready
-time.sleep(2)
+time.sleep({NODE_READY_WAIT_SECONDS})
 
 # Create namespace
 try:
@@ -238,7 +245,7 @@ ap.shutdown()
             # Parse write metrics
             write_metrics = {}
             for line in proc.stdout.strip().split('\n'):
-                if '=' in line and not line.strip().startswith('\x1b'):
+                if '=' in line and not line.strip().startswith(ANSI_ESCAPE_PREFIX):
                     key, value = line.split('=', 1)
                     try:
                         write_metrics[key] = float(value)
@@ -255,7 +262,7 @@ from apiary import Apiary
 ap = Apiary("multinode-benchmark", storage="s3://apiary/multinode-bench")
 ap.start()
 
-time.sleep(2)
+time.sleep({NODE_READY_WAIT_SECONDS})
 
 # Query the data
 try:
@@ -334,7 +341,7 @@ from apiary import Apiary
 
 ap = Apiary("multinode-benchmark", storage="s3://apiary/multinode-bench")
 ap.start()
-time.sleep(2)
+time.sleep({NODE_READY_WAIT_SECONDS})
 
 try:
     ap.create_hive("query_bench")
@@ -382,7 +389,7 @@ ap.shutdown()
                 return result
             
             # Run query from different nodes and measure performance
-            query_script = """
+            query_script = f"""
 import sys
 import time
 import pyarrow as pa
@@ -390,7 +397,7 @@ from apiary import Apiary
 
 ap = Apiary("multinode-benchmark", storage="s3://apiary/multinode-bench")
 ap.start()
-time.sleep(2)
+time.sleep({NODE_READY_WAIT_SECONDS})
 
 # Get swarm status
 try:
@@ -435,7 +442,7 @@ ap.shutdown()
                 
                 # Parse metrics
                 for line in proc.stdout.strip().split('\n'):
-                    if '=' in line and not line.strip().startswith('\x1b'):
+                    if '=' in line and not line.strip().startswith(ANSI_ESCAPE_PREFIX):
                         key, value = line.split('=', 1)
                         try:
                             if key == "elapsed":
