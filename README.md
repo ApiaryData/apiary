@@ -130,7 +130,7 @@ Tier 3 — Object Storage: S3/GCS/MinIO/filesystem (canonical truth)
 
 ## Development Status
 
-Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for detailed progress.
+Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for detailed progress and [BENCHMARKS.md](BENCHMARKS.md) for performance metrics.
 
 | Step | Component | Status |
 |------|-----------|--------|
@@ -302,6 +302,10 @@ See [docs/architecture/06-roadmap.md](docs/architecture/06-roadmap.md) for detai
 ### API & SQL
 - [Python SDK Reference](docs/python-sdk.md)
 - [SQL Reference](docs/sql-reference.md)
+
+### Performance & Testing
+- [Performance Benchmarks](BENCHMARKS.md) — Current performance metrics
+- [Running Benchmarks](docs/benchmarking.md) — How to run performance tests
 
 ### Architecture
 - [Architecture Summary](docs/architecture-summary.md)

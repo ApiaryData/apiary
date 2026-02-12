@@ -1,0 +1,110 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Run Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: apiary:benchmark
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install pyarrow pandas
+
+      - name: Run benchmarks
+        run: |
+          python3 scripts/run_benchmark.py \
+            --docker \
+            --image apiary:benchmark \
+            --sizes 1000,10000,50000 \
+            --output benchmark_results.json
+
+      - name: Display benchmark summary
+        if: always()
+        run: |
+          if [ -f benchmark_results.json ]; then
+            echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Environment" >> $GITHUB_STEP_SUMMARY
+            echo "- Platform: ubuntu-latest" >> $GITHUB_STEP_SUMMARY
+            echo "- Docker Image: apiary:benchmark" >> $GITHUB_STEP_SUMMARY
+            echo "- Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Extract and format results using Python
+            python3 << 'EOF'
+          import json
+          import sys
+          
+          with open('benchmark_results.json', 'r') as f:
+              data = json.load(f)
+          
+          print("### Write Performance\n")
+          print("| Dataset Size | Throughput (rows/sec) | Elapsed Time (sec) |")
+          print("|--------------|----------------------|-------------------|")
+          
+          for result in data['results']:
+              if result['name'] == 'write_benchmark' and result['success']:
+                  metrics = result['metrics']
+                  rows = int(metrics.get('rows', 0))
+                  throughput = metrics.get('throughput', 0)
+                  elapsed = metrics.get('elapsed', 0)
+                  print(f"| {rows:,} | {throughput:,.2f} | {elapsed:.4f} |")
+          
+          print("\n### Query Performance\n")
+          print("| Dataset Size | Rows Scanned | Throughput (rows/sec) | Elapsed Time (sec) |")
+          print("|--------------|--------------|----------------------|-------------------|")
+          
+          for result in data['results']:
+              if result['name'] == 'query_benchmark' and result['success']:
+                  metrics = result['metrics']
+                  rows = int(metrics.get('rows_scanned', 0))
+                  throughput = metrics.get('throughput', 0)
+                  elapsed = metrics.get('elapsed', 0)
+                  print(f"| {rows:,} | {rows:,} | {throughput:,.2f} | {elapsed:.4f} |")
+          EOF
+          fi
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_number }}
+          path: benchmark_results.json
+          retention-days: 90
+
+      - name: Check for performance regressions
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "Note: Performance regression detection will be implemented in future PRs"
+          echo "For now, manually review the benchmark results artifact"
