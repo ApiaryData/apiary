@@ -304,7 +304,8 @@ See [docs/architecture/06-roadmap.md](docs/architecture/06-roadmap.md) for detai
 - [SQL Reference](docs/sql-reference.md)
 
 ### Performance & Testing
-- [Performance Benchmarks](BENCHMARKS.md) — Current performance metrics
+- [Live Benchmark Results](https://apiarydata.github.io/apiary/) — View latest performance metrics
+- [Performance Benchmarks](BENCHMARKS.md) — Documentation and baseline metrics
 - [Running Benchmarks](docs/benchmarking.md) — How to run performance tests
 
 ### Architecture

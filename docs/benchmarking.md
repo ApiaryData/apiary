@@ -79,6 +79,65 @@ Tests the throughput of SQL queries with aggregation:
 - `elapsed`: Query execution time in seconds
 - `throughput`: Rows scanned per second
 
+## Multi-Node Benchmarks
+
+Multi-node benchmarks test Apiary's distributed query capabilities with multiple nodes sharing the same storage backend (MinIO).
+
+### Run Multi-Node Benchmarks
+
+```bash
+# Build the Docker image
+docker build -t apiary:latest .
+
+# Install Python dependencies (including PyYAML for Docker Compose)
+pip install pyarrow pandas PyYAML
+
+# Run multi-node benchmarks with 2 nodes
+python3 scripts/run_multinode_benchmark.py --nodes 2 --image apiary:latest
+
+# Run with 3 nodes and custom dataset sizes
+python3 scripts/run_multinode_benchmark.py --nodes 3 --sizes 5000,10000,20000
+
+# Save results to a file
+python3 scripts/run_multinode_benchmark.py --output multinode_results.json
+```
+
+### Multi-Node Test Scenarios
+
+**1. Distributed Write Benchmark:**
+- Writes data on one node
+- Verifies data is immediately visible from all other nodes
+- Measures write throughput and data consistency
+
+**Metrics collected:**
+- `rows`: Number of rows written
+- `elapsed`: Time taken in seconds
+- `throughput`: Rows per second
+- `verified_nodes`: Number of nodes that verified the data
+- `consistent`: Whether all nodes see the same data
+
+**2. Distributed Query Benchmark:**
+- Writes test data across multiple categories
+- Executes aggregation queries from different nodes
+- Measures distributed query coordination and performance
+
+**Metrics collected:**
+- `rows_queried`: Number of input rows
+- `num_nodes`: Number of nodes in the cluster
+- `nodes_alive`: Number of active nodes during query
+- `total_bees`: Total worker bees across all nodes
+- `avg_elapsed`: Average query execution time
+- `throughput`: Average rows per second across queries
+- `query_count`: Number of successful queries
+
+### What Multi-Node Benchmarks Prove
+
+- **Zero-configuration coordination**: Nodes discover each other automatically through shared storage
+- **Data consistency**: Write-once, read-from-anywhere semantics
+- **Distributed query execution**: Queries coordinated through swarm intelligence without node-to-node communication
+- **Cache-aware planning**: Query planner considers local cache state for optimal cell assignment
+
+
 ## Dataset Sizes
 
 Default dataset sizes are: 1,000, 10,000, 100,000 rows
@@ -141,10 +200,22 @@ Based on v1.0.0 benchmarks:
 
 ## Continuous Integration
 
-Benchmarks run automatically in GitHub Actions on every push to main and every pull request.
+Benchmarks run automatically in GitHub Actions:
 
-### View CI Benchmark Results
+- **Single-Node Benchmarks**: Run on every push and pull request
+- **Multi-Node Benchmarks**: Run on every push to main branch
+- **Results Publishing**: Published to [GitHub Pages](https://apiarydata.github.io/apiary/) for public access
 
+### View Benchmark Results
+
+**Public Results Page:**
+Visit [https://apiarydata.github.io/apiary/](https://apiarydata.github.io/apiary/) to see the latest benchmark results with:
+- Single-node performance metrics
+- Multi-node distributed query results
+- Performance trends over time
+- Run metadata (commit SHA, run number, timestamp)
+
+**CI Workflow Details:**
 1. Go to the [Actions tab](https://github.com/ApiaryData/apiary/actions)
 2. Select a workflow run
 3. Check the "Run Performance Benchmarks" job
@@ -155,12 +226,14 @@ Benchmarks run automatically in GitHub Actions on every push to main and every p
 
 The benchmark workflow (`.github/workflows/benchmark.yml`) runs:
 
-- On push to `main` branch
-- On pull requests to `main`
+- On push to `main` branch (includes multi-node + GitHub Pages publishing)
+- On pull requests to `main` (single-node only)
 - Manually via workflow dispatch
-- With dataset sizes: 1,000, 10,000, 50,000 rows
+- Single-node dataset sizes: 1,000, 10,000, 50,000 rows
+- Multi-node dataset sizes: 5,000, 10,000 rows
 
 Results are:
+- Published to GitHub Pages (main branch only)
 - Displayed in the job summary
 - Saved as artifacts (retained for 90 days)
 - Available for historical comparison
