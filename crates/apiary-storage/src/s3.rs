@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::TryStreamExt;
-use object_store::aws::AmazonS3Builder;
+use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, PutMode, PutOptions, PutPayload};
 use tracing::{debug, instrument};
@@ -41,7 +41,11 @@ impl S3Backend {
     pub fn new(uri: &str) -> Result<Self> {
         let (bucket, prefix) = parse_s3_uri(uri)?;
 
-        let mut builder = AmazonS3Builder::from_env().with_bucket_name(&bucket);
+        let mut builder = AmazonS3Builder::from_env()
+            .with_bucket_name(&bucket)
+            // Enable conditional put so PutMode::Create works on all
+            // S3-compatible stores (MinIO, Ceph, etc.).
+            .with_conditional_put(S3ConditionalPut::ETagMatch);
 
         // Extract region from query params if present
         if let Some(region) = extract_query_param(uri, "region") {
@@ -51,6 +55,15 @@ impl S3Backend {
         // Extract endpoint for MinIO / custom S3-compatible services
         if let Some(endpoint) = extract_query_param(uri, "endpoint") {
             builder = builder.with_endpoint(&endpoint).with_allow_http(true);
+        }
+
+        // When the endpoint comes from the AWS_ENDPOINT_URL env var instead
+        // of a query parameter, we still need allow_http for plain-HTTP
+        // endpoints (common with MinIO and other local S3 replacements).
+        if let Ok(env_endpoint) = std::env::var("AWS_ENDPOINT_URL") {
+            if env_endpoint.starts_with("http://") {
+                builder = builder.with_allow_http(true);
+            }
         }
 
         let store = builder.build().map_err(|e| {
