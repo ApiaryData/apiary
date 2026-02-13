@@ -202,6 +202,11 @@ class MultiNodeBenchmark:
             f"Write {num_rows} rows on node 1, verify visibility from all nodes"
         )
         
+        # Use unique names per size to avoid data accumulation across runs
+        hive_name = f"bench_write_{num_rows}"
+        box_name = "bench_box"
+        frame_name = "bench_frame"
+        
         try:
             script = f"""
 import sys
@@ -216,19 +221,19 @@ ap.start()
 # Wait for node to be ready
 time.sleep({NODE_READY_WAIT_SECONDS})
 
-# Create namespace
+# Create namespace (unique per dataset size)
 try:
-    ap.create_hive("bench_hive")
+    ap.create_hive("{hive_name}")
 except:
     pass  # May already exist
     
 try:
-    ap.create_box("bench_hive", "bench_box")
+    ap.create_box("{hive_name}", "{box_name}")
 except:
     pass
 
 try:
-    ap.create_frame("bench_hive", "bench_box", "bench_frame", 
+    ap.create_frame("{hive_name}", "{box_name}", "{frame_name}", 
                    {{"user_id": "string", "value": "float64", "timestamp": "string"}})
 except:
     pass
@@ -255,7 +260,7 @@ ipc_data = sink.getvalue().to_pybytes()
 
 # Write data
 start_time = time.time()
-ap.write_to_frame("bench_hive", "bench_box", "bench_frame", ipc_data)
+ap.write_to_frame("{hive_name}", "{box_name}", "{frame_name}", ipc_data)
 elapsed = time.time() - start_time
 
 print(f"rows={num_rows}")
@@ -296,7 +301,7 @@ time.sleep({NODE_READY_WAIT_SECONDS})
 
 # Query the data
 try:
-    results_bytes = ap.sql("SELECT COUNT(*) as cnt FROM bench_hive.bench_box.bench_frame")
+    results_bytes = ap.sql("SELECT COUNT(*) as cnt FROM {hive_name}.{box_name}.{frame_name}")
     reader = pa.ipc.open_stream(results_bytes)
     results_table = reader.read_all()
     count = results_table.column(0)[0].as_py()
@@ -361,6 +366,11 @@ finally:
             f"Distributed query with {self.num_nodes} nodes on {num_rows} rows"
         )
         
+        # Use unique names per size to avoid data accumulation across runs
+        q_hive = f"query_bench_{num_rows}"
+        q_box = "data"
+        q_frame = "metrics"
+        
         try:
             # First write data
             setup_script = f"""
@@ -374,17 +384,17 @@ ap.start()
 time.sleep({NODE_READY_WAIT_SECONDS})
 
 try:
-    ap.create_hive("query_bench")
+    ap.create_hive("{q_hive}")
 except:
     pass
     
 try:
-    ap.create_box("query_bench", "data")
+    ap.create_box("{q_hive}", "{q_box}")
 except:
     pass
 
 try:
-    ap.create_frame("query_bench", "data", "metrics", 
+    ap.create_frame("{q_hive}", "{q_box}", "{q_frame}", 
                    {{"user_id": "string", "value": "float64", "category": "string"}})
 except:
     pass
@@ -408,7 +418,7 @@ writer.write_table(table)
 writer.close()
 ipc_data = sink.getvalue().to_pybytes()
 
-ap.write_to_frame("query_bench", "data", "metrics", ipc_data)
+ap.write_to_frame("{q_hive}", "{q_box}", "{q_frame}", ipc_data)
 ap.shutdown()
 """
             
@@ -441,7 +451,7 @@ except:
 start_time = time.time()
 results_bytes = ap.sql(
     "SELECT category, AVG(value) as avg_val, COUNT(*) as cnt "
-    "FROM query_bench.data.metrics "
+    "FROM {q_hive}.{q_box}.{q_frame} "
     "GROUP BY category"
 )
 elapsed = time.time() - start_time
