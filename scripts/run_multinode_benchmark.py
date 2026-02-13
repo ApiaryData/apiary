@@ -195,11 +195,14 @@ class MultiNodeBenchmark:
     def run_distributed_write_benchmark(self, num_rows: int = 10000) -> BenchmarkResult:
         """Benchmark distributed data writing.
         
-        Writes data on one node and verifies it's visible from other nodes.
+        All nodes write simultaneously, then every node verifies total visibility.
         """
+        rows_per_node = num_rows // self.num_nodes
+        total_rows = rows_per_node * self.num_nodes  # exact after rounding
+
         result = BenchmarkResult(
             "distributed_write_benchmark",
-            f"Write {num_rows} rows on node 1, verify visibility from all nodes"
+            f"Write {total_rows} rows across {self.num_nodes} nodes simultaneously"
         )
         
         # Use unique names per size to avoid data accumulation across runs
@@ -208,42 +211,53 @@ class MultiNodeBenchmark:
         frame_name = "bench_frame"
         
         try:
-            script = f"""
-import sys
-import time
-import pyarrow as pa
+            # --- Step 1: create the schema on node 1 --------------------------
+            setup_script = f"""
+import sys, time
 from apiary import Apiary
 
-# Connect to shared storage
 ap = Apiary("multinode-benchmark", storage="s3://apiary/multinode-bench")
 ap.start()
-
-# Wait for node to be ready
 time.sleep({NODE_READY_WAIT_SECONDS})
 
-# Create namespace (unique per dataset size)
 try:
     ap.create_hive("{hive_name}")
 except:
-    pass  # May already exist
-    
+    pass
 try:
     ap.create_box("{hive_name}", "{box_name}")
 except:
     pass
-
 try:
-    ap.create_frame("{hive_name}", "{box_name}", "{frame_name}", 
+    ap.create_frame("{hive_name}", "{box_name}", "{frame_name}",
                    {{"user_id": "string", "value": "float64", "timestamp": "string"}})
 except:
     pass
 
-# Generate data
-import random
+ap.shutdown()
+print("setup_done=1")
+"""
+            print(f"  Setting up schema...", file=sys.stderr)
+            proc = self._run_python_in_container("apiary-node-1", setup_script)
+            if proc.returncode != 0:
+                result.error = f"Schema setup failed: {proc.stderr}"
+                return result
+
+            # --- Step 2: launch parallel writes from ALL nodes -----------------
+            write_script = f"""
+import sys, time, random
 from datetime import datetime
-user_ids = [f"user_{{random.randint(0, 999)}}" for _ in range({num_rows})]
-values = [random.uniform(0.0, 1000.0) for _ in range({num_rows})]
-timestamps = [datetime.now().isoformat() for _ in range({num_rows})]
+import pyarrow as pa
+from apiary import Apiary
+
+ap = Apiary("multinode-benchmark", storage="s3://apiary/multinode-bench")
+ap.start()
+time.sleep({NODE_READY_WAIT_SECONDS})
+
+rows = {rows_per_node}
+user_ids = [f"user_{{random.randint(0, 999)}}" for _ in range(rows)]
+values = [random.uniform(0.0, 1000.0) for _ in range(rows)]
+timestamps = [datetime.now().isoformat() for _ in range(rows)]
 
 table = pa.table({{
     "user_id": user_ids,
@@ -251,55 +265,74 @@ table = pa.table({{
     "timestamp": timestamps,
 }})
 
-# Serialize table to IPC stream bytes
 sink = pa.BufferOutputStream()
 writer = pa.ipc.new_stream(sink, table.schema)
 writer.write_table(table)
 writer.close()
 ipc_data = sink.getvalue().to_pybytes()
 
-# Write data
 start_time = time.time()
 ap.write_to_frame("{hive_name}", "{box_name}", "{frame_name}", ipc_data)
 elapsed = time.time() - start_time
 
-print(f"rows={num_rows}")
+print(f"rows={{rows}}")
 print(f"elapsed={{elapsed:.4f}}")
-print(f"throughput={{{num_rows} / elapsed:.2f}}")
+print(f"throughput={{rows / elapsed:.2f}}")
 
 ap.shutdown()
 """
-            
-            print(f"  Writing data on node 1...", file=sys.stderr)
-            proc = self._run_python_in_container("apiary-node-1", script)
-            
-            if proc.returncode != 0:
-                result.error = f"Write failed: {proc.stderr}"
-                return result
-            
-            # Parse write metrics
-            write_metrics = {}
-            for line in proc.stdout.strip().split('\n'):
-                if '=' in line and not line.strip().startswith(ANSI_ESCAPE_PREFIX):
-                    key, value = line.split('=', 1)
-                    try:
-                        write_metrics[key] = float(value)
-                    except ValueError:
-                        pass
-            
-            # Verify data is visible from all nodes
+            # Fire writes on all nodes concurrently via subprocess.Popen
+            import concurrent.futures
+
+            def _write_on_node(node_name: str):
+                return node_name, self._run_python_in_container(node_name, write_script)
+
+            print(f"  Writing {rows_per_node} rows on each of {self.num_nodes} nodes simultaneously...",
+                  file=sys.stderr)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_nodes) as pool:
+                futures = {
+                    pool.submit(_write_on_node, f"apiary-node-{i+1}"): i
+                    for i in range(self.num_nodes)
+                }
+                write_results = {}
+                for fut in concurrent.futures.as_completed(futures):
+                    node_name, proc = fut.result()
+                    write_results[node_name] = proc
+
+            # Check all writes succeeded
+            per_node_metrics = {}
+            for i in range(self.num_nodes):
+                node_name = f"apiary-node-{i+1}"
+                proc = write_results[node_name]
+                if proc.returncode != 0:
+                    result.error = f"Write failed on {node_name}: {proc.stderr}"
+                    return result
+                metrics = {}
+                for line in proc.stdout.strip().split('\n'):
+                    if '=' in line and not line.strip().startswith(ANSI_ESCAPE_PREFIX):
+                        key, value = line.split('=', 1)
+                        try:
+                            metrics[key] = float(value)
+                        except ValueError:
+                            pass
+                per_node_metrics[node_name] = metrics
+                print(f"    {node_name}: {metrics.get('elapsed', '?')}s, "
+                      f"{metrics.get('throughput', '?')} rows/s", file=sys.stderr)
+
+            # Aggregate write metrics
+            max_elapsed = max(m.get('elapsed', 0) for m in per_node_metrics.values())
+            total_throughput = total_rows / max_elapsed if max_elapsed > 0 else 0
+
+            # --- Step 3: verify total row count from every node ----------------
             verify_script = f"""
-import sys
-import time
+import sys, time
 import pyarrow as pa
 from apiary import Apiary
 
 ap = Apiary("multinode-benchmark", storage="s3://apiary/multinode-bench")
 ap.start()
-
 time.sleep({NODE_READY_WAIT_SECONDS})
 
-# Query the data
 try:
     results_bytes = ap.sql("SELECT COUNT(*) as cnt FROM {hive_name}.{box_name}.{frame_name}")
     reader = pa.ipc.open_stream(results_bytes)
@@ -313,7 +346,6 @@ finally:
     ap.shutdown()
 """
             
-            # Verify from each node
             verification_counts = []
             for i in range(self.num_nodes):
                 node_name = f"apiary-node-{i+1}"
@@ -324,30 +356,34 @@ finally:
                     result.error = f"Verification failed on {node_name}: {proc.stderr}"
                     return result
                 
-                # Parse count
                 for line in proc.stdout.strip().split('\n'):
                     if line.startswith("count="):
                         count = int(line.split('=')[1])
                         verification_counts.append(count)
                         break
             
-            # Check all nodes see the same data
             if len(verification_counts) != self.num_nodes:
                 result.error = f"Failed to verify from all nodes"
                 return result
             
-            if not all(c == num_rows for c in verification_counts):
-                result.error = f"Inconsistent counts across nodes: {verification_counts}"
+            if not all(c == total_rows for c in verification_counts):
+                result.error = f"Inconsistent counts across nodes: {verification_counts} (expected {total_rows})"
                 return result
             
             result.metrics = {
-                **write_metrics,
+                "total_rows": total_rows,
+                "rows_per_node": rows_per_node,
+                "num_writers": self.num_nodes,
+                "max_elapsed": max_elapsed,
+                "total_throughput": total_throughput,
+                "per_node": per_node_metrics,
                 "verified_nodes": self.num_nodes,
                 "consistent": True,
             }
             result.success = True
             
-            print(f"  ✓ Data visible and consistent across all {self.num_nodes} nodes", file=sys.stderr)
+            print(f"  ✓ {total_rows} rows written by {self.num_nodes} nodes, "
+                  f"visible and consistent across all nodes", file=sys.stderr)
         
         except Exception as e:
             result.error = str(e)
@@ -537,8 +573,8 @@ ap.shutdown()
                 write_result = self.run_distributed_write_benchmark(size)
                 all_results.append(write_result)
                 if write_result.success:
-                    throughput = write_result.metrics.get('throughput', 0)
-                    print(f"  ✓ Throughput: {throughput:.2f} rows/sec", file=sys.stderr)
+                    throughput = write_result.metrics.get('total_throughput', 0)
+                    print(f"  ✓ Throughput: {throughput:.2f} rows/sec ({self.num_nodes} writers)", file=sys.stderr)
                 else:
                     print(f"  ✗ Failed: {write_result.error}", file=sys.stderr)
                 
