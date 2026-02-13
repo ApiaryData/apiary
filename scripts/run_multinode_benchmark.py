@@ -31,6 +31,34 @@ NODE_READY_WAIT_SECONDS = 2  # Time to wait for Apiary node initialization
 CONTAINER_EXEC_TIMEOUT_SECONDS = 60  # Timeout for executing commands in containers
 
 
+def _get_compose_cmd() -> List[str]:
+    """Detect whether to use 'docker compose' (plugin) or 'docker-compose' (standalone)."""
+    # Try plugin form first
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "version"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return ["docker", "compose"]
+    except FileNotFoundError:
+        pass
+    # Fall back to standalone
+    try:
+        result = subprocess.run(
+            ["docker-compose", "version"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return ["docker-compose"]
+    except FileNotFoundError:
+        pass
+    raise RuntimeError(
+        "Neither 'docker compose' (plugin) nor 'docker-compose' (standalone) found. "
+        "Please install Docker Compose."
+    )
+
+
 class BenchmarkResult:
     """Holds results from a single benchmark run."""
     
@@ -63,7 +91,6 @@ class MultiNodeBenchmark:
     def _create_compose_file(self) -> str:
         """Create a Docker Compose file for multi-node testing."""
         compose_config = {
-            "version": "3.8",
             "services": {
                 "minio": {
                     "image": "minio/minio:latest",
@@ -86,7 +113,7 @@ class MultiNodeBenchmark:
                     },
                     "entrypoint": [
                         "/bin/sh", "-c",
-                        "/usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin && "
+                        "/usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin && "
                         "(/usr/bin/mc mb myminio/apiary --ignore-existing || true)"
                     ],
                     "restart": "no",
@@ -94,11 +121,14 @@ class MultiNodeBenchmark:
             },
         }
         
-        # Add apiary nodes
+        # Add apiary nodes — override CMD with a long sleep so the
+        # container stays alive for `docker compose exec` calls.
+        # The benchmark scripts create their own Apiary instances.
         for i in range(self.num_nodes):
             node_name = f"apiary-node-{i+1}"
             compose_config["services"][node_name] = {
                 "image": self.apiary_image,
+                "command": ["python3", "-c", "import time; time.sleep(3600)"],
                 "depends_on": {
                     "minio-setup": {"condition": "service_completed_successfully"},
                 },
@@ -106,6 +136,7 @@ class MultiNodeBenchmark:
                     "AWS_ACCESS_KEY_ID": "minioadmin",
                     "AWS_SECRET_ACCESS_KEY": "minioadmin",
                     "AWS_ENDPOINT_URL": "http://minio:9000",
+                    "AWS_ALLOW_HTTP": "true",
                     "APIARY_STORAGE_URL": "s3://apiary/multinode-bench",
                     "APIARY_NAME": "multinode-benchmark",
                     "RUST_LOG": "info",
@@ -132,7 +163,7 @@ class MultiNodeBenchmark:
         self.compose_file = self._create_compose_file()
         
         # Start services
-        cmd = ["docker", "compose", "-f", self.compose_file, "up", "-d"]
+        cmd = [*_get_compose_cmd(), "-f", self.compose_file, "up", "-d"]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"Failed to start cluster: {result.stderr}")
@@ -147,7 +178,7 @@ class MultiNodeBenchmark:
         """Stop the multi-node cluster."""
         if self.compose_file:
             print("Stopping cluster...", file=sys.stderr)
-            cmd = ["docker", "compose", "-f", self.compose_file, "down", "-v"]
+            cmd = [*_get_compose_cmd(), "-f", self.compose_file, "down", "-v"]
             subprocess.run(cmd, capture_output=True)
             os.unlink(self.compose_file)
             print("✓ Cluster stopped", file=sys.stderr)
@@ -155,7 +186,7 @@ class MultiNodeBenchmark:
     def _run_python_in_container(self, container: str, script: str) -> subprocess.CompletedProcess:
         """Run a Python script in a specific container."""
         cmd = [
-            "docker", "compose", "-f", self.compose_file,
+            *_get_compose_cmd(), "-f", self.compose_file,
             "exec", "-T", container,
             "python3", "-c", script
         ]
