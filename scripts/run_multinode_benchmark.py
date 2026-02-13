@@ -86,8 +86,8 @@ class MultiNodeBenchmark:
                     },
                     "entrypoint": [
                         "/bin/sh", "-c",
-                        "mc config host add myminio http://minio:9000 minioadmin minioadmin && "
-                        "mc mb myminio/apiary --ignore-existing && "
+                        "/usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin && "
+                        "/usr/bin/mc mb myminio/apiary --ignore-existing && "
                         "exit 0"
                     ],
                     "restart": "no",
