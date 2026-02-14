@@ -164,12 +164,21 @@ jobs:
           EOF
           fi
 
+      - name: Fetch benchmark history from gh-pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p benchmark-report
+          # Try to fetch existing history; ignore failure on first run
+          git fetch origin gh-pages --depth=1 || true
+          git show origin/gh-pages:benchmark_history.json > benchmark-report/benchmark_history.json 2>/dev/null || echo "[]" > benchmark-report/benchmark_history.json
+
       - name: Generate HTML report
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           python3 scripts/generate_benchmark_report.py \
             --single-node benchmark_results.json \
             --multi-node multinode_benchmark_results.json \
+            --history benchmark-report/benchmark_history.json \
             --output benchmark-report/index.html \
             --run-number "${{ github.run_number }}" \
             --commit-sha "${{ github.sha }}" \
