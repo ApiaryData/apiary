@@ -42,48 +42,12 @@ python3 scripts/run_benchmark.py --sizes 5000,50000,500000 --output benchmark_re
 
 ## Latest Benchmark Results
 
-### Environment
-- **Date**: 2026-02-12 20:57 UTC
-- **Platform**: ubuntu-latest (GitHub Actions)
-- **Docker Image**: apiary:latest
-- **Rust Version**: 1.78+
-- **Python Version**: 3.11
+The latest benchmark results are automatically published to the `gh-pages` branch after each push to `main`.
 
-### Write Performance
-
-| Dataset Size | Throughput (rows/sec) | Elapsed Time (sec) |
-|--------------|----------------------|-------------------|
-| 1,000 | 371,506.11 | 0.0027 |
-| 10,000 | 1,724,418.86 | 0.0058 |
-| 50,000 | 2,699,871.26 | 0.0185 |
-
-### Query Performance (GROUP BY + AVG)
-
-| Dataset Size | Rows Scanned | Result Rows | Throughput (rows/sec) | Elapsed Time (sec) |
-|--------------|--------------|-------------|----------------------|-------------------|
-| 1,000 | 1,000 | 639 | 202,848.77 | 0.0049 |
-| 10,000 | 10,000 | 1,000 | 1,542,931.14 | 0.0065 |
-| 50,000 | 50,000 | 1,000 | 4,161,924.23 | 0.0120 |
-
-## Performance Trends
-
-### v1.0.0 (Initial Release) - 2026-02-12
-
-**Write Performance:**
-- 1K rows: 371K rows/sec
-- 10K rows: 1.7M rows/sec
-- 50K rows: 2.7M rows/sec
-
-**Query Performance (GROUP BY + AVG):**
-- 1K rows: 202K rows/sec
-- 10K rows: 1.5M rows/sec
-- 50K rows: 4.1M rows/sec
-
-**Key Observations:**
-- Write throughput scales well from 1K to 50K rows (7.3x increase)
-- Query throughput increases dramatically with larger datasets (20.5x increase)
-- Sub-millisecond response times for datasets up to 10K rows
-- All benchmarks pass with Docker image, proving framework stability
+- **Live dashboard**: [https://apiarydata.github.io/apiary/](https://apiarydata.github.io/apiary/)
+- **Raw results (JSON)**: [benchmark_results.json](https://apiarydata.github.io/apiary/benchmark_results.json)
+- **Multi-node results (JSON)**: [multinode_benchmark_results.json](https://apiarydata.github.io/apiary/multinode_benchmark_results.json)
+- **Historical data**: [benchmark_history.json](https://apiarydata.github.io/apiary/benchmark_history.json)
 
 ## Interpreting Results
 

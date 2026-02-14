@@ -184,6 +184,14 @@ jobs:
             --commit-sha "${{ github.sha }}" \
             --platform "ubuntu-latest"
 
+      - name: Copy benchmark results to report directory
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          cp -f benchmark_results.json benchmark-report/benchmark_results.json
+          if [ -f multinode_benchmark_results.json ]; then
+            cp -f multinode_benchmark_results.json benchmark-report/multinode_benchmark_results.json
+          fi
+
       - name: Deploy to GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: peaceiris/actions-gh-pages@v3
