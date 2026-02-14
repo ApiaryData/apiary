@@ -111,7 +111,7 @@ Example usage:
 ```bash
 # Run benchmarks with Pi 4 4GB constraints
 python3 scripts/run_multinode_benchmark.py \
-  --compose-file docker-compose.pi4-4gb.yml \
+  --compose-file deploy/docker-compose.pi4-4gb.yml \
   --nodes 2 \
   --image apiary:latest \
   --sizes 5000,10000

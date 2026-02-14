@@ -34,3 +34,7 @@ __pycache__/
 dist/
 *.whl
 *.egg-info/
+
+# Generated benchmark results
+benchmark_results.json
+multinode_benchmark_results.json

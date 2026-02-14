@@ -4,12 +4,12 @@
 
 I want to implement a build step from the Apiary development prompts.
 
-1. Read `BUILD_STATUS.md` to confirm which steps are already complete
+1. Read `docs/BUILD_STATUS.md` to confirm which steps are already complete
 2. Read the target step from `docs/prompts/07-v1-development-prompts.md`
 3. Read the referenced architecture documents for that step
 4. Implement the step following the requirements exactly
 5. Run `cargo clippy --workspace` and `cargo test --workspace` after
-6. Update `BUILD_STATUS.md` to mark the step complete
+6. Update `docs/BUILD_STATUS.md` to mark the step complete
 
 ## Rules
 

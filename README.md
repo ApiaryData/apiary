@@ -130,7 +130,7 @@ Tier 3 — Object Storage: S3/GCS/MinIO/filesystem (canonical truth)
 
 ## Development Status
 
-Apiary is in active development. See [BUILD_STATUS.md](BUILD_STATUS.md) for detailed progress and [BENCHMARKS.md](BENCHMARKS.md) for performance metrics.
+Apiary is in active development. See [BUILD_STATUS.md](docs/BUILD_STATUS.md) for detailed progress and [BENCHMARKS.md](docs/BENCHMARKS.md) for performance metrics.
 
 | Step | Component | Status |
 |------|-----------|--------|
@@ -211,9 +211,12 @@ apiary/
 │   ├── apiary-python/     # PyO3 bindings
 │   └── apiary-cli/        # Command-line interface
 ├── python/                # Python package source
-├── docs/
-│   └── architecture/      # Design documentation
-└── test_step*_acceptance.py  # Acceptance tests
+├── docs/                  # Documentation
+│   ├── architecture/      # Design documentation
+│   └── development/       # Step completion records
+├── tests/                 # Acceptance tests
+├── deploy/                # Raspberry Pi docker-compose configs
+└── scripts/               # Benchmark and utility scripts
 ```
 
 ## Technology Stack
@@ -253,7 +256,7 @@ maturin develop
 cargo test --workspace
 
 # Python acceptance tests
-python test_step1_acceptance.py
+python tests/test_step1_acceptance.py
 ```
 
 ## Contributing
@@ -305,7 +308,7 @@ See [docs/architecture/06-roadmap.md](docs/architecture/06-roadmap.md) for detai
 
 ### Performance & Testing
 - [Live Benchmark Results](https://apiarydata.github.io/apiary/) — View latest performance metrics
-- [Performance Benchmarks](BENCHMARKS.md) — Documentation and baseline metrics
+- [Performance Benchmarks](docs/BENCHMARKS.md) — Documentation and baseline metrics
 - [Running Benchmarks](docs/benchmarking.md) — How to run performance tests
 - [Raspberry Pi Benchmarking](docs/raspberry-pi-benchmarking.md) — Pi-specific resource configurations
 

@@ -10,6 +10,6 @@ __pycache__/
 dist/
 *.whl
 *.egg-info/
-test_step*_acceptance.py
-STEP*_COMPLETION.md
-BUILD_STATUS.md
+tests/
+docs/development/
+benchmark_results.json
