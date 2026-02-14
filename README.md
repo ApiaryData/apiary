@@ -307,6 +307,7 @@ See [docs/architecture/06-roadmap.md](docs/architecture/06-roadmap.md) for detai
 - [Live Benchmark Results](https://apiarydata.github.io/apiary/) — View latest performance metrics
 - [Performance Benchmarks](BENCHMARKS.md) — Documentation and baseline metrics
 - [Running Benchmarks](docs/benchmarking.md) — How to run performance tests
+- [Raspberry Pi Benchmarking](docs/raspberry-pi-benchmarking.md) — Pi-specific resource configurations
 
 ### Architecture
 - [Architecture Summary](docs/architecture-summary.md)

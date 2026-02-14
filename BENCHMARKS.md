@@ -134,6 +134,25 @@ When making performance-related changes:
 
 Multi-node benchmarks test Apiary's distributed query capabilities with multiple nodes sharing the same storage backend.
 
+### Raspberry Pi Configurations
+
+For accurate benchmarking against Raspberry Pi hardware, see [Raspberry Pi Benchmarking Guide](docs/raspberry-pi-benchmarking.md).
+
+We provide Docker Compose configurations that constrain resources to match different Pi models:
+- **Pi 3**: 1.4GHz quad-core, 1GB RAM
+- **Pi 4**: 1.5GHz quad-core, 1GB/2GB/4GB/8GB RAM
+- **Pi 5**: 2.4GHz quad-core, 1GB/2GB/4GB/8GB/16GB RAM
+
+Example usage:
+```bash
+# Run benchmarks with Pi 4 4GB constraints
+python3 scripts/run_multinode_benchmark.py \
+  --compose-file docker-compose.pi4-4gb.yml \
+  --nodes 2 \
+  --image apiary:latest \
+  --sizes 5000,10000
+```
+
 ### How to Run Multi-Node Benchmarks
 
 ```bash

@@ -82,11 +82,21 @@ class BenchmarkResult:
 class MultiNodeBenchmark:
     """Runs multi-node Apiary benchmarks."""
     
-    def __init__(self, num_nodes: int = 2, apiary_image: str = "apiary:latest"):
+    def __init__(self, num_nodes: int = 2, apiary_image: str = "apiary:latest", compose_file: str = None):
         self.num_nodes = num_nodes
         self.apiary_image = apiary_image
         self.results: List[BenchmarkResult] = []
-        self.compose_file = None
+        self.compose_file = compose_file
+        self.external_compose = compose_file is not None
+    
+    def _get_node_name(self, node_index: int) -> str:
+        """Get the container name for a node at the given index (0-based)."""
+        if self.external_compose:
+            # Docker Compose scale creates containers like: apiary-node_1, apiary-node_2, etc.
+            return f"apiary-node_{node_index + 1}"
+        else:
+            # Dynamically generated compose file uses: apiary-node-1, apiary-node-2, etc.
+            return f"apiary-node-{node_index + 1}"
     
     def _create_compose_file(self) -> str:
         """Create a Docker Compose file for multi-node testing."""
@@ -153,17 +163,24 @@ class MultiNodeBenchmark:
         """Start the multi-node cluster."""
         print(f"Starting {self.num_nodes}-node cluster...", file=sys.stderr)
         
-        # Check if PyYAML is available
-        try:
-            import yaml
-        except ImportError:
-            print("ERROR: PyYAML is required. Install with: pip install PyYAML", file=sys.stderr)
-            sys.exit(1)
-        
-        self.compose_file = self._create_compose_file()
+        # If no external compose file, create one dynamically
+        if not self.external_compose:
+            # Check if PyYAML is available
+            try:
+                import yaml
+            except ImportError:
+                print("ERROR: PyYAML is required. Install with: pip install PyYAML", file=sys.stderr)
+                sys.exit(1)
+            
+            self.compose_file = self._create_compose_file()
         
         # Start services
         cmd = [*_get_compose_cmd(), "-f", self.compose_file, "up", "-d"]
+        
+        # Scale apiary-node service if using external compose
+        if self.external_compose:
+            cmd.extend(["--scale", f"apiary-node={self.num_nodes}"])
+        
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"Failed to start cluster: {result.stderr}")
@@ -180,7 +197,9 @@ class MultiNodeBenchmark:
             print("Stopping cluster...", file=sys.stderr)
             cmd = [*_get_compose_cmd(), "-f", self.compose_file, "down", "-v"]
             subprocess.run(cmd, capture_output=True)
-            os.unlink(self.compose_file)
+            # Only delete the compose file if we created it dynamically
+            if not self.external_compose:
+                os.unlink(self.compose_file)
             print("✓ Cluster stopped", file=sys.stderr)
     
     def _run_python_in_container(self, container: str, script: str) -> subprocess.CompletedProcess:
@@ -238,7 +257,7 @@ ap.shutdown()
 print("setup_done=1")
 """
             print(f"  Setting up schema...", file=sys.stderr)
-            proc = self._run_python_in_container("apiary-node-1", setup_script)
+            proc = self._run_python_in_container(self._get_node_name(0), setup_script)
             if proc.returncode != 0:
                 result.error = f"Schema setup failed: {proc.stderr}"
                 return result
@@ -291,7 +310,7 @@ ap.shutdown()
                   file=sys.stderr)
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_nodes) as pool:
                 futures = {
-                    pool.submit(_write_on_node, f"apiary-node-{i+1}"): i
+                    pool.submit(_write_on_node, self._get_node_name(i)): i
                     for i in range(self.num_nodes)
                 }
                 write_results = {}
@@ -302,7 +321,7 @@ ap.shutdown()
             # Check all writes succeeded
             per_node_metrics = {}
             for i in range(self.num_nodes):
-                node_name = f"apiary-node-{i+1}"
+                node_name = self._get_node_name(i)
                 proc = write_results[node_name]
                 if proc.returncode != 0:
                     result.error = f"Write failed on {node_name}: {proc.stderr}"
@@ -348,7 +367,7 @@ finally:
             
             verification_counts = []
             for i in range(self.num_nodes):
-                node_name = f"apiary-node-{i+1}"
+                node_name = self._get_node_name(i)
                 print(f"  Verifying data visibility from {node_name}...", file=sys.stderr)
                 proc = self._run_python_in_container(node_name, verify_script)
                 
@@ -459,7 +478,7 @@ ap.shutdown()
 """
             
             print(f"  Setting up test data...", file=sys.stderr)
-            proc = self._run_python_in_container("apiary-node-1", setup_script)
+            proc = self._run_python_in_container(self._get_node_name(0), setup_script)
             if proc.returncode != 0:
                 result.error = f"Setup failed: {proc.stderr}"
                 return result
@@ -508,7 +527,7 @@ ap.shutdown()
             total_bees = 0
             
             for i in range(self.num_nodes):
-                node_name = f"apiary-node-{i+1}"
+                node_name = self._get_node_name(i)
                 print(f"  Running query from {node_name}...", file=sys.stderr)
                 
                 proc = self._run_python_in_container(node_name, query_script)
@@ -609,6 +628,11 @@ def main():
         help="Docker image to use (default: apiary:latest)",
     )
     parser.add_argument(
+        "--compose-file",
+        type=str,
+        help="Docker Compose file to use (optional, e.g., docker-compose.pi3.yml). If not provided, a default compose file will be generated.",
+    )
+    parser.add_argument(
         "--sizes",
         type=str,
         default="5000,10000",
@@ -628,10 +652,16 @@ def main():
     print(f"{'='*60}", file=sys.stderr)
     print(f"Nodes: {args.nodes}", file=sys.stderr)
     print(f"Image: {args.image}", file=sys.stderr)
+    if args.compose_file:
+        print(f"Compose file: {args.compose_file}", file=sys.stderr)
     print(f"Dataset sizes: {dataset_sizes}", file=sys.stderr)
     print(f"", file=sys.stderr)
     
-    benchmark = MultiNodeBenchmark(num_nodes=args.nodes, apiary_image=args.image)
+    benchmark = MultiNodeBenchmark(
+        num_nodes=args.nodes, 
+        apiary_image=args.image,
+        compose_file=args.compose_file
+    )
     results = benchmark.run_all_benchmarks(dataset_sizes)
     
     # Prepare output
