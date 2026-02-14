@@ -1,0 +1,214 @@
+{
+  "suite": "ssb",
+  "scale_factor": 1,
+  "data_format": "mixed",
+  "engine": "DryRun",
+  "engine_version": "1.0",
+  "hardware": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+    "architecture": "AMD64",
+    "python_version": "3.13.7",
+    "hostname": "LAPTOP-SECHL7PT"
+  },
+  "queries": [
+    {
+      "query_id": "Q1.1",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q1.2",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q1.3",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q2.1",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q2.2",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q2.3",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q3.1",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q3.2",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q3.3",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q3.4",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q4.1",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q4.2",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "query_id": "Q4.3",
+      "runs": 3,
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "best_ms": 0.0,
+      "worst_ms": 0.0,
+      "rows_returned": 0,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  ],
+  "total_time_ms": 283.2,
+  "timestamp": "2026-02-14T21:23:14Z",
+  "config": {}
+}

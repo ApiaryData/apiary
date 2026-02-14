@@ -88,3 +88,25 @@ output:
   format: "json"            # json, csv
   include_system_info: true
   generate_charts: true
+
+# Docker engine settings (for apiary-docker engine)
+docker:
+  image: "apiary:latest"    # Pre-built Docker image tag
+  storage_url: "s3://apiary/bench"
+  nodes: 1                  # Default number of Apiary nodes
+  compose_file: null        # Override with a specific compose file path
+
+# Hardware profile shortcuts for --profile flag
+# Maps profile name -> Docker Compose file (relative to benchmarks/)
+hardware_profiles:
+  default: "../docker-compose.yml"
+  pi3: "../deploy/docker-compose.pi3.yml"
+  pi4-1gb: "../deploy/docker-compose.pi4-1gb.yml"
+  pi4-2gb: "../deploy/docker-compose.pi4-2gb.yml"
+  pi4-4gb: "../deploy/docker-compose.pi4-4gb.yml"
+  pi4-8gb: "../deploy/docker-compose.pi4-8gb.yml"
+  pi5-1gb: "../deploy/docker-compose.pi5-1gb.yml"
+  pi5-2gb: "../deploy/docker-compose.pi5-2gb.yml"
+  pi5-4gb: "../deploy/docker-compose.pi5-4gb.yml"
+  pi5-8gb: "../deploy/docker-compose.pi5-8gb.yml"
+  pi5-16gb: "../deploy/docker-compose.pi5-16gb.yml"

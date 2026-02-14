@@ -43,6 +43,8 @@ Custom benchmarks that exercise what no existing system does.
 
 ## Quick Start
 
+### Local mode (DataFusion direct)
+
 ```bash
 # Install dependencies
 pip install -r requirements.txt
@@ -56,9 +58,87 @@ python generate_datasets.py --benchmark ssb --scale-factor 10 --output ./data
 # Generate multi-format datasets for Apiary-specific benchmarks
 python generate_datasets.py --benchmark apiary --scale-factor 1 --output ./data
 
-# Run benchmarks
-python bench_runner.py --config config.yaml --benchmark ssb --output ./results
+# Run benchmarks (DataFusion directly scanning Parquet)
+python bench_runner.py --suite ssb --data-dir ./data/ssb/sf1/parquet --output ./results
 ```
+
+### Docker mode (Apiary full stack) — Tier 1 on real/simulated hardware
+
+Runs tier 1 benchmarks (SSB/TPC-H) through the complete Apiary stack inside
+Docker containers built from a **pre-built image**. Data is generated and
+ingested inside the container — no host-side data setup required.
+
+**Prerequisites:** Docker with Compose plugin, a pre-built Apiary image.
+
+```bash
+# Build the image once (or pull from a registry)
+docker build -t apiary:latest .
+
+# --- Single-node examples ---
+
+# SSB on default (unconstrained) hardware
+python bench_runner.py --suite ssb --engine apiary-docker \
+    --image apiary:latest --scale-factor 1
+
+# TPC-H on a Pi 3-constrained profile
+python bench_runner.py --suite tpch --engine apiary-docker \
+    --image apiary:latest --profile pi3 --scale-factor 1
+
+# SSB on Pi 4 4GB profile, 1 run per query (quick check)
+python bench_runner.py --suite ssb --engine apiary-docker \
+    --image apiary:latest --profile pi4-4gb --runs 1 --warmup 0
+
+# --- Multi-node examples ---
+
+# SSB on 3-node cluster, Pi 4 4GB constraints
+python bench_runner.py --suite ssb --engine apiary-docker \
+    --image apiary:latest --profile pi4-4gb --nodes 3 --scale-factor 1
+
+# TPC-H on 2-node cluster, default compose
+python bench_runner.py --suite tpch --engine apiary-docker \
+    --image apiary:latest --nodes 2 --scale-factor 1
+
+# Use an explicit compose file
+python bench_runner.py --suite ssb --engine apiary-docker \
+    --image apiary:latest \
+    --compose-file ../deploy/docker-compose.pi5-16gb.yml \
+    --nodes 4 --scale-factor 10
+
+# --- Heterogeneous clusters (manual compose) ---
+# For mixed Pi 3 + Pi 4 + Pi 5 clusters, create a custom compose file
+# that assigns different resource constraints per service, then:
+python bench_runner.py --suite tpch --engine apiary-docker \
+    --image apiary:latest --compose-file ./my-heterogeneous-cluster.yml \
+    --nodes 4 --scale-factor 1
+
+# --- Other options ---
+
+# Dry run (parse + rewrite queries, validate config, no containers)
+python bench_runner.py --suite ssb --engine apiary-docker --dry-run
+
+# Run specific queries only
+python bench_runner.py --suite ssb --engine apiary-docker \
+    --image apiary:latest --queries Q1.1 Q1.2 Q1.3
+```
+
+### Hardware profiles
+
+The `--profile` flag selects a Docker Compose configuration that constrains
+CPU and memory to simulate specific Raspberry Pi hardware:
+
+| Profile | CPU | Memory/Node | Memory/MinIO | Compose File |
+|---------|-----|-------------|-------------|--------------|
+| `default` | unconstrained | unconstrained | unconstrained | `docker-compose.yml` |
+| `pi3` | 2.0 | 512M | 512M | `deploy/docker-compose.pi3.yml` |
+| `pi4-1gb` | 2.0 | 512M | 512M | `deploy/docker-compose.pi4-1gb.yml` |
+| `pi4-2gb` | 2.0 | 1G | 768M | `deploy/docker-compose.pi4-2gb.yml` |
+| `pi4-4gb` | 2.0 | 2G | 1.5G | `deploy/docker-compose.pi4-4gb.yml` |
+| `pi4-8gb` | 2.0 | 4G | 3G | `deploy/docker-compose.pi4-8gb.yml` |
+| `pi5-1gb` | 2.5 | 512M | 512M | `deploy/docker-compose.pi5-1gb.yml` |
+| `pi5-2gb` | 2.5 | 1G | 768M | `deploy/docker-compose.pi5-2gb.yml` |
+| `pi5-4gb` | 2.5 | 2G | 1.5G | `deploy/docker-compose.pi5-4gb.yml` |
+| `pi5-8gb` | 2.5 | 4G | 3G | `deploy/docker-compose.pi5-8gb.yml` |
+| `pi5-16gb` | 2.5 | 8G | 6G | `deploy/docker-compose.pi5-16gb.yml` |
 
 ## Directory Structure
 
@@ -68,6 +148,7 @@ apiary-bench/
 ├── requirements.txt              # Python dependencies
 ├── config.yaml                   # Benchmark configuration
 ├── generate_datasets.py          # Main dataset generation entry point
+├── load_data.py                  # In-container data loader for Docker engine
 ├── generators/
 │   ├── __init__.py
 │   ├── ssb_generator.py          # Star Schema Benchmark data
