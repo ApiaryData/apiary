@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Apiary Performance Benchmarks</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -127,6 +128,43 @@
             color: #721c24;
         }
         
+        .trend {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 0.8em;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        
+        .trend-improving {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .trend-regressing {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .trend-stable {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+        
+        .chart-container {
+            position: relative;
+            margin: 20px 0 30px 0;
+            padding: 15px;
+            background: #fafafa;
+            border-radius: 8px;
+            border: 1px solid #eee;
+        }
+        
+        .chart-container canvas {
+            max-height: 350px;
+        }
+        
         .footer {
             margin-top: 40px;
             padding-top: 20px;
@@ -170,15 +208,15 @@
             <div class="metadata-grid">
                 <div class="metadata-item">
                     <span class="metadata-label">Last Updated</span>
-                    <span class="metadata-value">2026-02-14 12:34:23 UTC</span>
+                    <span class="metadata-value">2026-02-14 16:10:14 UTC</span>
                 </div>
                 <div class="metadata-item">
                     <span class="metadata-label">Run Number</span>
-                    <span class="metadata-value">#23</span>
+                    <span class="metadata-value">#26</span>
                 </div>
                 <div class="metadata-item">
                     <span class="metadata-label">Commit</span>
-                    <span class="metadata-value">ea03099</span>
+                    <span class="metadata-value">cf98d69</span>
                 </div>
                 <div class="metadata-item">
                     <span class="metadata-label">Platform</span>
@@ -204,20 +242,20 @@
                 
                 <tr>
                     <td class="number">1,000</td>
-                    <td class="number">361,515.60</td>
+                    <td class="number">352,610.68 <span class="trend trend-stable">● stable</span></td>
                     <td class="number">0.0028</td>
                 </tr>
             
                 <tr>
                     <td class="number">10,000</td>
-                    <td class="number">1,618,172.84</td>
-                    <td class="number">0.0062</td>
+                    <td class="number">1,659,992.88 <span class="trend trend-stable">● stable</span></td>
+                    <td class="number">0.0060</td>
                 </tr>
             
                 <tr>
                     <td class="number">50,000</td>
-                    <td class="number">2,622,193.88</td>
-                    <td class="number">0.0191</td>
+                    <td class="number">2,638,258.90 <span class="trend trend-stable">● stable</span></td>
+                    <td class="number">0.0190</td>
                 </tr>
             
             </tbody>
@@ -237,20 +275,20 @@
                 
                 <tr>
                     <td class="number">1,000</td>
-                    <td class="number">207,885.80</td>
-                    <td class="number">0.0048</td>
+                    <td class="number">195,611.60 <span class="trend trend-stable">● stable</span></td>
+                    <td class="number">0.0051</td>
                 </tr>
             
                 <tr>
                     <td class="number">10,000</td>
-                    <td class="number">1,639,168.36</td>
+                    <td class="number">1,627,339.18 <span class="trend trend-stable">● stable</span></td>
                     <td class="number">0.0061</td>
                 </tr>
             
                 <tr>
                     <td class="number">50,000</td>
-                    <td class="number">4,175,763.61</td>
-                    <td class="number">0.0120</td>
+                    <td class="number">3,931,594.83 <span class="trend trend-stable">● stable</span></td>
+                    <td class="number">0.0127</td>
                 </tr>
             
             </tbody>
@@ -258,6 +296,8 @@
     
         </div>
     
+        
+        
         
         
         <div class="section">
@@ -284,14 +324,14 @@
                 
                 <tr>
                     <td class="number">0</td>
-                    <td class="number">0.00</td>
+                    <td class="number">0.00 <span class="trend trend-stable">● stable</span></td>
                     <td class="number">0.0000</td>
                     <td class="number">2</td>
                 </tr>
             
                 <tr>
                     <td class="number">0</td>
-                    <td class="number">0.00</td>
+                    <td class="number">0.00 <span class="trend trend-stable">● stable</span></td>
                     <td class="number">0.0000</td>
                     <td class="number">2</td>
                 </tr>
@@ -315,16 +355,16 @@
                 
                 <tr>
                     <td class="number">5,000</td>
-                    <td class="number">552,486.19</td>
-                    <td class="number">0.0090</td>
+                    <td class="number">549,450.55 <span class="trend trend-stable">● stable</span></td>
+                    <td class="number">0.0091</td>
                     <td class="number">0</td>
                     <td class="number">0</td>
                 </tr>
             
                 <tr>
                     <td class="number">10,000</td>
-                    <td class="number">1,025,641.03</td>
-                    <td class="number">0.0097</td>
+                    <td class="number">1,058,201.06 <span class="trend trend-stable">● stable</span></td>
+                    <td class="number">0.0095</td>
                     <td class="number">0</td>
                     <td class="number">0</td>
                 </tr>
@@ -340,5 +380,6 @@
             <p>View <a href="https://github.com/ApiaryData/apiary/actions">workflow runs</a> or check the <a href="https://github.com/ApiaryData/apiary">repository</a></p>
         </div>
     </div>
+    
 </body>
 </html>
