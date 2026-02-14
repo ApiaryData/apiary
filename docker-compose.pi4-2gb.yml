@@ -1,0 +1,86 @@
+# ============================================================
+# Apiary — Docker Compose Configuration for Raspberry Pi 4 (2GB RAM)
+# Constrains resources to match Pi 4 2GB specs:
+# - CPU: 1.5GHz 64-bit quad-core (4 cores @ ~38% relative performance)
+# - RAM: 2GB
+#
+# Usage:
+#   docker compose -f docker-compose.pi4-2gb.yml up -d
+#   docker compose -f docker-compose.pi4-2gb.yml up -d --scale apiary-node=3
+#   docker compose -f docker-compose.pi4-2gb.yml down
+# ============================================================
+
+services:
+  # S3-compatible object storage
+  minio:
+    image: minio/minio:latest
+    container_name: apiary-minio-pi4-2gb
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data-pi4-2gb:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # Pi 4 2GB constraints: 768MB RAM for MinIO
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 768M
+        reservations:
+          memory: 384M
+
+  # One-shot container that creates the default bucket
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc config host add myminio http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin};
+      /usr/bin/mc mb myminio/apiary --ignore-existing;
+      exit 0;
+      "
+    restart: "no"
+
+  # Apiary compute node — scale as needed
+  apiary-node:
+    image: ${APIARY_IMAGE:-apiary:latest}
+    command: ["python3", "-c", "import time; time.sleep(3600)"]  # Keep container alive for benchmarks
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_ENDPOINT_URL: http://minio:9000
+      APIARY_STORAGE_URL: ${APIARY_STORAGE_URL:-s3://apiary/data}
+      APIARY_NAME: ${APIARY_NAME:-pi4-2gb-benchmark}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - apiary-cache-pi4-2gb:/home/apiary/cache
+    restart: unless-stopped
+    # Pi 4 2GB constraints per node:
+    # - 4 cores @ 1.5GHz
+    # - 2GB RAM total, ~1GB per node
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '1.0'
+          memory: 512M
+
+volumes:
+  minio-data-pi4-2gb:
+  apiary-cache-pi4-2gb:
