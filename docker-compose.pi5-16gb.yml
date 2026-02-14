@@ -1,7 +1,7 @@
 # ============================================================
 # Apiary — Docker Compose Configuration for Raspberry Pi 5 (16GB RAM)
 # Constrains resources to match Pi 5 16GB specs:
-# - CPU: 2.4GHz quad-core 64-bit (4 cores @ ~60% relative performance)
+# - CPU: 2.4GHz quad-core 64-bit (4 cores @ ~62% relative performance)
 # - RAM: 16GB
 #
 # Usage:

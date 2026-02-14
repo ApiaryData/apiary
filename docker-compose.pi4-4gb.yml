@@ -1,7 +1,7 @@
 # ============================================================
 # Apiary — Docker Compose Configuration for Raspberry Pi 4 (4GB RAM)
 # Constrains resources to match Pi 4 4GB specs:
-# - CPU: 1.5GHz 64-bit quad-core (4 cores @ ~38% relative performance)
+# - CPU: 1.5GHz 64-bit quad-core (4 cores @ ~50% relative performance)
 # - RAM: 4GB
 #
 # Usage:

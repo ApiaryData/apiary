@@ -1,7 +1,7 @@
 # ============================================================
 # Apiary — Docker Compose Configuration for Raspberry Pi 3
 # Constrains resources to match Pi 3 specs:
-# - CPU: 1.4GHz 64-bit quad-core (4 cores @ ~35% relative performance)
+# - CPU: 1.4GHz 64-bit quad-core (4 cores @ ~50% relative performance)
 # - RAM: 1GB
 #
 # Usage:
