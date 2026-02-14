@@ -20,12 +20,12 @@ Additional models requested:
 Created 10 separate Docker Compose files, each tailored to specific Raspberry Pi specifications:
 
 #### Raspberry Pi 3
-- **File**: `docker-compose.pi3.yml`
+- **File**: `deploy/docker-compose.pi3.yml`
 - **CPU Limit**: 2.0 CPUs (~50% relative performance)
 - **Memory Limit**: 512MB per node, 512MB for MinIO
 
 #### Raspberry Pi 4 (4 variants)
-- **Files**: `docker-compose.pi4-{1gb,2gb,4gb,8gb}.yml`
+- **Files**: `deploy/docker-compose.pi4-{1gb,2gb,4gb,8gb}.yml`
 - **CPU Limit**: 2.0 CPUs (~50% relative performance)
 - **Memory Limits**:
   - 1GB: 512MB per node, 512MB for MinIO
@@ -34,7 +34,7 @@ Created 10 separate Docker Compose files, each tailored to specific Raspberry Pi
   - 8GB: 4GB per node, 3GB for MinIO
 
 #### Raspberry Pi 5 (5 variants)
-- **Files**: `docker-compose.pi5-{1gb,2gb,4gb,8gb,16gb}.yml`
+- **Files**: `deploy/docker-compose.pi5-{1gb,2gb,4gb,8gb,16gb}.yml`
 - **CPU Limit**: 2.5 CPUs (~62% relative performance)
 - **Memory Limits**:
   - 1GB: 512MB per node, 512MB for MinIO
@@ -110,14 +110,14 @@ The `_get_node_name()` method handles this automatically.
 docker build -t apiary:latest .
 
 # Start with Pi 4 4GB constraints
-docker compose -f docker-compose.pi4-4gb.yml up -d
+docker compose -f deploy/docker-compose.pi4-4gb.yml up -d
 ```
 
 ### Multi-Node Benchmark
 ```bash
 # Run with Pi 5 8GB constraints and 3 nodes
 python3 scripts/run_multinode_benchmark.py \
-  --compose-file docker-compose.pi5-8gb.yml \
+  --compose-file deploy/docker-compose.pi5-8gb.yml \
   --nodes 3 \
   --image apiary:latest \
   --sizes 5000,10000 \
@@ -128,21 +128,21 @@ python3 scripts/run_multinode_benchmark.py \
 ```bash
 # Benchmark Pi 3
 python3 scripts/run_multinode_benchmark.py \
-  --compose-file docker-compose.pi3.yml \
+  --compose-file deploy/docker-compose.pi3.yml \
   --nodes 2 \
   --sizes 5000,10000 \
   --output pi3_results.json
 
 # Benchmark Pi 4 4GB
 python3 scripts/run_multinode_benchmark.py \
-  --compose-file docker-compose.pi4-4gb.yml \
+  --compose-file deploy/docker-compose.pi4-4gb.yml \
   --nodes 2 \
   --sizes 5000,10000 \
   --output pi4_4gb_results.json
 
 # Benchmark Pi 5 8GB
 python3 scripts/run_multinode_benchmark.py \
-  --compose-file docker-compose.pi5-8gb.yml \
+  --compose-file deploy/docker-compose.pi5-8gb.yml \
   --nodes 2 \
   --sizes 5000,10000 \
   --output pi5_8gb_results.json
@@ -246,16 +246,16 @@ When using external compose files, the benchmark script:
 ## Files Added/Modified
 
 ### New Files
-- `docker-compose.pi3.yml`
-- `docker-compose.pi4-1gb.yml`
-- `docker-compose.pi4-2gb.yml`
-- `docker-compose.pi4-4gb.yml`
-- `docker-compose.pi4-8gb.yml`
-- `docker-compose.pi5-1gb.yml`
-- `docker-compose.pi5-2gb.yml`
-- `docker-compose.pi5-4gb.yml`
-- `docker-compose.pi5-8gb.yml`
-- `docker-compose.pi5-16gb.yml`
+- `deploy/docker-compose.pi3.yml`
+- `deploy/docker-compose.pi4-1gb.yml`
+- `deploy/docker-compose.pi4-2gb.yml`
+- `deploy/docker-compose.pi4-4gb.yml`
+- `deploy/docker-compose.pi4-8gb.yml`
+- `deploy/docker-compose.pi5-1gb.yml`
+- `deploy/docker-compose.pi5-2gb.yml`
+- `deploy/docker-compose.pi5-4gb.yml`
+- `deploy/docker-compose.pi5-8gb.yml`
+- `deploy/docker-compose.pi5-16gb.yml`
 - `docs/raspberry-pi-benchmarking.md`
 - `RASPBERRY_PI_CONFIG_IMPLEMENTATION.md` (this file)
 

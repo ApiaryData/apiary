@@ -630,7 +630,7 @@ def main():
     parser.add_argument(
         "--compose-file",
         type=str,
-        help="Docker Compose file to use (optional, e.g., docker-compose.pi3.yml). If not provided, a default compose file will be generated.",
+        help="Docker Compose file to use (optional, e.g., deploy/docker-compose.pi3.yml). If not provided, a default compose file will be generated.",
     )
     parser.add_argument(
         "--sizes",

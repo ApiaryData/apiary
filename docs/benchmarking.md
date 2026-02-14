@@ -348,6 +348,6 @@ When making performance-related changes:
 ## Next Steps
 
 - Run benchmarks locally: `python3 scripts/run_benchmark.py --docker`
-- View historical results: [BENCHMARKS.md](../BENCHMARKS.md)
+- View historical results: [BENCHMARKS.md](BENCHMARKS.md)
 - Understand the architecture: [docs/architecture-summary.md](architecture-summary.md)
 - Explore the codebase: [README.md](../README.md)

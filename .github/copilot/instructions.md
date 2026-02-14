@@ -21,7 +21,7 @@ Read these before implementing anything. They are the source of truth:
 ## Development Prompts
 
 `docs/prompts/07-v1-development-prompts.md` contains 10 sequential implementation
-steps. Check `BUILD_STATUS.md` for which steps are complete.
+steps. Check `docs/BUILD_STATUS.md` for which steps are complete.
 
 ## Technical Stack
 

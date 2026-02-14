@@ -11,26 +11,26 @@ To accurately benchmark Apiary's performance on Raspberry Pi hardware without re
 ### Raspberry Pi 3
 - **CPU**: 1.4GHz 64-bit quad-core (Cortex-A53)
 - **RAM**: 1GB
-- **File**: `docker-compose.pi3.yml`
+- **File**: `deploy/docker-compose.pi3.yml`
 
 ### Raspberry Pi 4
 Four variants with different memory configurations:
 - **CPU**: 1.5GHz 64-bit quad-core (Cortex-A72)
 - **RAM Variants**:
-  - 1GB: `docker-compose.pi4-1gb.yml`
-  - 2GB: `docker-compose.pi4-2gb.yml`
-  - 4GB: `docker-compose.pi4-4gb.yml`
-  - 8GB: `docker-compose.pi4-8gb.yml`
+  - 1GB: `deploy/docker-compose.pi4-1gb.yml`
+  - 2GB: `deploy/docker-compose.pi4-2gb.yml`
+  - 4GB: `deploy/docker-compose.pi4-4gb.yml`
+  - 8GB: `deploy/docker-compose.pi4-8gb.yml`
 
 ### Raspberry Pi 5
 Five variants with different memory configurations:
 - **CPU**: 2.4GHz quad-core 64-bit (Cortex-A76)
 - **RAM Variants**:
-  - 1GB: `docker-compose.pi5-1gb.yml`
-  - 2GB: `docker-compose.pi5-2gb.yml`
-  - 4GB: `docker-compose.pi5-4gb.yml`
-  - 8GB: `docker-compose.pi5-8gb.yml`
-  - 16GB: `docker-compose.pi5-16gb.yml`
+  - 1GB: `deploy/docker-compose.pi5-1gb.yml`
+  - 2GB: `deploy/docker-compose.pi5-2gb.yml`
+  - 4GB: `deploy/docker-compose.pi5-4gb.yml`
+  - 8GB: `deploy/docker-compose.pi5-8gb.yml`
+  - 16GB: `deploy/docker-compose.pi5-16gb.yml`
 
 ## Resource Constraints
 
@@ -57,7 +57,7 @@ Memory is divided between MinIO (storage backend) and Apiary nodes:
 Start a single Apiary node with Pi 3 constraints:
 ```bash
 docker build -t apiary:latest .
-docker compose -f docker-compose.pi3.yml up -d
+docker compose -f deploy/docker-compose.pi3.yml up -d
 ```
 
 Access MinIO console at http://localhost:9001 (credentials: minioadmin/minioadmin)
@@ -67,7 +67,7 @@ Access MinIO console at http://localhost:9001 (credentials: minioadmin/minioadmi
 Scale to multiple nodes (e.g., 3 nodes) with Pi 4 4GB constraints:
 ```bash
 docker build -t apiary:latest .
-docker compose -f docker-compose.pi4-4gb.yml up -d --scale apiary-node=3
+docker compose -f deploy/docker-compose.pi4-4gb.yml up -d --scale apiary-node=3
 ```
 
 ### Running Benchmarks
@@ -83,7 +83,7 @@ python3 scripts/run_benchmark.py \
   --output benchmark_pi3.json
 
 # Start with Pi 3 constraints (manually for now)
-docker compose -f docker-compose.pi3.yml up -d
+docker compose -f deploy/docker-compose.pi3.yml up -d
 # Then run benchmarks against the running container
 ```
 
@@ -95,7 +95,7 @@ docker build -t apiary:latest .
 
 # Pi 4 4GB with 2 nodes
 python3 scripts/run_multinode_benchmark.py \
-  --compose-file docker-compose.pi4-4gb.yml \
+  --compose-file deploy/docker-compose.pi4-4gb.yml \
   --nodes 2 \
   --image apiary:latest \
   --sizes 5000,10000 \
@@ -103,7 +103,7 @@ python3 scripts/run_multinode_benchmark.py \
 
 # Pi 5 8GB with 3 nodes
 python3 scripts/run_multinode_benchmark.py \
-  --compose-file docker-compose.pi5-8gb.yml \
+  --compose-file deploy/docker-compose.pi5-8gb.yml \
   --nodes 3 \
   --image apiary:latest \
   --sizes 5000,10000 \
@@ -114,7 +114,7 @@ python3 scripts/run_multinode_benchmark.py \
 
 Stop and remove containers:
 ```bash
-docker compose -f docker-compose.pi3.yml down -v
+docker compose -f deploy/docker-compose.pi3.yml down -v
 ```
 
 ## Benchmark Recommendations
@@ -196,7 +196,7 @@ Potential improvements:
 
 When adding new Pi configurations:
 1. Match official Raspberry Pi specifications exactly
-2. Use consistent naming: `docker-compose.pi{version}-{ram}.yml`
+2. Use consistent naming: `deploy/docker-compose.pi{version}-{ram}.yml`
 3. Document CPU and memory allocations
 4. Test with multi-node benchmarks
 5. Update this documentation
