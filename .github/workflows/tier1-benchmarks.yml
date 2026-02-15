@@ -1,0 +1,249 @@
+# ============================================================
+# Apiary — Tier 1 Benchmarks (SSB + TPC-H)
+#
+# Manually triggered workflow that runs tier 1 analytical
+# benchmarks through the full Apiary stack inside Docker.
+#
+# Uses a pre-built image from GHCR by default, or a custom
+# image can be provided. The same image can be benchmarked
+# across different simulated hardware profiles.
+# ============================================================
+
+name: Tier 1 Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Benchmark suite"
+        required: true
+        type: choice
+        options:
+          - ssb
+          - tpch
+          - both
+        default: ssb
+
+      profile:
+        description: "Hardware profile (resource constraints)"
+        required: true
+        type: choice
+        options:
+          - default
+          - pi3
+          - pi4-1gb
+          - pi4-2gb
+          - pi4-4gb
+          - pi4-8gb
+          - pi5-1gb
+          - pi5-2gb
+          - pi5-4gb
+          - pi5-8gb
+          - pi5-16gb
+        default: default
+
+      nodes:
+        description: "Number of Apiary nodes"
+        required: true
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+        default: "1"
+
+      scale_factor:
+        description: "Scale factor (1=~1GB, 10=~10GB)"
+        required: true
+        type: choice
+        options:
+          - "1"
+          - "10"
+        default: "1"
+
+      runs:
+        description: "Timed runs per query"
+        required: false
+        type: choice
+        options:
+          - "1"
+          - "3"
+          - "5"
+        default: "3"
+
+      warmup:
+        description: "Warmup runs per query"
+        required: false
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+        default: "1"
+
+      image:
+        description: "Docker image (leave empty to use GHCR)"
+        required: false
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  packages: read  # Needed for pulling images from GHCR
+
+jobs:
+  # ------------------------------------------------------------------
+  # Run the tier 1 benchmarks
+  # ------------------------------------------------------------------
+  benchmark:
+    name: "Run ${{ inputs.suite }} SF${{ inputs.scale_factor }} / ${{ inputs.profile }} / ${{ inputs.nodes }}N"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install pyarrow pandas numpy psutil PyYAML tabulate
+
+      - name: Log in to GitHub Container Registry
+        if: ${{ inputs.image == '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image from GHCR
+        if: ${{ inputs.image == '' }}
+        run: docker pull ghcr.io/${{ github.repository }}:main
+
+      - name: Pull custom image
+        if: ${{ inputs.image != '' }}
+        run: docker pull "${{ inputs.image }}"
+
+      - name: Determine image tag
+        id: image
+        run: |
+          if [ -n "${{ inputs.image }}" ]; then
+            echo "tag=${{ inputs.image }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=ghcr.io/${{ github.repository }}:main" >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- Run SSB ---
+      - name: "Run SSB benchmark"
+        if: ${{ inputs.suite == 'ssb' || inputs.suite == 'both' }}
+        working-directory: benchmarks
+        run: |
+          python3 bench_runner.py \
+            --suite ssb \
+            --engine apiary-docker \
+            --image "${{ steps.image.outputs.tag }}" \
+            --profile "${{ inputs.profile }}" \
+            --nodes "${{ inputs.nodes }}" \
+            --scale-factor "${{ inputs.scale_factor }}" \
+            --runs "${{ inputs.runs }}" \
+            --warmup "${{ inputs.warmup }}" \
+            --no-cache-clear \
+            --output ./results
+
+      # --- Run TPC-H ---
+      - name: "Run TPC-H benchmark"
+        if: ${{ inputs.suite == 'tpch' || inputs.suite == 'both' }}
+        working-directory: benchmarks
+        run: |
+          python3 bench_runner.py \
+            --suite tpch \
+            --engine apiary-docker \
+            --image "${{ steps.image.outputs.tag }}" \
+            --profile "${{ inputs.profile }}" \
+            --nodes "${{ inputs.nodes }}" \
+            --scale-factor "${{ inputs.scale_factor }}" \
+            --runs "${{ inputs.runs }}" \
+            --warmup "${{ inputs.warmup }}" \
+            --no-cache-clear \
+            --output ./results
+
+      # --- Summary ---
+      - name: Generate job summary
+        if: always()
+        working-directory: benchmarks
+        run: |
+          echo "## Tier 1 Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Suite | ${{ inputs.suite }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Scale Factor | ${{ inputs.scale_factor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Profile | ${{ inputs.profile }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nodes | ${{ inputs.nodes }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Runs | ${{ inputs.runs }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Warmup | ${{ inputs.warmup }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | ${{ steps.image.outputs.tag }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Date | $(date -u +'%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          python3 << 'PYEOF'
+          import json
+          import glob
+          import os
+
+          result_files = sorted(glob.glob("results/*.json"))
+          if not result_files:
+              print("No result files found.")
+              exit(0)
+
+          for fpath in result_files:
+              with open(fpath) as f:
+                  report = json.load(f)
+
+              suite = report.get("suite", "unknown").upper()
+              sf = report.get("scale_factor", "?")
+              engine = report.get("engine", "?")
+              total_ms = report.get("total_time_ms", 0)
+
+              print(f"### {suite} (SF{sf}) — {engine}\n")
+              print(f"Total wall clock: {total_ms / 1000:.1f}s\n")
+
+              queries = report.get("queries", [])
+              if queries:
+                  print("| Query | Median (ms) | Best (ms) | Worst (ms) | Rows |")
+                  print("|-------|------------|----------|-----------|------|")
+                  for q in queries:
+                      qid = q.get("query_id", "?")
+                      med = q.get("median_ms", 0)
+                      best = q.get("best_ms", 0)
+                      worst = q.get("worst_ms", 0)
+                      rows = q.get("rows_returned", 0)
+                      print(f"| {qid} | {med:,.1f} | {best:,.1f} | {worst:,.1f} | {rows:,} |")
+
+                  # Geometric mean
+                  valid = [q["median_ms"] for q in queries if q.get("median_ms", 0) > 0]
+                  if valid:
+                      import math
+                      geomean = math.exp(sum(math.log(t) for t in valid) / len(valid))
+                      total = sum(valid)
+                      print(f"\n**Geometric mean:** {geomean:,.1f} ms")
+                      print(f"**Sum of medians:** {total:,.1f} ms")
+
+              print("")
+          PYEOF
+
+      # --- Artifact upload ---
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "tier1-${{ inputs.suite }}-sf${{ inputs.scale_factor }}-${{ inputs.profile }}-${{ inputs.nodes }}n-${{ github.run_number }}"
+          path: benchmarks/results/
+          retention-days: 90

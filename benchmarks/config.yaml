@@ -1,0 +1,112 @@
+# Apiary Benchmark Configuration
+# ================================
+
+# Dataset generation settings
+datasets:
+  output_dir: "./data"
+  scale_factor: 1          # 1, 10, or 100
+  formats:
+    - parquet
+    - csv
+    - arrow                 # IPC/Feather format
+  compression: snappy       # For Parquet: snappy, zstd, gzip, none
+  row_group_size: 100000    # Parquet row group size
+
+# Benchmark execution settings
+execution:
+  runs: 3                   # Number of runs per query
+  warmup_runs: 1            # Warmup runs (not counted)
+  clear_cache: true         # Clear OS page cache between runs
+  timeout_seconds: 600      # Per-query timeout
+  report_metric: median     # median, mean, best, worst
+
+# Hardware profile (update for your cluster)
+hardware:
+  nodes:
+    - name: "pi5-node1"
+      host: "192.168.1.101"
+      model: "Raspberry Pi 5"
+      ram_gb: 16
+      storage: "nvme"       # nvme, sd, usb-ssd
+      vcores: 4
+    - name: "pi4-node1"
+      host: "192.168.1.102"
+      model: "Raspberry Pi 4"
+      ram_gb: 8
+      storage: "sd"
+      vcores: 4
+
+# Apiary connection settings
+apiary:
+  mode: "solo"              # solo, semi-social, eusocial
+  gossip_port: 7946
+  raft_port: 7947
+  data_dir: "./apiary-data"
+
+# Benchmark suites to run
+suites:
+  ssb:
+    enabled: true
+    scale_factors: [1, 10]
+    query_dir: "./queries/ssb"
+
+  tpch:
+    enabled: true
+    scale_factors: [1, 10]
+    query_dir: "./queries/tpch"
+
+  apiary_format:
+    enabled: true
+    description: "Format-agnostic query benchmark"
+    scale_factors: [1]
+    query_dir: "./queries/apiary"
+
+  apiary_heterogeneous:
+    enabled: false           # Requires multi-node cluster
+    description: "Heterogeneous cluster scaling"
+    node_configs:
+      - [1]                  # Solo
+      - [1, 2]               # 2-node mixed
+      - [1, 2, 2]            # 3-node mixed
+
+  apiary_acid:
+    enabled: true
+    description: "ACID under concurrent analytics"
+    concurrent_writers: [0, 1, 2, 4]
+    query_dir: "./queries/apiary"
+
+  apiary_elasticity:
+    enabled: false           # Requires multi-node cluster
+    description: "Dynamic node join/leave"
+    events:
+      - { time: 30, action: "kill", node: "pi4-node1" }
+      - { time: 60, action: "join", node: "pi4-node1" }
+
+# Output settings
+output:
+  dir: "./results"
+  format: "json"            # json, csv
+  include_system_info: true
+  generate_charts: true
+
+# Docker engine settings (for apiary-docker engine)
+docker:
+  image: "apiary:latest"    # Pre-built Docker image tag
+  storage_url: "s3://apiary/bench"
+  nodes: 1                  # Default number of Apiary nodes
+  compose_file: null        # Override with a specific compose file path
+
+# Hardware profile shortcuts for --profile flag
+# Maps profile name -> Docker Compose file (relative to benchmarks/)
+hardware_profiles:
+  default: "../docker-compose.yml"
+  pi3: "../deploy/docker-compose.pi3.yml"
+  pi4-1gb: "../deploy/docker-compose.pi4-1gb.yml"
+  pi4-2gb: "../deploy/docker-compose.pi4-2gb.yml"
+  pi4-4gb: "../deploy/docker-compose.pi4-4gb.yml"
+  pi4-8gb: "../deploy/docker-compose.pi4-8gb.yml"
+  pi5-1gb: "../deploy/docker-compose.pi5-1gb.yml"
+  pi5-2gb: "../deploy/docker-compose.pi5-2gb.yml"
+  pi5-4gb: "../deploy/docker-compose.pi5-4gb.yml"
+  pi5-8gb: "../deploy/docker-compose.pi5-8gb.yml"
+  pi5-16gb: "../deploy/docker-compose.pi5-16gb.yml"
