@@ -388,6 +388,9 @@ def _create_compose_override(benchmarks_dir: str, image: str) -> str:
         f.write("services:\n")
         f.write("  apiary-node:\n")
         f.write(f"    image: {image}\n")
+        f.write("    environment:\n")
+        f.write("      # MinIO doesn't require a real region, but the AWS SDK does\n")
+        f.write("      AWS_REGION: us-east-1\n")
         f.write("    volumes:\n")
         f.write(f"      - {host_path}:/benchmarks:ro\n")
     return path
