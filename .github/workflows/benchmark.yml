@@ -12,6 +12,7 @@ env:
 
 permissions:
   contents: write  # Needed for GitHub Pages deployment
+  packages: read   # Needed for pulling images from GHCR
 
 jobs:
   benchmark:
@@ -23,7 +24,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Docker image from GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: pull_ghcr
+        continue-on-error: true
+        run: docker pull ghcr.io/${{ github.repository }}:main
+
+      - name: Build Docker image (fallback or PR)
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main' || steps.pull_ghcr.outcome == 'failure'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -31,6 +46,10 @@ jobs:
           tags: apiary:benchmark
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Tag image for benchmarking
+        if: steps.pull_ghcr.outcome == 'success'
+        run: docker tag ghcr.io/${{ github.repository }}:main apiary:benchmark
 
       - name: Set up Python
         uses: actions/setup-python@v5

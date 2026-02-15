@@ -4,9 +4,9 @@
 # Manually triggered workflow that runs tier 1 analytical
 # benchmarks through the full Apiary stack inside Docker.
 #
-# Uses a pre-built image (built in this workflow or pulled from
-# a registry) so the same image can be benchmarked across
-# different simulated hardware profiles.
+# Uses a pre-built image from GHCR by default, or a custom
+# image can be provided. The same image can be benchmarked
+# across different simulated hardware profiles.
 # ============================================================
 
 name: Tier 1 Benchmarks
@@ -83,7 +83,7 @@ on:
         default: "1"
 
       image:
-        description: "Docker image (leave empty to build from source)"
+        description: "Docker image (leave empty to use GHCR)"
         required: false
         type: string
         default: ""
@@ -93,51 +93,15 @@ env:
 
 permissions:
   contents: read
+  packages: read  # Needed for pulling images from GHCR
 
 jobs:
-  # ------------------------------------------------------------------
-  # Build the Docker image (skipped if a pre-built image is provided)
-  # ------------------------------------------------------------------
-  build-image:
-    name: Build Image
-    runs-on: ubuntu-latest
-    if: ${{ inputs.image == '' }}
-    outputs:
-      image_tag: apiary:tier1-bench
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          load: true
-          tags: apiary:tier1-bench
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Save the image so the benchmark job can load it
-      - name: Save Docker image
-        run: docker save apiary:tier1-bench | gzip > apiary-image.tar.gz
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: apiary-docker-image
-          path: apiary-image.tar.gz
-          retention-days: 1
-
   # ------------------------------------------------------------------
   # Run the tier 1 benchmarks
   # ------------------------------------------------------------------
   benchmark:
     name: "Run ${{ inputs.suite }} SF${{ inputs.scale_factor }} / ${{ inputs.profile }} / ${{ inputs.nodes }}N"
     runs-on: ubuntu-latest
-    needs: [build-image]
-    if: ${{ always() && (needs.build-image.result == 'success' || needs.build-image.result == 'skipped') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -149,18 +113,19 @@ jobs:
       - name: Install Python dependencies
         run: pip install pyarrow pandas numpy psutil PyYAML tabulate
 
-      # --- Load built image or pull pre-built ---
-      - name: Download built image
+      - name: Log in to GitHub Container Registry
         if: ${{ inputs.image == '' }}
-        uses: actions/download-artifact@v4
+        uses: docker/login-action@v3
         with:
-          name: apiary-docker-image
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load built image
+      - name: Pull image from GHCR
         if: ${{ inputs.image == '' }}
-        run: gunzip -c apiary-image.tar.gz | docker load
+        run: docker pull ghcr.io/${{ github.repository }}:main
 
-      - name: Pull pre-built image
+      - name: Pull custom image
         if: ${{ inputs.image != '' }}
         run: docker pull "${{ inputs.image }}"
 
@@ -170,7 +135,7 @@ jobs:
           if [ -n "${{ inputs.image }}" ]; then
             echo "tag=${{ inputs.image }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=apiary:tier1-bench" >> "$GITHUB_OUTPUT"
+            echo "tag=ghcr.io/${{ github.repository }}:main" >> "$GITHUB_OUTPUT"
           fi
 
       # --- Run SSB ---
