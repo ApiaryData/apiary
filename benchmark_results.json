@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-15T12:48:19.832938",
+  "timestamp": "2026-02-15T14:24:41.657751",
   "use_docker": true,
   "image": "apiary:benchmark",
   "dataset_sizes": [
@@ -15,8 +15,8 @@
       "error": null,
       "metrics": {
         "rows": 1000.0,
-        "elapsed": 0.0026,
-        "throughput": 383812.59
+        "elapsed": 0.0028,
+        "throughput": 353442.66
       }
     },
     {
@@ -26,9 +26,9 @@
       "error": null,
       "metrics": {
         "rows_scanned": 1000.0,
-        "result_rows": 636.0,
-        "elapsed": 0.0048,
-        "throughput": 209213.09
+        "result_rows": 644.0,
+        "elapsed": 0.005,
+        "throughput": 199320.63
       }
     },
     {
@@ -38,8 +38,8 @@
       "error": null,
       "metrics": {
         "rows": 10000.0,
-        "elapsed": 0.0058,
-        "throughput": 1711821.08
+        "elapsed": 0.006,
+        "throughput": 1662559.06
       }
     },
     {
@@ -50,8 +50,8 @@
       "metrics": {
         "rows_scanned": 10000.0,
         "result_rows": 1000.0,
-        "elapsed": 0.0061,
-        "throughput": 1634951.27
+        "elapsed": 0.0059,
+        "throughput": 1685474.78
       }
     },
     {
@@ -61,8 +61,8 @@
       "error": null,
       "metrics": {
         "rows": 50000.0,
-        "elapsed": 0.0188,
-        "throughput": 2653077.95
+        "elapsed": 0.018,
+        "throughput": 2783472.92
       }
     },
     {
@@ -73,8 +73,8 @@
       "metrics": {
         "rows_scanned": 50000.0,
         "result_rows": 1000.0,
-        "elapsed": 0.0117,
-        "throughput": 4271533.32
+        "elapsed": 0.012,
+        "throughput": 4151214.39
       }
     }
   ]
