@@ -35,7 +35,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: pull_ghcr
         continue-on-error: true
-        run: docker pull ghcr.io/${{ github.repository }}:main
+        run: docker pull ghcr.io/${GITHUB_REPOSITORY,,}:main
 
       - name: Build Docker image (fallback or PR)
         if: github.event_name != 'push' || github.ref != 'refs/heads/main' || steps.pull_ghcr.outcome == 'failure'
@@ -49,7 +49,7 @@ jobs:
 
       - name: Tag image for benchmarking
         if: steps.pull_ghcr.outcome == 'success'
-        run: docker tag ghcr.io/${{ github.repository }}:main apiary:benchmark
+        run: docker tag ghcr.io/${GITHUB_REPOSITORY,,}:main apiary:benchmark
 
       - name: Set up Python
         uses: actions/setup-python@v5

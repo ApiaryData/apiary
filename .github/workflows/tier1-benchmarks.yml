@@ -123,7 +123,7 @@ jobs:
 
       - name: Pull image from GHCR
         if: ${{ inputs.image == '' }}
-        run: docker pull ghcr.io/${{ github.repository }}:main
+        run: docker pull ghcr.io/${GITHUB_REPOSITORY,,}:main
 
       - name: Pull custom image
         if: ${{ inputs.image != '' }}
@@ -135,7 +135,7 @@ jobs:
           if [ -n "${{ inputs.image }}" ]; then
             echo "tag=${{ inputs.image }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=ghcr.io/${{ github.repository }}:main" >> "$GITHUB_OUTPUT"
+            echo "tag=ghcr.io/${GITHUB_REPOSITORY,,}:main" >> "$GITHUB_OUTPUT"
           fi
 
       # --- Run SSB ---
