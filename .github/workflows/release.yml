@@ -189,12 +189,61 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ------------------------------------------------------------------
+  # Publish Rust crates to crates.io
+  # ------------------------------------------------------------------
+  publish-crates:
+    name: Publish crates to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish apiary-core
+        run: cargo publish -p apiary-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index update
+        run: sleep 30
+
+      - name: Publish apiary-storage
+        run: cargo publish -p apiary-storage
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index update
+        run: sleep 30
+
+      - name: Publish apiary-query
+        run: cargo publish -p apiary-query
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index update
+        run: sleep 30
+
+      - name: Publish apiary-runtime
+        run: cargo publish -p apiary-runtime
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index update
+        run: sleep 30
+
+      - name: Publish apiary-cli
+        run: cargo publish -p apiary-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # ------------------------------------------------------------------
   # GitHub Release with all artifacts
   # ------------------------------------------------------------------
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: [python-wheels, python-sdist, build, docker]
+    needs: [python-wheels, python-sdist, build, docker, publish-crates]
     steps:
       - uses: actions/checkout@v4
 
