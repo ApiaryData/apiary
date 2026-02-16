@@ -2,6 +2,8 @@
 name = "apiary-storage"
 version.workspace = true
 edition.workspace = true
+description = "Storage backends and transaction ledger for the Apiary distributed data processing framework"
+license.workspace = true
 
 [dependencies]
 apiary-core.workspace = true
