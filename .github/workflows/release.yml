@@ -54,6 +54,8 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.11
           manylinux: auto
+        env:
+          CFLAGS_aarch64_unknown_linux_gnu: "-D__ARM_ARCH=8"
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -115,6 +117,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} -p apiary-cli
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CFLAGS_aarch64_unknown_linux_gnu: "-D__ARM_ARCH=8"
 
       - name: Package artifact (Unix)
         if: runner.os != 'Windows'
