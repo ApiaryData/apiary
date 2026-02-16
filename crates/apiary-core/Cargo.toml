@@ -2,6 +2,8 @@
 name = "apiary-core"
 version.workspace = true
 edition.workspace = true
+description = "Core types, traits, and configuration for the Apiary distributed data processing framework"
+license.workspace = true
 
 [dependencies]
 async-trait.workspace = true

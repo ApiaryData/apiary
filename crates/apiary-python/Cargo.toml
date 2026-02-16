@@ -2,6 +2,8 @@
 name = "apiary-python"
 version.workspace = true
 edition.workspace = true
+description = "Python bindings for the Apiary distributed data processing framework"
+license.workspace = true
 
 [lib]
 name = "apiary"

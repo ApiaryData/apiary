@@ -2,6 +2,8 @@
 name = "apiary-query"
 version.workspace = true
 edition.workspace = true
+description = "DataFusion-based SQL query engine for the Apiary distributed data processing framework"
+license.workspace = true
 
 [dependencies]
 apiary-core.workspace = true
