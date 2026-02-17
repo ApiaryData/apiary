@@ -3,6 +3,7 @@ name = "apiary-python"
 version.workspace = true
 edition.workspace = true
 description = "Python bindings for the Apiary distributed data processing framework"
+readme = "README.md"
 license.workspace = true
 
 [lib]

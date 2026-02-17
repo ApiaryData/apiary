@@ -3,6 +3,7 @@ name = "apiary-runtime"
 version.workspace = true
 edition.workspace = true
 description = "Node runtime, bee pool execution, and swarm coordination for the Apiary distributed data processing framework"
+readme = "README.md"
 license.workspace = true
 
 [dependencies]
