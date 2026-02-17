@@ -17,10 +17,10 @@ rust-version = "1.78"
 
 [workspace.dependencies]
 # Internal crates
-apiary-core = { path = "crates/apiary-core" }
-apiary-storage = { path = "crates/apiary-storage" }
-apiary-runtime = { path = "crates/apiary-runtime" }
-apiary-query = { path = "crates/apiary-query" }
+apiary-core = { version = "0.1.0", path = "crates/apiary-core" }
+apiary-storage = { version = "0.1.0", path = "crates/apiary-storage" }
+apiary-runtime = { version = "0.1.0", path = "crates/apiary-runtime" }
+apiary-query = { version = "0.1.0", path = "crates/apiary-query" }
 
 # Async
 tokio = { version = "1", features = ["full"] }
