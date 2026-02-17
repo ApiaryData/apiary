@@ -3,6 +3,7 @@ name = "apiary-core"
 version.workspace = true
 edition.workspace = true
 description = "Core types, traits, and configuration for the Apiary distributed data processing framework"
+readme = "README.md"
 license.workspace = true
 
 [dependencies]

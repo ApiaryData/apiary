@@ -3,6 +3,7 @@ name = "apiary-cli"
 version.workspace = true
 edition.workspace = true
 description = "Command-line interface for the Apiary distributed data processing framework"
+readme = "README.md"
 license.workspace = true
 
 [[bin]]
