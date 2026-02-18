@@ -376,7 +376,8 @@ def _create_compose_override(benchmarks_dir: str, image: str) -> str:
     """Generate a temporary docker-compose.override.yml.
 
     Adds a bind mount of the benchmarks/ directory into apiary-node
-    containers and pins the image tag.
+    containers and pins the image tag. Uses tmpfs for cache to avoid
+    conflicts when scaling to multiple nodes.
     """
     # Normalise the host path for Docker (forward slashes, even on Windows)
     host_path = os.path.abspath(benchmarks_dir).replace("\\", "/")
@@ -393,6 +394,10 @@ def _create_compose_override(benchmarks_dir: str, image: str) -> str:
         f.write("      AWS_REGION: us-east-1\n")
         f.write("    volumes:\n")
         f.write(f"      - {host_path}:/benchmarks:ro\n")
+        f.write("    tmpfs:\n")
+        f.write("      # Use tmpfs for cache to avoid conflicts in multi-node scenarios.\n")
+        f.write("      # 2GB matches the default max_cache_size in NodeConfig.\n")
+        f.write("      - /home/apiary/cache:size=2g\n")
     return path
 
 
@@ -601,16 +606,34 @@ class ApiaryDockerEngine(BenchmarkEngine):
             print(f"WARNING: 'up' exited {up_result.returncode}:\n"
                   f"{up_result.stderr}", file=sys.stderr)
 
-        print(f"Waiting {CLUSTER_STARTUP_WAIT_SECONDS}s for services...")
-        time.sleep(CLUSTER_STARTUP_WAIT_SECONDS)
+        print(f"Waiting for services to become healthy...")
 
-        # Verify at least one node is reachable
-        probe = self._run_python_in_node('print("ok")', node_index=0, timeout=30)
-        if probe.returncode != 0:
+        # Retry connecting to the node with geometric backoff
+        max_retries = 10
+        retry_delay = 2  # Start with 2 seconds
+        for attempt in range(max_retries):
+            time.sleep(retry_delay)
+            
+            # Verify at least one node is reachable
+            probe = self._run_python_in_node('print("ok")', node_index=0, timeout=30)
+            if probe.returncode == 0:
+                print(f"Cluster is up ({self.num_nodes} node(s)).")
+                break
+            
+            if attempt < max_retries - 1:
+                print(f"  Attempt {attempt + 1}/{max_retries} failed, retrying in {retry_delay}s...")
+                retry_delay = min(retry_delay * 1.5, 30)  # Geometric backoff, max 30s
+        else:
+            # All retries exhausted - capture container logs for debugging
+            print("\n=== Container logs (last 50 lines) ===", file=sys.stderr)
+            logs_result = self._compose("logs", "--tail=50", "apiary-node")
+            if logs_result.stdout:
+                print(logs_result.stdout, file=sys.stderr)
+            print("=== End of logs ===\n", file=sys.stderr)
+            
             raise RuntimeError(
-                f"Cannot reach apiary-node container:\n{probe.stderr}"
+                f"Cannot reach apiary-node container after {max_retries} attempts:\n{probe.stderr}"
             )
-        print(f"Cluster is up ({self.num_nodes} node(s)).")
 
         # Load data via load_data.py
         print(f"\nLoading {suite.upper()} SF{scale_factor} data into "
