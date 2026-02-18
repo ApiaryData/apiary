@@ -63,14 +63,14 @@ services:
       - apiary-cache:/home/apiary/cache
     restart: unless-stopped
     healthcheck:
-      # Basic healthcheck: verify Python and apiary module are available.
-      # The main process (apiary-node.py) will crash if there are runtime
-      # issues, and Docker's restart policy will handle recovery.
-      test: ["CMD-SHELL", "python3 -c 'import apiary' || exit 1"]
+      # Verify the apiary-node.py main process is running.
+      # If the node fails to start, the process exits and this check fails,
+      # allowing Docker to restart the container.
+      test: ["CMD-SHELL", "pgrep -f apiary-node || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
 volumes:
   minio-data:
