@@ -394,10 +394,13 @@ def _create_compose_override(benchmarks_dir: str, image: str) -> str:
         f.write("      AWS_REGION: us-east-1\n")
         f.write("    volumes:\n")
         f.write(f"      - {host_path}:/benchmarks:ro\n")
-        f.write("    tmpfs:\n")
         f.write("      # Use tmpfs for cache to avoid conflicts in multi-node scenarios.\n")
         f.write("      # 2GB matches the default max_cache_size in NodeConfig.\n")
-        f.write("      - /home/apiary/cache:size=2g\n")
+        f.write("      # Long-form volume overrides the named volume in the base compose file.\n")
+        f.write("      - type: tmpfs\n")
+        f.write("        target: /home/apiary/cache\n")
+        f.write("        tmpfs:\n")
+        f.write("          size: 2147483648\n")
     return path
 
 
