@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-18T20:53:22.553830",
+  "timestamp": "2026-02-18T21:25:51.914348",
   "num_nodes": 2,
   "image": "apiary:benchmark",
   "dataset_sizes": [
@@ -16,18 +16,18 @@
         "total_rows": 5000,
         "rows_per_node": 2500,
         "num_writers": 2,
-        "max_elapsed": 0.0095,
-        "total_throughput": 526315.7894736843,
+        "max_elapsed": 0.0092,
+        "total_throughput": 543478.2608695652,
         "per_node": {
           "apiary-node-1": {
             "rows": 2500.0,
-            "elapsed": 0.0087,
-            "throughput": 287896.33
+            "elapsed": 0.009,
+            "throughput": 277019.97
           },
           "apiary-node-2": {
             "rows": 2500.0,
-            "elapsed": 0.0095,
-            "throughput": 263885.65
+            "elapsed": 0.0092,
+            "throughput": 271139.04
           }
         },
         "verified_nodes": 2,
@@ -44,8 +44,8 @@
         "num_nodes": 2,
         "nodes_alive": 0,
         "total_bees": 0,
-        "avg_elapsed": 0.00775,
-        "throughput": 645161.2903225806,
+        "avg_elapsed": 0.00835,
+        "throughput": 598802.3952095809,
         "query_count": 2
       }
     },
@@ -63,13 +63,13 @@
         "per_node": {
           "apiary-node-1": {
             "rows": 5000.0,
-            "elapsed": 0.0097,
-            "throughput": 513278.18
+            "elapsed": 0.0103,
+            "throughput": 486465.32
           },
           "apiary-node-2": {
             "rows": 5000.0,
-            "elapsed": 0.0103,
-            "throughput": 485924.28
+            "elapsed": 0.0097,
+            "throughput": 516896.38
           }
         },
         "verified_nodes": 2,
@@ -86,8 +86,8 @@
         "num_nodes": 2,
         "nodes_alive": 0,
         "total_bees": 0,
-        "avg_elapsed": 0.00835,
-        "throughput": 1197604.7904191618,
+        "avg_elapsed": 0.0086,
+        "throughput": 1162790.6976744186,
         "query_count": 2
       }
     }
