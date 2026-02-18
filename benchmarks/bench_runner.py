@@ -601,16 +601,34 @@ class ApiaryDockerEngine(BenchmarkEngine):
             print(f"WARNING: 'up' exited {up_result.returncode}:\n"
                   f"{up_result.stderr}", file=sys.stderr)
 
-        print(f"Waiting {CLUSTER_STARTUP_WAIT_SECONDS}s for services...")
-        time.sleep(CLUSTER_STARTUP_WAIT_SECONDS)
+        print(f"Waiting for services to become healthy...")
 
-        # Verify at least one node is reachable
-        probe = self._run_python_in_node('print("ok")', node_index=0, timeout=30)
-        if probe.returncode != 0:
+        # Retry connecting to the node with exponential backoff
+        max_retries = 10
+        retry_delay = 2  # Start with 2 seconds
+        for attempt in range(max_retries):
+            time.sleep(retry_delay)
+            
+            # Verify at least one node is reachable
+            probe = self._run_python_in_node('print("ok")', node_index=0, timeout=30)
+            if probe.returncode == 0:
+                print(f"Cluster is up ({self.num_nodes} node(s)).")
+                break
+            
+            if attempt < max_retries - 1:
+                print(f"  Attempt {attempt + 1}/{max_retries} failed, retrying in {retry_delay}s...")
+                retry_delay = min(retry_delay * 1.5, 30)  # Exponential backoff, max 30s
+        else:
+            # All retries exhausted - capture container logs for debugging
+            print("\n=== Container logs (last 50 lines) ===", file=sys.stderr)
+            logs_result = self._compose("logs", "--tail=50", "apiary-node")
+            if logs_result.stdout:
+                print(logs_result.stdout, file=sys.stderr)
+            print("=== End of logs ===\n", file=sys.stderr)
+            
             raise RuntimeError(
-                f"Cannot reach apiary-node container:\n{probe.stderr}"
+                f"Cannot reach apiary-node container after {max_retries} attempts:\n{probe.stderr}"
             )
-        print(f"Cluster is up ({self.num_nodes} node(s)).")
 
         # Load data via load_data.py
         print(f"\nLoading {suite.upper()} SF{scale_factor} data into "
