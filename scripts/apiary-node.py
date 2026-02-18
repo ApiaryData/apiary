@@ -39,7 +39,25 @@ def main():
         kwargs["storage"] = storage_url
 
     ap = Apiary(**kwargs)
-    ap.start()
+
+    # Retry start() with backoff for transient storage errors
+    # (e.g. MinIO not yet reachable in Docker Compose)
+    max_retries = 5
+    delay = 2
+    for attempt in range(1, max_retries + 1):
+        try:
+            ap.start()
+            break
+        except RuntimeError as exc:
+            if attempt == max_retries:
+                raise
+            print(
+                f"Start attempt {attempt}/{max_retries} failed: {exc}\n"
+                f"  Retrying in {delay}s …",
+                flush=True,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
 
     status = ap.status()
     print(

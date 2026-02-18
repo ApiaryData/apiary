@@ -113,9 +113,37 @@ impl ApiaryNode {
             "Apiary node started"
         );
 
-        // Initialize registry
+        // Initialize registry (retry with backoff for transient S3 errors)
         let registry = Arc::new(RegistryManager::new(Arc::clone(&storage)));
-        let _ = registry.load_or_create().await?;
+        {
+            let max_retries: u32 = 5;
+            let mut delay = Duration::from_secs(1);
+            let mut last_err = None;
+            for attempt in 1..=max_retries {
+                match registry.load_or_create().await {
+                    Ok(_) => {
+                        last_err = None;
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            attempt,
+                            max_retries,
+                            error = %e,
+                            "Registry initialization failed, retrying"
+                        );
+                        last_err = Some(e);
+                        if attempt < max_retries {
+                            tokio::time::sleep(delay).await;
+                            delay = (delay * 2).min(Duration::from_secs(10));
+                        }
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                return Err(e);
+            }
+        }
         info!("Registry loaded");
 
         // Initialize query context
