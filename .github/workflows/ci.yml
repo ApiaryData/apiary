@@ -174,7 +174,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.11
-          manylinux: auto
+          manylinux: 2_28
         env:
           CFLAGS_aarch64_unknown_linux_gnu: "-D__ARM_ARCH=8"
 
