@@ -395,7 +395,8 @@ def _create_compose_override(benchmarks_dir: str, image: str) -> str:
         f.write("    volumes:\n")
         f.write(f"      - {host_path}:/benchmarks:ro\n")
         f.write("    tmpfs:\n")
-        f.write("      # Use tmpfs for cache to avoid conflicts in multi-node scenarios\n")
+        f.write("      # Use tmpfs for cache to avoid conflicts in multi-node scenarios.\n")
+        f.write("      # 2GB matches the default max_cache_size in NodeConfig.\n")
         f.write("      - /home/apiary/cache:size=2g\n")
     return path
 
@@ -607,7 +608,7 @@ class ApiaryDockerEngine(BenchmarkEngine):
 
         print(f"Waiting for services to become healthy...")
 
-        # Retry connecting to the node with exponential backoff
+        # Retry connecting to the node with geometric backoff
         max_retries = 10
         retry_delay = 2  # Start with 2 seconds
         for attempt in range(max_retries):
@@ -621,7 +622,7 @@ class ApiaryDockerEngine(BenchmarkEngine):
             
             if attempt < max_retries - 1:
                 print(f"  Attempt {attempt + 1}/{max_retries} failed, retrying in {retry_delay}s...")
-                retry_delay = min(retry_delay * 1.5, 30)  # Exponential backoff, max 30s
+                retry_delay = min(retry_delay * 1.5, 30)  # Geometric backoff, max 30s
         else:
             # All retries exhausted - capture container logs for debugging
             print("\n=== Container logs (last 50 lines) ===", file=sys.stderr)
