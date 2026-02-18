@@ -376,7 +376,8 @@ def _create_compose_override(benchmarks_dir: str, image: str) -> str:
     """Generate a temporary docker-compose.override.yml.
 
     Adds a bind mount of the benchmarks/ directory into apiary-node
-    containers and pins the image tag.
+    containers and pins the image tag. Uses tmpfs for cache to avoid
+    conflicts when scaling to multiple nodes.
     """
     # Normalise the host path for Docker (forward slashes, even on Windows)
     host_path = os.path.abspath(benchmarks_dir).replace("\\", "/")
@@ -393,6 +394,9 @@ def _create_compose_override(benchmarks_dir: str, image: str) -> str:
         f.write("      AWS_REGION: us-east-1\n")
         f.write("    volumes:\n")
         f.write(f"      - {host_path}:/benchmarks:ro\n")
+        f.write("    tmpfs:\n")
+        f.write("      # Use tmpfs for cache to avoid conflicts in multi-node scenarios\n")
+        f.write("      - /home/apiary/cache:size=2g\n")
     return path
 
 
