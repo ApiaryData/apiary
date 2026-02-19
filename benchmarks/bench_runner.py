@@ -620,7 +620,6 @@ class ApiaryDockerEngine(BenchmarkEngine):
             # Verify at least one node is reachable
             probe = self._run_python_in_node('print("ok")', node_index=0, timeout=30)
             if probe.returncode == 0:
-                print(f"Cluster is up ({self.num_nodes} node(s)).")
                 break
             
             if attempt < max_retries - 1:
@@ -637,6 +636,27 @@ class ApiaryDockerEngine(BenchmarkEngine):
             raise RuntimeError(
                 f"Cannot reach apiary-node container after {max_retries} attempts:\n{probe.stderr}"
             )
+
+        # Verify S3/MinIO is reachable from within the container before loading data.
+        # The basic probe only tests that 'docker compose exec' works; this ensures
+        # the storage layer is ready so that load_data.py won't fail immediately.
+        s3_probe_script = (
+            "import urllib.request, sys; "
+            "urllib.request.urlopen('http://minio:9000/minio/health/live', timeout=10); "
+            "print('ok')"
+        )
+        s3_ready = False
+        for s3_attempt in range(10):
+            s3_probe = self._run_python_in_node(s3_probe_script, node_index=0, timeout=30)
+            if s3_probe.returncode == 0:
+                s3_ready = True
+                break
+            time.sleep(3)
+        if not s3_ready:
+            print("WARNING: MinIO health check did not pass; proceeding anyway.",
+                  file=sys.stderr)
+
+        print(f"Cluster is up ({self.num_nodes} node(s)).")
 
         # Load data via load_data.py
         print(f"\nLoading {suite.upper()} SF{scale_factor} data into "
