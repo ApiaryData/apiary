@@ -646,7 +646,7 @@ class ApiaryDockerEngine(BenchmarkEngine):
             "print('ok')"
         )
         s3_ready = False
-        for s3_attempt in range(10):
+        for _ in range(10):
             s3_probe = self._run_python_in_node(s3_probe_script, node_index=0, timeout=30)
             if s3_probe.returncode == 0:
                 s3_ready = True
