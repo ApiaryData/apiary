@@ -627,11 +627,13 @@ class ApiaryDockerEngine(BenchmarkEngine):
                 retry_delay = min(retry_delay * 1.5, 30)  # Geometric backoff, max 30s
         else:
             # All retries exhausted - capture container logs for debugging
-            print("\n=== Container logs (last 50 lines) ===", file=sys.stderr)
-            logs_result = self._compose("logs", "--tail=50", "apiary-node")
-            if logs_result.stdout:
-                print(logs_result.stdout, file=sys.stderr)
-            print("=== End of logs ===\n", file=sys.stderr)
+            for svc in ("minio-setup", "minio", "apiary-node"):
+                print(f"\n=== Container logs: {svc} (last 50 lines) ===",
+                      file=sys.stderr)
+                logs_result = self._compose("logs", "--tail=50", svc)
+                if logs_result.stdout:
+                    print(logs_result.stdout, file=sys.stderr)
+                print(f"=== End of {svc} logs ===", file=sys.stderr)
             
             raise RuntimeError(
                 f"Cannot reach apiary-node container after {max_retries} attempts:\n{probe.stderr}"
