@@ -755,8 +755,9 @@ for _attempt in range(3):
     try:
         ap.start()
         break
-    except RuntimeError:
+    except RuntimeError as e:
         if _attempt < 2:
+            # Shorter waits than load_data.py since S3 is already up at query time
             time.sleep(5 * (_attempt + 1))
             ap = Apiary("benchmark", storage="{self.storage_url}")
         else:
