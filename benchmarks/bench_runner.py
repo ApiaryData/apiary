@@ -638,22 +638,42 @@ class ApiaryDockerEngine(BenchmarkEngine):
             )
 
         # Verify S3/MinIO is reachable from within the container before loading data.
-        # The basic probe only tests that 'docker compose exec' works; this ensures
-        # the storage layer is ready so that load_data.py won't fail immediately.
-        s3_probe_script = (
+        # First check the health endpoint, then verify the bucket is accessible
+        # via S3 API. The health endpoint can pass before the bucket is ready.
+        s3_health_script = (
             "import urllib.request, sys; "
             "urllib.request.urlopen('http://minio:9000/minio/health/live', timeout=10); "
             "print('ok')"
         )
         s3_ready = False
-        for _ in range(10):
-            s3_probe = self._run_python_in_node(s3_probe_script, node_index=0, timeout=30)
+        for attempt in range(15):
+            s3_probe = self._run_python_in_node(s3_health_script, node_index=0, timeout=30)
             if s3_probe.returncode == 0:
                 s3_ready = True
                 break
             time.sleep(3)
         if not s3_ready:
             print("WARNING: MinIO health check did not pass; proceeding anyway.",
+                  file=sys.stderr)
+
+        # Verify the S3 bucket is accessible via the S3 API (list operation).
+        # The health endpoint can return 200 before the bucket is created or
+        # before S3 operations are fully functional.
+        s3_bucket_script = (
+            "import urllib.request, sys; "
+            "req = urllib.request.Request('http://minio:9000/apiary/', method='GET'); "
+            "urllib.request.urlopen(req, timeout=10); "
+            "print('ok')"
+        )
+        bucket_ready = False
+        for attempt in range(15):
+            bucket_probe = self._run_python_in_node(s3_bucket_script, node_index=0, timeout=30)
+            if bucket_probe.returncode == 0:
+                bucket_ready = True
+                break
+            time.sleep(3)
+        if not bucket_ready:
+            print("WARNING: S3 bucket verification did not pass; proceeding anyway.",
                   file=sys.stderr)
 
         print(f"Cluster is up ({self.num_nodes} node(s)).")
@@ -731,7 +751,17 @@ import pyarrow as pa
 from apiary import Apiary
 
 ap = Apiary("benchmark", storage="{self.storage_url}")
-ap.start()
+for _attempt in range(3):
+    try:
+        ap.start()
+        break
+    except RuntimeError as e:
+        if _attempt < 2:
+            # Shorter waits than load_data.py since S3 is already up at query time
+            time.sleep(5 * (_attempt + 1))
+            ap = Apiary("benchmark", storage="{self.storage_url}")
+        else:
+            raise
 time.sleep({NODE_READY_WAIT_SECONDS})
 
 try:
