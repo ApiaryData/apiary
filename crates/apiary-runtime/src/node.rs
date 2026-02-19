@@ -116,7 +116,7 @@ impl ApiaryNode {
         // Initialize registry (retry with backoff for transient S3 errors)
         let registry = Arc::new(RegistryManager::new(Arc::clone(&storage)));
         {
-            let max_retries: u32 = 5;
+            let max_retries: u32 = 10;
             let mut delay = Duration::from_secs(1);
             let mut last_err = None;
             for attempt in 1..=max_retries {

@@ -253,7 +253,25 @@ def main():
     from apiary import Apiary
 
     ap = Apiary(args.name, storage=args.storage_url)
-    ap.start()
+
+    # Retry ap.start() — the S3 backend (MinIO) may not be fully ready
+    # immediately after the Docker cluster reports healthy.
+    max_start_retries = 3
+    for attempt in range(1, max_start_retries + 1):
+        try:
+            ap.start()
+            break
+        except RuntimeError as e:
+            if attempt < max_start_retries:
+                wait = attempt * 5
+                print(f"  start() attempt {attempt}/{max_start_retries} failed: {e}",
+                      file=sys.stderr)
+                print(f"  Retrying in {wait}s...", file=sys.stderr)
+                time.sleep(wait)
+                ap = Apiary(args.name, storage=args.storage_url)
+            else:
+                raise
+
     time.sleep(2)  # Allow node to initialise
 
     # Create hive and box
