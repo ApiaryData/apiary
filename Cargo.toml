@@ -10,17 +10,17 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1-beta"
+version = "0.1.1-c"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.78"
 
 [workspace.dependencies]
 # Internal crates
-apiary-core = { version = "0.1.1-beta", path = "crates/apiary-core" }
-apiary-storage = { version = "0.1.1-beta", path = "crates/apiary-storage" }
-apiary-runtime = { version = "0.1.1-beta", path = "crates/apiary-runtime" }
-apiary-query = { version = "0.1.1-beta", path = "crates/apiary-query" }
+apiary-core = { version = "0.1.1-c", path = "crates/apiary-core" }
+apiary-storage = { version = "0.1.1-c", path = "crates/apiary-storage" }
+apiary-runtime = { version = "0.1.1-c", path = "crates/apiary-runtime" }
+apiary-query = { version = "0.1.1-c", path = "crates/apiary-query" }
 
 # Async
 tokio = { version = "1", features = ["full"] }
