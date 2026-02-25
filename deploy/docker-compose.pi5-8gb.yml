@@ -26,9 +26,10 @@ services:
       - minio-data-pi5-8gb:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
+      interval: 5s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 5s
     # Pi 5 8GB constraints: 3GB RAM for MinIO
     deploy:
       resources:
@@ -46,9 +47,9 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      /usr/bin/mc config host add myminio http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin};
-      /usr/bin/mc mb myminio/apiary --ignore-existing;
-      exit 0;
+      /usr/bin/mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin} &&
+      /usr/bin/mc mb myminio/apiary --ignore-existing &&
+      /usr/bin/mc ls myminio/apiary
       "
     restart: "no"
 
