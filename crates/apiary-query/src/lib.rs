@@ -6,6 +6,7 @@
 //! DESCRIBE) are intercepted before they reach DataFusion.
 
 pub mod distributed;
+pub mod timing;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -264,6 +265,11 @@ impl ApiaryQueryContext {
 
     /// Execute standard SQL by resolving frame references and delegating to DataFusion.
     async fn execute_standard_sql(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+        let mut timings = timing::QueryTimings::begin(sql.chars().take(60).collect::<String>());
+
+        // --- query_parse phase ---
+        let parse_start = timings.as_ref().map(|t| t.start_phase());
+
         // Extract table references from SQL
         let table_refs = extract_table_references(sql);
 
@@ -276,16 +282,40 @@ impl ApiaryQueryContext {
         // Extract simple WHERE predicates for pruning
         let predicates = extract_where_predicates(sql);
 
+        if let (Some(t), Some(s)) = (timings.as_mut(), parse_start) {
+            t.end_phase("parse", s);
+        }
+
+        // --- query_plan phase ---
+        let plan_start = timings.as_ref().map(|t| t.start_phase());
+
         // Create a fresh session for this query (avoids stale table registrations)
         let session = SessionContext::new();
 
+        if let (Some(t), Some(s)) = (timings.as_mut(), plan_start) {
+            t.end_phase("plan", s);
+        }
+
         // Resolve and register each table
+        let mut file_discovery_total = std::time::Duration::ZERO;
+        let mut metadata_read_total = std::time::Duration::ZERO;
+        let mut data_read_total = std::time::Duration::ZERO;
+
         for table_ref in &table_refs {
             let (hive, box_name, frame_name, register_name) = self.resolve_table_ref(table_ref)?;
 
-            // Open ledger and prune cells
+            // --- file_discovery phase (ledger open + cell listing) ---
+            let fd_start = timings.as_ref().map(|t| t.start_phase());
+
             let frame_path = format!("{hive}/{box_name}/{frame_name}");
             let ledger = Ledger::open(Arc::clone(&self.storage), &frame_path).await?;
+
+            if let Some(s) = fd_start {
+                file_discovery_total += s.elapsed();
+            }
+
+            // --- metadata_read phase (pruning with partition/stat filters) ---
+            let mr_start = timings.as_ref().map(|t| t.start_phase());
 
             // Build partition and stat filters from predicates
             let partition_by: Vec<String> = ledger.partition_by().to_vec();
@@ -296,6 +326,10 @@ impl ApiaryQueryContext {
             } else {
                 ledger.prune_cells(&partition_filters, &stat_filters)
             };
+
+            if let Some(s) = mr_start {
+                metadata_read_total += s.elapsed();
+            }
 
             info!(
                 frame = %frame_path,
@@ -323,9 +357,15 @@ impl ApiaryQueryContext {
                 continue;
             }
 
-            // Read surviving cells
+            // --- data_read phase (reading Parquet cells from storage) ---
+            let dr_start = timings.as_ref().map(|t| t.start_phase());
+
             let reader = CellReader::new(Arc::clone(&self.storage), frame_path);
             let merged = reader.read_cells_merged(&cells, None).await?;
+
+            if let Some(s) = dr_start {
+                data_read_total += s.elapsed();
+            }
 
             let batches = match merged {
                 Some(batch) => vec![vec![batch]],
@@ -350,11 +390,20 @@ impl ApiaryQueryContext {
                 })?;
         }
 
+        // Record accumulated I/O phase timings
+        if let Some(t) = timings.as_mut() {
+            t.phases.push(("file_discovery".to_string(), file_discovery_total));
+            t.phases.push(("metadata_read".to_string(), metadata_read_total));
+            t.phases.push(("data_read".to_string(), data_read_total));
+        }
+
         // Rewrite the SQL to use the registered table names
         let rewritten =
             rewrite_sql_table_refs(sql, &table_refs, &self.current_hive, &self.current_box);
 
-        // Execute via DataFusion
+        // --- query_execute phase (DataFusion planning + execution) ---
+        let exec_start = timings.as_ref().map(|t| t.start_phase());
+
         let df = session
             .sql(&rewritten)
             .await
@@ -362,9 +411,19 @@ impl ApiaryQueryContext {
                 message: format!("DataFusion query error: {e}"),
             })?;
 
-        df.collect().await.map_err(|e| ApiaryError::Internal {
+        let results = df.collect().await.map_err(|e| ApiaryError::Internal {
             message: format!("DataFusion execution error: {e}"),
-        })
+        })?;
+
+        if let (Some(t), Some(s)) = (timings.as_mut(), exec_start) {
+            t.end_phase("execute", s);
+        }
+
+        if let Some(t) = timings {
+            t.finish();
+        }
+
+        Ok(results)
     }
 
     /// Resolve a table reference to (hive, box, frame, register_name).
@@ -435,6 +494,13 @@ impl ApiaryQueryContext {
     ) -> Result<Vec<RecordBatch>> {
         use distributed::*;
 
+        let mut timings = timing::QueryTimings::begin(
+            format!("distributed:{}", sql.chars().take(40).collect::<String>()),
+        );
+
+        // --- coordination_overhead phase ---
+        let coord_start = timings.as_ref().map(|t| t.start_phase());
+
         // 1. Create tasks from assignments
         let mut tasks = Vec::new();
         for (node_id, cells) in &assignments {
@@ -458,6 +524,13 @@ impl ApiaryQueryContext {
             tasks = tasks.len(),
             "Distributed query manifest written"
         );
+
+        if let (Some(t), Some(s)) = (timings.as_mut(), coord_start) {
+            t.end_phase("coordination", s);
+        }
+
+        // --- query_execute phase (local tasks) ---
+        let exec_start = timings.as_ref().map(|t| t.start_phase());
 
         // 3. Execute local tasks
         let local_tasks: Vec<_> = tasks.iter().filter(|t| t.node_id == self.node_id).collect();
@@ -486,6 +559,13 @@ impl ApiaryQueryContext {
             )
             .await?;
         }
+
+        if let (Some(t), Some(s)) = (timings.as_mut(), exec_start) {
+            t.end_phase("execute", s);
+        }
+
+        // --- result_collect phase ---
+        let collect_start = timings.as_ref().map(|t| t.start_phase());
 
         // 4. Poll for partial results from other nodes
         let remote_nodes: Vec<_> = tasks
@@ -532,6 +612,14 @@ impl ApiaryQueryContext {
         // 5. Cleanup
         if let Err(e) = cleanup_query(&self.storage, &manifest.query_id).await {
             warn!(query_id = %manifest.query_id, error = %e, "Failed to cleanup query");
+        }
+
+        if let (Some(t), Some(s)) = (timings.as_mut(), collect_start) {
+            t.end_phase("result_collect", s);
+        }
+
+        if let Some(t) = timings {
+            t.finish();
         }
 
         Ok(collected_results)
