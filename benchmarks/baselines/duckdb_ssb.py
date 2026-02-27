@@ -124,19 +124,27 @@ def register_tables(con: duckdb.DuckDBPyConnection,
             continue
 
         table_name = f.stem
-        # Handle partitioned datasets where the file is named "data.parquet"
+        # Handle partitioned datasets (e.g. lineorder/part-0/data.parquet)
+        # where the leaf file is "data.*" — use the grandparent dir name.
         if table_name == "data":
             table_name = f.parent.parent.name
 
+        # Sanitise: table names must be alphanumeric / underscores only.
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', table_name):
+            continue
+
+        file_path = str(f)
         if f.suffix == ".parquet":
             con.execute(
-                f"CREATE OR REPLACE TABLE {table_name} AS "
-                f"SELECT * FROM read_parquet('{f}')"
+                "CREATE OR REPLACE TABLE \"{}\" AS "
+                "SELECT * FROM read_parquet(?)".format(table_name),
+                [file_path],
             )
         elif f.suffix == ".csv":
             con.execute(
-                f"CREATE OR REPLACE TABLE {table_name} AS "
-                f"SELECT * FROM read_csv_auto('{f}')"
+                "CREATE OR REPLACE TABLE \"{}\" AS "
+                "SELECT * FROM read_csv_auto(?)".format(table_name),
+                [file_path],
             )
         registered.append((table_name, str(f)))
 
@@ -372,13 +380,6 @@ Examples:
         print(f"No queries found in {query_file}", file=sys.stderr)
         sys.exit(1)
 
-    # Detect data format from path
-    data_format = "mixed"
-    if "parquet" in args.data_dir:
-        data_format = "parquet"
-    elif "csv" in args.data_dir:
-        data_format = "csv"
-
     # DuckDB version
     engine_version = duckdb.__version__
 
@@ -397,6 +398,14 @@ Examples:
     print(f"\nRegistered {len(registered)} tables:")
     for name, path in registered:
         print(f"  {name}")
+
+    # Detect data format from registered file extensions
+    data_format = "mixed"
+    extensions = {Path(p).suffix for _, p in registered}
+    if extensions == {".parquet"}:
+        data_format = "parquet"
+    elif extensions == {".csv"}:
+        data_format = "csv"
 
     # Collect system info
     hardware = collect_system_info()
