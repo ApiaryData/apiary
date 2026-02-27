@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-25T19:06:30.807947",
+  "timestamp": "2026-02-27T15:50:29.532661",
   "num_nodes": 2,
   "image": "apiary:benchmark",
   "dataset_sizes": [
@@ -16,18 +16,18 @@
         "total_rows": 5000,
         "rows_per_node": 2500,
         "num_writers": 2,
-        "max_elapsed": 0.0103,
-        "total_throughput": 485436.8932038835,
+        "max_elapsed": 0.0094,
+        "total_throughput": 531914.8936170213,
         "per_node": {
           "apiary-node-1": {
             "rows": 2500.0,
-            "elapsed": 0.0103,
-            "throughput": 242422.9
+            "elapsed": 0.0094,
+            "throughput": 264631.54
           },
           "apiary-node-2": {
             "rows": 2500.0,
-            "elapsed": 0.0082,
-            "throughput": 304129.01
+            "elapsed": 0.0088,
+            "throughput": 283261.12
           }
         },
         "verified_nodes": 2,
@@ -44,8 +44,8 @@
         "num_nodes": 2,
         "nodes_alive": 0,
         "total_bees": 0,
-        "avg_elapsed": 0.008150000000000001,
-        "throughput": 613496.9325153374,
+        "avg_elapsed": 0.008,
+        "throughput": 625000.0,
         "query_count": 2
       }
     },
@@ -58,18 +58,18 @@
         "total_rows": 10000,
         "rows_per_node": 5000,
         "num_writers": 2,
-        "max_elapsed": 0.0125,
-        "total_throughput": 800000.0,
+        "max_elapsed": 0.0107,
+        "total_throughput": 934579.4392523365,
         "per_node": {
           "apiary-node-1": {
             "rows": 5000.0,
-            "elapsed": 0.0125,
-            "throughput": 398455.69
+            "elapsed": 0.0102,
+            "throughput": 491850.46
           },
           "apiary-node-2": {
             "rows": 5000.0,
             "elapsed": 0.0107,
-            "throughput": 465165.47
+            "throughput": 465795.7
           }
         },
         "verified_nodes": 2,
@@ -86,8 +86,8 @@
         "num_nodes": 2,
         "nodes_alive": 0,
         "total_bees": 0,
-        "avg_elapsed": 0.008650000000000001,
-        "throughput": 1156069.3641618495,
+        "avg_elapsed": 0.008799999999999999,
+        "throughput": 1136363.6363636365,
         "query_count": 2
       }
     }
