@@ -494,9 +494,7 @@ impl ApiaryQueryContext {
     ) -> Result<Vec<RecordBatch>> {
         use distributed::*;
 
-        let mut timings = timing::QueryTimings::begin_from_sql(
-            &format!("distributed:{sql}"),
-        );
+        let mut timings = timing::QueryTimings::begin_from_sql(&format!("distributed:{sql}"));
 
         // --- coordination_overhead phase ---
         let coord_start = timings.as_ref().map(|t| t.start_phase());
