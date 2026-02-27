@@ -265,7 +265,7 @@ impl ApiaryQueryContext {
 
     /// Execute standard SQL by resolving frame references and delegating to DataFusion.
     async fn execute_standard_sql(&self, sql: &str) -> Result<Vec<RecordBatch>> {
-        let mut timings = timing::QueryTimings::begin(sql.chars().take(60).collect::<String>());
+        let mut timings = timing::QueryTimings::begin_from_sql(sql);
 
         // --- query_parse phase ---
         let parse_start = timings.as_ref().map(|t| t.start_phase());
@@ -392,9 +392,9 @@ impl ApiaryQueryContext {
 
         // Record accumulated I/O phase timings
         if let Some(t) = timings.as_mut() {
-            t.phases.push(("file_discovery".to_string(), file_discovery_total));
-            t.phases.push(("metadata_read".to_string(), metadata_read_total));
-            t.phases.push(("data_read".to_string(), data_read_total));
+            t.add_accumulated_phase("file_discovery", file_discovery_total);
+            t.add_accumulated_phase("metadata_read", metadata_read_total);
+            t.add_accumulated_phase("data_read", data_read_total);
         }
 
         // Rewrite the SQL to use the registered table names
@@ -494,8 +494,8 @@ impl ApiaryQueryContext {
     ) -> Result<Vec<RecordBatch>> {
         use distributed::*;
 
-        let mut timings = timing::QueryTimings::begin(
-            format!("distributed:{}", sql.chars().take(40).collect::<String>()),
+        let mut timings = timing::QueryTimings::begin_from_sql(
+            &format!("distributed:{sql}"),
         );
 
         // --- coordination_overhead phase ---
