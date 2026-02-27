@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "apiary-cli"
-version = "0.1.1-dev.0"
+version = "0.1.1"
 dependencies = [
  "apiary-core",
  "apiary-runtime",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "apiary-core"
-version = "0.1.1-dev.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "apiary-python"
-version = "0.1.1-dev.0"
+version = "0.1.1"
 dependencies = [
  "apiary-core",
  "apiary-query",
@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "apiary-query"
-version = "0.1.1-dev.0"
+version = "0.1.1"
 dependencies = [
  "apiary-core",
  "apiary-storage",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "apiary-runtime"
-version = "0.1.1-dev.0"
+version = "0.1.1"
 dependencies = [
  "apiary-core",
  "apiary-query",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "apiary-storage"
-version = "0.1.1-dev.0"
+version = "0.1.1"
 dependencies = [
  "apiary-core",
  "arrow",
