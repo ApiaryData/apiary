@@ -261,7 +261,7 @@ python tests/test_step1_acceptance.py
 
 ## Contributing
 
-Apiary is in early development. Contributions are welcome once the v1 core is established. For now, watch the repository and join the conversation in issues.
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to get started.
 
 ## Roadmap
 
