@@ -94,6 +94,7 @@ class QueryResult:
     peak_memory_mb: float = 0.0
     error: str | None = None
     timestamp: str = ""
+    phase_timings: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.timestamp:
@@ -112,6 +113,7 @@ class QuerySummary:
     rows_returned: int
     peak_memory_mb: float
     all_times_ms: list[float] = field(default_factory=list)
+    median_phase_ms: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -258,8 +260,8 @@ class BenchmarkEngine:
         """Initialize the engine and register tables."""
         raise NotImplementedError
 
-    def execute(self, sql: str) -> tuple[int, float]:
-        """Execute a query, return (row_count, peak_memory_mb)."""
+    def execute(self, sql: str) -> tuple[int, float, dict[str, float]]:
+        """Execute a query, return (row_count, peak_memory_mb, phase_timings_ms)."""
         raise NotImplementedError
 
     def teardown(self):
@@ -313,8 +315,8 @@ class DataFusionEngine(BenchmarkEngine):
 
         return registered
 
-    def execute(self, sql: str) -> tuple[int, float]:
-        """Execute query and return (row_count, peak_memory_mb)."""
+    def execute(self, sql: str) -> tuple[int, float, dict[str, float]]:
+        """Execute query and return (row_count, peak_memory_mb, phase_timings_ms)."""
         if self.ctx is None:
             raise RuntimeError("Engine not set up. Call setup() first.")
 
@@ -332,7 +334,7 @@ class DataFusionEngine(BenchmarkEngine):
             mem_after = proc.memory_info().rss
             peak_mem = max(0, (mem_after - mem_before)) / (1024 * 1024)
 
-        return row_count, peak_mem
+        return row_count, peak_mem, {}
 
     def teardown(self):
         self.ctx = None
@@ -348,8 +350,8 @@ class DryRunEngine(BenchmarkEngine):
         print(f"\n[DRY RUN] Would register tables from: {data_dir}")
         return []
 
-    def execute(self, sql: str) -> tuple[int, float]:
-        return 0, 0.0
+    def execute(self, sql: str) -> tuple[int, float, dict[str, float]]:
+        return 0, 0.0, {}
 
 
 # ----------------------------------------------------------------
@@ -448,6 +450,44 @@ def rewrite_table_names(sql: str, suite: str, hive: str, box: str) -> str:
 
 
 # ----------------------------------------------------------------
+# Per-phase timing helpers
+# ----------------------------------------------------------------
+
+TIMING_LINE_PREFIX = "[TIMING]"
+
+
+def _parse_timing_from_stderr(stderr: str) -> dict[str, float]:
+    """Extract per-phase timings from Apiary's ``[TIMING]`` output on stderr.
+
+    Apiary emits a single line per query when ``APIARY_TIMING=1`` is set:
+
+    .. code-block:: text
+
+       [TIMING] query=Q1.1 total=5044ms parse=2ms plan=15ms execute=5025ms
+
+    All numeric ``key=<value>ms`` tokens are returned as a dict mapping phase
+    name → duration in milliseconds. Non-numeric tokens (e.g., ``query=Q1.1``)
+    are silently skipped.
+    """
+    timings: dict[str, float] = {}
+    for line in stderr.splitlines():
+        line = line.strip()
+        if not line.startswith(TIMING_LINE_PREFIX):
+            continue
+        for token in line[len(TIMING_LINE_PREFIX):].split():
+            if "=" not in token:
+                continue
+            key, _, raw = token.partition("=")
+            if raw.endswith("ms"):
+                raw = raw[:-2]
+            try:
+                timings[key] = float(raw)
+            except ValueError:
+                pass
+    return timings
+
+
+# ----------------------------------------------------------------
 # ApiaryDockerEngine — runs queries through Apiary inside Docker
 # ----------------------------------------------------------------
 
@@ -501,12 +541,16 @@ class ApiaryDockerEngine(BenchmarkEngine):
         return "apiary-node"
 
     def _run_python_in_node(self, script: str, node_index: int = 0,
-                            timeout: int = CONTAINER_EXEC_TIMEOUT_SECONDS
+                            timeout: int = CONTAINER_EXEC_TIMEOUT_SECONDS,
+                            env: dict[str, str] | None = None,
                             ) -> subprocess.CompletedProcess:
         """Run a Python script inside the apiary-node container.
 
         For scaled services, docker compose exec sends to one of the
         running containers (we use --index for targeting).
+
+        ``env`` is an optional mapping of extra environment variables to inject
+        into the container process via ``-e KEY=VALUE`` flags.
         """
         cmd = [
             *self._compose_cmd,
@@ -514,8 +558,12 @@ class ApiaryDockerEngine(BenchmarkEngine):
         ]
         if self.override_file:
             cmd.extend(["-f", self.override_file])
+        env_flags: list[str] = []
+        for key, value in (env or {}).items():
+            env_flags.extend(["-e", f"{key}={value}"])
         cmd.extend([
             "exec", "-T",
+            *env_flags,
             "--index", str(node_index + 1),  # 1-based
             self._get_node_service(),
             "python3", "-c", script,
@@ -735,11 +783,15 @@ class ApiaryDockerEngine(BenchmarkEngine):
 
         return []
 
-    def execute(self, sql: str) -> tuple[int, float]:
+    def execute(self, sql: str) -> tuple[int, float, dict[str, float]]:
         """Execute a SQL query inside the apiary-node container.
 
-        Returns (row_count, peak_memory_mb).
+        Returns (row_count, peak_memory_mb, phase_timings_ms).
         Uses round-robin across nodes in multi-node mode.
+
+        When ``APIARY_TIMING=1`` is set in the container, Apiary emits a
+        ``[TIMING]`` line on stderr with per-phase millisecond breakdowns.
+        These are parsed and returned as the third element of the tuple.
         """
         node_index = self._node_index % self.num_nodes
         self._node_index += 1
@@ -787,6 +839,7 @@ finally:
         result = self._run_python_in_node(
             exec_script, node_index=node_index,
             timeout=CONTAINER_EXEC_TIMEOUT_SECONDS,
+            env={"APIARY_TIMING": "1"},
         )
 
         if result.returncode != 0:
@@ -800,8 +853,9 @@ finally:
                 if key.strip() == "rows":
                     row_count = int(value)
 
+        phase_timings = _parse_timing_from_stderr(result.stderr)
         # Memory is not easily measurable from outside; report 0
-        return row_count, 0.0
+        return row_count, 0.0, phase_timings
 
     def teardown(self):
         """Stop the Docker Compose cluster and clean up."""
@@ -903,7 +957,7 @@ def run_benchmark(
 
             try:
                 start = time.perf_counter()
-                row_count, peak_mem = engine.execute(sql)
+                row_count, peak_mem, phase_timings = engine.execute(sql)
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
                 result = QueryResult(
@@ -913,6 +967,7 @@ def run_benchmark(
                     wall_clock_ms=round(elapsed_ms, 2),
                     rows_returned=row_count,
                     peak_memory_mb=round(peak_mem, 2),
+                    phase_timings=phase_timings,
                 )
                 results.append(result)
                 print(f"  Run {r+1}/{runs}: {elapsed_ms:>8.1f}ms "
@@ -932,6 +987,20 @@ def run_benchmark(
         # Summarise
         times = [r.wall_clock_ms for r in results if r.error is None]
         if times:
+            # Aggregate per-phase timings across successful runs
+            all_phases: dict[str, list[float]] = {}
+            for r in results:
+                if r.error is None:
+                    for phase, ms in r.phase_timings.items():
+                        # Exclude the query-id token and the overall total
+                        # (total duplicates wall_clock_ms already captured)
+                        if phase not in ("query", "total"):
+                            all_phases.setdefault(phase, []).append(ms)
+            median_phase_ms = {
+                phase: round(median(ms_list), 2)
+                for phase, ms_list in all_phases.items()
+                if ms_list
+            }
             summary = QuerySummary(
                 query_id=query_id,
                 runs=len(times),
@@ -942,6 +1011,7 @@ def run_benchmark(
                 rows_returned=results[0].rows_returned,
                 peak_memory_mb=max(r.peak_memory_mb for r in results),
                 all_times_ms=times,
+                median_phase_ms=median_phase_ms,
             )
         else:
             summary = QuerySummary(
@@ -1004,6 +1074,34 @@ def print_report(report: BenchmarkReport):
         print(f"{'Total':<10} {total_median:>10.1f}")
 
     print(f"\nWall clock: {report.total_time_ms/1000:.1f}s")
+
+    # Per-phase timing breakdown (only shown when Apiary timing data is present)
+    queries_with_phases = [q for q in report.queries if q.median_phase_ms]
+    if queries_with_phases:
+        # Collect all phase names that appear across any query, preserving order
+        seen_phases: dict[str, None] = {}
+        for q in queries_with_phases:
+            for phase in q.median_phase_ms:
+                seen_phases[phase] = None
+        phase_names = list(seen_phases)
+
+        # Column width: at least 10, but wide enough for the phase name header
+        col_w = max(10, *(len(p) + 1 for p in phase_names))
+        header = f"{'Query':<10}" + "".join(f"{p:>{col_w}}" for p in phase_names)
+        print(f"\n{'='*72}")
+        print("PHASE TIMING BREAKDOWN (median ms per run)")
+        print(f"{'='*72}")
+        print(header)
+        print("-" * max(72, len(header)))
+        for q in report.queries:
+            if not q.median_phase_ms:
+                continue
+            row = f"{q.query_id:<10}"
+            for phase in phase_names:
+                val = q.median_phase_ms.get(phase, 0.0)
+                row += f"{val:>{col_w}.1f}"
+            print(row)
+
     print(f"{'='*72}\n")
 
 

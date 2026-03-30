@@ -25,6 +25,34 @@ except ImportError:
     sys.exit(1)
 
 
+def _parse_timing_from_stderr(stderr: str) -> Dict[str, float]:
+    """Extract per-phase timings from Apiary's ``[TIMING]`` output on stderr.
+
+    Apiary emits a single line per query when ``APIARY_TIMING=1`` is set::
+
+        [TIMING] query=Q1.1 total=5044ms parse=2ms plan=15ms execute=5025ms
+
+    Returns a dict mapping ``phase_<name>_ms`` keys to millisecond values so
+    they are clearly distinguishable from other benchmark metrics.
+    """
+    timings: Dict[str, float] = {}
+    for line in stderr.splitlines():
+        line = line.strip()
+        if not line.startswith("[TIMING]"):
+            continue
+        for token in line[len("[TIMING]"):].split():
+            if "=" not in token:
+                continue
+            key, _, raw = token.partition("=")
+            if raw.endswith("ms"):
+                raw = raw[:-2]
+            try:
+                timings[f"phase_{key}_ms"] = float(raw)
+            except ValueError:
+                pass
+    return timings
+
+
 class BenchmarkResult:
     """Holds results from a single benchmark run."""
     
@@ -71,6 +99,7 @@ class ApiaryBenchmark:
         # Run the script in Docker by piping it to python3
         cmd = [
             "docker", "run", "--rm", "-i",
+            "-e", "APIARY_TIMING=1",
             self.apiary_image,
             "python3"
         ]
@@ -178,7 +207,10 @@ finally:
                         except ValueError:
                             # Skip non-numeric values
                             pass
-                
+
+                # Capture per-phase timings from Apiary's [TIMING] stderr output
+                metrics.update(_parse_timing_from_stderr(proc.stderr))
+
                 result.metrics = metrics
                 result.success = True
             else:
@@ -333,7 +365,10 @@ finally:
                         except ValueError:
                             # Skip non-numeric values
                             pass
-                
+
+                # Capture per-phase timings from Apiary's [TIMING] stderr output
+                metrics.update(_parse_timing_from_stderr(proc.stderr))
+
                 result.metrics = metrics
                 result.success = True
             else:
