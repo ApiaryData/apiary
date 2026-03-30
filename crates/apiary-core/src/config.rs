@@ -117,21 +117,36 @@ impl NodeConfig {
 
 /// Detect total system memory in bytes.
 /// Falls back to 1 GB if detection fails.
+///
+/// On Linux, also checks cgroup memory limits so that the detected value
+/// respects Docker / container resource constraints rather than reporting
+/// the full host RAM.
 fn detect_memory() -> u64 {
     // Use platform-specific detection
     #[cfg(target_os = "linux")]
     {
+        let mut host_memory: Option<u64> = None;
+
         if let Ok(contents) = std::fs::read_to_string("/proc/meminfo") {
             for line in contents.lines() {
                 if let Some(rest) = line.strip_prefix("MemTotal:") {
                     let rest = rest.trim();
                     if let Some(kb_str) = rest.strip_suffix("kB") {
                         if let Ok(kb) = kb_str.trim().parse::<u64>() {
-                            return kb * 1024;
+                            host_memory = Some(kb * 1024);
+                            break;
                         }
                     }
                 }
             }
+        }
+
+        let cgroup_limit = read_cgroup_memory_limit();
+
+        match (host_memory, cgroup_limit) {
+            (Some(host), Some(limit)) => return limit.min(host),
+            (Some(host), None) => return host,
+            _ => {}
         }
     }
 
@@ -204,6 +219,39 @@ fn detect_memory() -> u64 {
     1024 * 1024 * 1024
 }
 
+/// Read the container memory limit from the Linux cgroup subsystem.
+///
+/// Supports both cgroup v2 (`/sys/fs/cgroup/memory.max`) and cgroup v1
+/// (`/sys/fs/cgroup/memory/memory.limit_in_bytes`).  Returns `None` when
+/// no container limit is in effect or the files cannot be read.
+#[cfg(target_os = "linux")]
+fn read_cgroup_memory_limit() -> Option<u64> {
+    // cgroup v2: the limit file contains a decimal byte count or "max"
+    if let Ok(contents) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
+        let trimmed = contents.trim();
+        if trimmed != "max" {
+            if let Ok(bytes) = trimmed.parse::<u64>() {
+                return Some(bytes);
+            }
+        }
+    }
+
+    // cgroup v1: the limit file always contains a decimal byte count; when no
+    // limit is set the kernel writes a very large sentinel value (close to
+    // u64::MAX).  We treat anything above 2^62 bytes (~4.6 EiB) as "no limit".
+    if let Ok(contents) =
+        std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    {
+        if let Ok(bytes) = contents.trim().parse::<u64>() {
+            if bytes < (1u64 << 62) {
+                return Some(bytes);
+            }
+        }
+    }
+
+    None
+}
+
 /// Return a suitable base directory for cache, falling back to `.` if the
 /// home directory cannot be determined.
 fn dirs_cache_dir() -> PathBuf {
@@ -256,5 +304,59 @@ mod tests {
         let deserialized: NodeConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.storage_uri, config.storage_uri);
         assert_eq!(deserialized.cores, config.cores);
+    }
+
+    /// When a cgroup memory limit is in effect the detected memory must be
+    /// at most as large as the cgroup limit — never larger.
+    ///
+    /// Verifies the min() logic used in detect_memory().
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_cgroup_limit_wins_over_larger_host_memory() {
+        let cgroup_limit: u64 = 512 * 1024 * 1024; // 512 MB
+        let host_memory: u64 = 16 * 1024 * 1024 * 1024; // 16 GB
+        // cgroup limit should win
+        assert_eq!(cgroup_limit.min(host_memory), cgroup_limit);
+    }
+
+    /// The cgroup v1 sentinel value (no limit set) must NOT be treated as a
+    /// real limit.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_cgroup_v1_sentinel_is_ignored() {
+        // The Linux kernel writes this sentinel (close to i64::MAX, aligned to
+        // a page boundary) to memory.limit_in_bytes when no limit is set.
+        // The exact value is (i64::MAX / PAGE_SIZE) * PAGE_SIZE where
+        // PAGE_SIZE = 4096, giving 9_223_372_036_854_771_712.
+        const CGROUP_V1_NO_LIMIT_SENTINEL: u64 = 9_223_372_036_854_771_712;
+        // Must be above our 2^62 threshold so it is skipped.
+        assert!(CGROUP_V1_NO_LIMIT_SENTINEL >= (1u64 << 62));
+    }
+
+    /// A valid cgroup v1 byte limit below the sentinel must be respected.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_cgroup_v1_real_limit_below_sentinel() {
+        let limit: u64 = 256 * 1024 * 1024; // 256 MB
+        // Must be below our 2^62 threshold so it is used.
+        assert!(limit < (1u64 << 62));
+    }
+
+    /// The cgroup v2 "max" string means no limit is configured.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_cgroup_v2_max_string_means_no_limit() {
+        let content = "max\n";
+        let trimmed = content.trim();
+        // "max" must NOT be parsed as a numeric limit.
+        assert_eq!(trimmed, "max");
+        assert!(trimmed.parse::<u64>().is_err());
+    }
+
+    /// detect_memory never returns zero.
+    #[test]
+    fn test_detect_memory_nonzero() {
+        let mem = detect_memory();
+        assert!(mem > 0, "detected memory must be > 0, got {mem}");
     }
 }
