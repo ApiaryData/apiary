@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-03-30T12:51:40.243031",
+  "timestamp": "2026-06-19T08:18:13.767886",
   "use_docker": true,
   "image": "apiary:benchmark",
   "dataset_sizes": [
@@ -15,8 +15,8 @@
       "error": null,
       "metrics": {
         "rows": 1000.0,
-        "elapsed": 0.0025,
-        "throughput": 394683.73
+        "elapsed": 0.0027,
+        "throughput": 376711.33
       }
     },
     {
@@ -26,9 +26,9 @@
       "error": null,
       "metrics": {
         "rows_scanned": 1000.0,
-        "result_rows": 636.0,
-        "elapsed": 0.0048,
-        "throughput": 208505.87,
+        "result_rows": 648.0,
+        "elapsed": 0.005,
+        "throughput": 199443.84,
         "phase_total_ms": 4.0,
         "phase_parse_ms": 0.0,
         "phase_plan_ms": 0.0,
@@ -46,7 +46,7 @@
       "metrics": {
         "rows": 10000.0,
         "elapsed": 0.0057,
-        "throughput": 1748938.37
+        "throughput": 1749813.93
       }
     },
     {
@@ -57,8 +57,8 @@
       "metrics": {
         "rows_scanned": 10000.0,
         "result_rows": 1000.0,
-        "elapsed": 0.0064,
-        "throughput": 1559162.86,
+        "elapsed": 0.0062,
+        "throughput": 1609170.92,
         "phase_total_ms": 5.0,
         "phase_parse_ms": 0.0,
         "phase_plan_ms": 0.0,
@@ -76,7 +76,7 @@
       "metrics": {
         "rows": 50000.0,
         "elapsed": 0.0193,
-        "throughput": 2588661.08
+        "throughput": 2596609.92
       }
     },
     {
@@ -87,8 +87,8 @@
       "metrics": {
         "rows_scanned": 50000.0,
         "result_rows": 1000.0,
-        "elapsed": 0.012,
-        "throughput": 4156891.97,
+        "elapsed": 0.0119,
+        "throughput": 4216143.62,
         "phase_total_ms": 11.0,
         "phase_parse_ms": 0.0,
         "phase_plan_ms": 0.0,
