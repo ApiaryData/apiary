@@ -239,9 +239,7 @@ fn read_cgroup_memory_limit() -> Option<u64> {
     // cgroup v1: the limit file always contains a decimal byte count; when no
     // limit is set the kernel writes a very large sentinel value (close to
     // u64::MAX).  We treat anything above 2^62 bytes (~4.6 EiB) as "no limit".
-    if let Ok(contents) =
-        std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-    {
+    if let Ok(contents) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
         if let Ok(bytes) = contents.trim().parse::<u64>() {
             if bytes < (1u64 << 62) {
                 return Some(bytes);
@@ -315,7 +313,7 @@ mod tests {
     fn test_cgroup_limit_wins_over_larger_host_memory() {
         let cgroup_limit: u64 = 512 * 1024 * 1024; // 512 MB
         let host_memory: u64 = 16 * 1024 * 1024 * 1024; // 16 GB
-        // cgroup limit should win
+                                                        // cgroup limit should win
         assert_eq!(cgroup_limit.min(host_memory), cgroup_limit);
     }
 
@@ -328,9 +326,9 @@ mod tests {
         // a page boundary) to memory.limit_in_bytes when no limit is set.
         // The exact value is (i64::MAX / PAGE_SIZE) * PAGE_SIZE where
         // PAGE_SIZE = 4096, giving 9_223_372_036_854_771_712.
-        const CGROUP_V1_NO_LIMIT_SENTINEL: u64 = 9_223_372_036_854_771_712;
+        let cgroup_v1_no_limit_sentinel: u64 = 9_223_372_036_854_771_712;
         // Must be above our 2^62 threshold so it is skipped.
-        assert!(CGROUP_V1_NO_LIMIT_SENTINEL >= (1u64 << 62));
+        assert!(cgroup_v1_no_limit_sentinel >= (1u64 << 62));
     }
 
     /// A valid cgroup v1 byte limit below the sentinel must be respected.
@@ -338,7 +336,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_cgroup_v1_real_limit_below_sentinel() {
         let limit: u64 = 256 * 1024 * 1024; // 256 MB
-        // Must be below our 2^62 threshold so it is used.
+                                            // Must be below our 2^62 threshold so it is used.
         assert!(limit < (1u64 << 62));
     }
 
