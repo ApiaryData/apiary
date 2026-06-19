@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-06-19T08:18:13.767886",
+  "timestamp": "2026-06-19T14:31:02.004313",
   "use_docker": true,
   "image": "apiary:benchmark",
   "dataset_sizes": [
@@ -15,8 +15,8 @@
       "error": null,
       "metrics": {
         "rows": 1000.0,
-        "elapsed": 0.0027,
-        "throughput": 376711.33
+        "elapsed": 0.0026,
+        "throughput": 390204.11
       }
     },
     {
@@ -26,16 +26,16 @@
       "error": null,
       "metrics": {
         "rows_scanned": 1000.0,
-        "result_rows": 648.0,
-        "elapsed": 0.005,
-        "throughput": 199443.84,
+        "result_rows": 623.0,
+        "elapsed": 0.0047,
+        "throughput": 213103.55,
         "phase_total_ms": 4.0,
         "phase_parse_ms": 0.0,
         "phase_plan_ms": 0.0,
-        "phase_file_discovery_ms": 0.0,
+        "phase_file_discovery_ms": 1.0,
         "phase_metadata_read_ms": 0.0,
         "phase_data_read_ms": 0.0,
-        "phase_execute_ms": 2.0
+        "phase_execute_ms": 1.0
       }
     },
     {
@@ -45,8 +45,8 @@
       "error": null,
       "metrics": {
         "rows": 10000.0,
-        "elapsed": 0.0057,
-        "throughput": 1749813.93
+        "elapsed": 0.0056,
+        "throughput": 1795276.29
       }
     },
     {
@@ -57,12 +57,12 @@
       "metrics": {
         "rows_scanned": 10000.0,
         "result_rows": 1000.0,
-        "elapsed": 0.0062,
-        "throughput": 1609170.92,
+        "elapsed": 0.006,
+        "throughput": 1653188.29,
         "phase_total_ms": 5.0,
         "phase_parse_ms": 0.0,
         "phase_plan_ms": 0.0,
-        "phase_file_discovery_ms": 0.0,
+        "phase_file_discovery_ms": 1.0,
         "phase_metadata_read_ms": 0.0,
         "phase_data_read_ms": 1.0,
         "phase_execute_ms": 2.0
@@ -75,8 +75,8 @@
       "error": null,
       "metrics": {
         "rows": 50000.0,
-        "elapsed": 0.0193,
-        "throughput": 2596609.92
+        "elapsed": 0.017,
+        "throughput": 2933284.85
       }
     },
     {
@@ -87,15 +87,15 @@
       "metrics": {
         "rows_scanned": 50000.0,
         "result_rows": 1000.0,
-        "elapsed": 0.0119,
-        "throughput": 4216143.62,
-        "phase_total_ms": 11.0,
+        "elapsed": 0.0111,
+        "throughput": 4492228.6,
+        "phase_total_ms": 10.0,
         "phase_parse_ms": 0.0,
         "phase_plan_ms": 0.0,
         "phase_file_discovery_ms": 0.0,
         "phase_metadata_read_ms": 0.0,
-        "phase_data_read_ms": 6.0,
-        "phase_execute_ms": 3.0
+        "phase_data_read_ms": 5.0,
+        "phase_execute_ms": 2.0
       }
     }
   ]
