@@ -9,7 +9,7 @@ pub mod clock;
 pub mod config;
 pub mod env;
 pub mod error;
-pub mod ledger_types;
+pub mod frame_types;
 pub mod registry;
 pub mod registry_manager;
 pub mod rng;
@@ -20,10 +20,7 @@ pub use clock::{Clock, ManualClock, Millis, SystemClock};
 pub use config::NodeConfig;
 pub use env::Env;
 pub use error::ApiaryError;
-pub use ledger_types::{
-    CellMetadata, CellSizingPolicy, ColumnStats, FieldDef, FrameSchema, LedgerAction,
-    LedgerCheckpoint, LedgerEntry, WriteResult,
-};
+pub use frame_types::{CellSizingPolicy, FieldDef, FrameSchema, WriteResult};
 pub use registry::{Box, Frame, Hive, Registry};
 pub use registry_manager::RegistryManager;
 pub use rng::{SeededRng, StdSeededRng};

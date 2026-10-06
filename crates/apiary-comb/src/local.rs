@@ -219,6 +219,31 @@ async fn list_recursive(
     Ok(())
 }
 
+/// Resolve a local storage path: a leading `~/` (or `~\`) becomes the
+/// user's home directory.
+pub fn expand_local_path(path: &str) -> Result<PathBuf> {
+    if path.starts_with("~/") || path.starts_with("~\\") {
+        let home = home_dir().ok_or_else(|| ApiaryError::Config {
+            message: "Cannot determine home directory".to_string(),
+        })?;
+        Ok(home.join(&path[2..]))
+    } else {
+        Ok(PathBuf::from(path))
+    }
+}
+
+/// Best-effort home directory detection.
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("USERPROFILE").ok().map(PathBuf::from)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("HOME").ok().map(PathBuf::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

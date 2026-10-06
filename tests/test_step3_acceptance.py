@@ -130,10 +130,10 @@ def test_partitioning():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-# ─── Test 3: Cell Statistics in Ledger ──────────────────────────────────
+# ─── Test 3: Cell Statistics in the Delta Log ───────────────────────────
 
 def test_cell_statistics():
-    print("\n[Test 3] Cell Statistics Stored in Ledger")
+    print("\n[Test 3] Cell Statistics Stored in the Delta Log")
     tmpdir = tempfile.mkdtemp()
     try:
         from apiary import Apiary
@@ -153,27 +153,26 @@ def test_cell_statistics():
 
         ap.write_to_frame("h", "b", "f", ipc_data)
 
-        # Read the ledger entry to verify stats are there
+        # Read the Delta log entry to verify stats are there
         import json
-        ledger_dir = os.path.join(tmpdir, "h", "b", "f", "_ledger")
-        # Exclude checkpoint subdirectory files (start with "_checkpoint")
-        ledger_files = sorted([f for f in os.listdir(ledger_dir) if f.endswith(".json") and not f.startswith("_")])
-        check("Ledger entries exist", len(ledger_files) >= 2)
+        log_dir = os.path.join(tmpdir, "h", "b", "f", "_delta_log")
+        log_files = sorted(f for f in os.listdir(log_dir) if f.endswith(".json"))
+        check("Delta log entries exist", len(log_files) >= 2)
 
-        # Read the AddCells entry (version 1, after CreateFrame at version 0)
-        if len(ledger_files) >= 2:
-            with open(os.path.join(ledger_dir, ledger_files[1])) as fh:
-                entry = json.load(fh)
-            check("Ledger entry has AddCells action", "AddCells" in str(entry.get("action", {})))
+        # Version 0 creates the table; version 1 is the append
+        if len(log_files) >= 2:
+            with open(os.path.join(log_dir, log_files[1])) as fh:
+                actions = [json.loads(line) for line in fh if line.strip()]
+            adds = [a["add"] for a in actions if "add" in a]
+            check("Commit has an add action", len(adds) == 1)
 
-            if "AddCells" in entry.get("action", {}):
-                cells = entry["action"]["AddCells"]["cells"]
-                check("Cell has stats", len(cells[0].get("stats", {})) > 0)
-                if cells[0].get("stats", {}).get("value"):
-                    value_stats = cells[0]["stats"]["value"]
-                    check("Stats contain min value", value_stats.get("min") == 10.0)
-                    check("Stats contain max value", value_stats.get("max") == 30.0)
-                    check("Stats contain null_count", value_stats.get("null_count") == 0)
+            if adds:
+                stats = json.loads(adds[0].get("stats") or "{}")
+                check("Cell has stats", len(stats) > 0)
+                check("Stats contain min value", stats.get("minValues", {}).get("value") == 10.0)
+                check("Stats contain max value", stats.get("maxValues", {}).get("value") == 30.0)
+                check("Stats contain null_count", stats.get("nullCount", {}).get("value") == 0)
+                check("Cell is tagged as nectar", (adds[0].get("tags") or {}).get("apiary.state") == "nectar")
 
         ap.shutdown()
     finally:

@@ -1,25 +1,20 @@
-//! Storage backend implementations and data operations for Apiary.
+//! The comb and storage backends for Apiary.
 //!
-//! This crate provides concrete implementations of the
-//! [`StorageBackend`](apiary_core::StorageBackend) trait:
+//! - [`Comb`] — every Frame is a Delta Lake table, written through `delta-rs`
+//! - [`LocalBackend`] and [`S3Backend`] — [`StorageBackend`](apiary_core::StorageBackend)
+//!   implementations for the registry, heartbeats and other small control files
 //!
-//! - [`LocalBackend`] — filesystem-backed storage for solo mode and development
-//! - [`S3Backend`] — S3-compatible object storage for multi-node deployments
-//!
-//! It also provides the transaction ledger, cell writer, and cell reader:
-//!
-//! - [`Ledger`] — ACID transaction log for frames
-//! - [`CellWriter`] — Parquet cell writing with partitioning and statistics
-//! - [`CellReader`] — Parquet cell reading with projection pushdown
+//! Schemas, and conforming incoming batches to them, are in [`schema`].
 
-pub mod cell_reader;
-pub mod cell_writer;
-pub mod ledger;
+pub mod comb;
 pub mod local;
 pub mod s3;
+pub mod schema;
 
-pub use cell_reader::CellReader;
-pub use cell_writer::CellWriter;
-pub use ledger::Ledger;
+pub use comb::{CellState, Comb, Committed, FrameStats, STATE_TAG, query_session};
+pub use deltalake::DeltaTable;
 pub use local::LocalBackend;
 pub use s3::S3Backend;
+
+#[cfg(test)]
+mod comb_tests;

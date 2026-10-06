@@ -198,7 +198,7 @@ impl StorageBackend for S3Backend {
 ///
 /// `s3://bucket/prefix/path` → `("bucket", "prefix/path")`
 /// `s3://bucket` → `("bucket", "")`
-fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
+pub(crate) fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
     let stripped = uri
         .strip_prefix("s3://")
         .ok_or_else(|| ApiaryError::Config {
@@ -222,7 +222,7 @@ fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
 }
 
 /// Extract a query parameter value from a URI.
-fn extract_query_param(uri: &str, param: &str) -> Option<String> {
+pub(crate) fn extract_query_param(uri: &str, param: &str) -> Option<String> {
     let query = uri.split('?').nth(1)?;
     for pair in query.split('&') {
         let mut kv = pair.splitn(2, '=');

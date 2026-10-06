@@ -13,16 +13,14 @@ use arrow::record_batch::RecordBatch;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use apiary_comb::cell_reader::CellReader;
-use apiary_comb::cell_writer::CellWriter;
-use apiary_comb::ledger::Ledger;
-use apiary_comb::local::LocalBackend;
+use apiary_comb::local::{LocalBackend, expand_local_path};
 use apiary_comb::s3::S3Backend;
+use apiary_comb::{CellState, Comb};
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
-use apiary_core::{CellSizingPolicy, Env, FrameSchema, LedgerAction, Result, WriteResult};
+use apiary_core::{Env, FrameSchema, Result, WriteResult};
 use apiary_plan::ApiaryQueryContext;
 
 use crate::bee::{BeePool, BeeStatus};
@@ -42,6 +40,9 @@ pub struct ApiaryNode {
 
     /// The shared storage backend (object storage or local filesystem).
     pub storage: Arc<dyn StorageBackend>,
+
+    /// The comb: every Frame is a Delta table under this root.
+    pub comb: Arc<Comb>,
 
     /// Registry manager for DDL operations.
     pub registry: Arc<RegistryManager>,
@@ -101,15 +102,7 @@ impl ApiaryNode {
                 .strip_prefix("local://")
                 .unwrap_or(&config.storage_uri);
 
-            // Expand ~ to home directory
-            let expanded = if path.starts_with("~/") || path.starts_with("~\\") {
-                let home = home_dir().ok_or_else(|| ApiaryError::Config {
-                    message: "Cannot determine home directory".to_string(),
-                })?;
-                home.join(&path[2..])
-            } else {
-                std::path::PathBuf::from(path)
-            };
+            let expanded = expand_local_path(path)?;
 
             Arc::new(LocalBackend::new(expanded).await?)
         };
@@ -158,8 +151,11 @@ impl ApiaryNode {
         info!("Registry loaded");
 
         // Initialize query context
+        // Every Frame is a Delta table under the comb
+        let comb = Arc::new(Comb::from_storage_uri(&config.storage_uri)?);
+
         let query_ctx = Arc::new(tokio::sync::Mutex::new(ApiaryQueryContext::with_node_id(
-            Arc::clone(&storage),
+            Arc::clone(&comb),
             Arc::clone(&registry),
             config.node_id.clone(),
         )));
@@ -236,6 +232,7 @@ impl ApiaryNode {
         Ok(Self {
             config,
             storage,
+            comb,
             registry,
             query_ctx,
             bee_pool,
@@ -275,12 +272,11 @@ impl ApiaryNode {
     }
 
     /// Write data to a frame. This is the end-to-end write path:
-    /// 1. Resolve frame from registry
-    /// 2. Open/create ledger
-    /// 3. Validate schema
-    /// 4. Partition data
-    /// 5. Write cells to storage
-    /// 6. Commit ledger entry
+    /// 1. Resolve the frame from the registry
+    /// 2. Open its Delta table, creating it on first write
+    /// 3. Conform the batch to the frame schema
+    /// 4. Write Parquet cells, partitioned and sized to the Bee budget
+    /// 5. Commit them to the Delta log as nectar
     pub async fn write_to_frame(
         &self,
         hive: &str,
@@ -290,63 +286,18 @@ impl ApiaryNode {
     ) -> Result<WriteResult> {
         let start = self.env.clock().monotonic();
 
-        // Resolve frame metadata
-        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
-        let schema = FrameSchema::from_json_value(&frame.schema)?;
-        let frame_path = format!("{}/{}/{}", hive, box_name, frame_name);
-
-        // Open or create ledger
-        let mut ledger = match Ledger::open(Arc::clone(&self.storage), &frame_path).await {
-            Ok(l) => l,
-            Err(_) => {
-                Ledger::create(
-                    Arc::clone(&self.storage),
-                    &frame_path,
-                    schema.clone(),
-                    frame.partition_by.clone(),
-                    &self.config.node_id,
-                )
-                .await?
-            }
-        };
-
-        // Write cells
-        let sizing = CellSizingPolicy::new(
-            self.config.target_cell_size,
-            self.config.max_cell_size,
-            self.config.min_cell_size,
-        );
-
-        let writer = CellWriter::new(
-            Arc::clone(&self.storage),
-            frame_path,
-            schema,
-            frame.partition_by.clone(),
-            sizing,
-        );
-
-        let cells = writer.write(batch).await?;
-
-        let cells_written = cells.len();
-        let rows_written: u64 = cells.iter().map(|c| c.rows).sum();
-        let bytes_written: u64 = cells.iter().map(|c| c.bytes).sum();
-
-        // Commit to ledger
-        let version = ledger
-            .commit(LedgerAction::AddCells { cells }, &self.config.node_id)
+        let table = self.frame_table(hive, box_name, frame_name).await?;
+        let committed = self
+            .comb
+            .append(
+                &table,
+                batch,
+                self.config.target_cell_size,
+                CellState::Nectar,
+            )
             .await?;
 
-        let duration_ms = (self.env.clock().monotonic() - start).as_millis() as u64;
-        let temperature = self.thermometer.measure(&self.bee_pool).await;
-
-        Ok(WriteResult {
-            version,
-            cells_written,
-            rows_written,
-            bytes_written,
-            duration_ms,
-            temperature,
-        })
+        Ok(self.write_result(committed, start).await)
     }
 
     /// Read data from a frame, optionally filtering by partition values.
@@ -358,30 +309,18 @@ impl ApiaryNode {
         frame_name: &str,
         partition_filter: Option<&HashMap<String, String>>,
     ) -> Result<Option<RecordBatch>> {
-        let frame_path = format!("{}/{}/{}", hive, box_name, frame_name);
-
-        let ledger = match Ledger::open(Arc::clone(&self.storage), &frame_path).await {
-            Ok(l) => l,
-            Err(ApiaryError::NotFound { .. }) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-
-        let cells = if let Some(filter) = partition_filter {
-            ledger.prune_cells(filter, &HashMap::new())
-        } else {
-            ledger.active_cells().iter().collect()
-        };
-
-        if cells.is_empty() {
-            return Ok(None);
+        match self
+            .comb
+            .open_frame_table(hive, box_name, frame_name)
+            .await?
+        {
+            Some(table) => self.comb.read(&table, partition_filter).await,
+            None => Ok(None),
         }
-
-        let reader = CellReader::new(Arc::clone(&self.storage), frame_path);
-        reader.read_cells_merged(&cells, None).await
     }
 
-    /// Overwrite all data in a frame with new data.
-    /// Commits a RewriteCells entry removing all existing cells and adding new ones.
+    /// Overwrite all data in a frame with new data, in one Delta commit that
+    /// removes every existing cell and adds the new ones.
     pub async fn overwrite_frame(
         &self,
         hive: &str,
@@ -391,79 +330,69 @@ impl ApiaryNode {
     ) -> Result<WriteResult> {
         let start = self.env.clock().monotonic();
 
-        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
-        let schema = FrameSchema::from_json_value(&frame.schema)?;
-        let frame_path = format!("{}/{}/{}", hive, box_name, frame_name);
-
-        let mut ledger = Ledger::open(Arc::clone(&self.storage), &frame_path).await?;
-
-        let sizing = CellSizingPolicy::new(
-            self.config.target_cell_size,
-            self.config.max_cell_size,
-            self.config.min_cell_size,
-        );
-
-        let writer = CellWriter::new(
-            Arc::clone(&self.storage),
-            frame_path,
-            schema,
-            frame.partition_by.clone(),
-            sizing,
-        );
-
-        let new_cells = writer.write(batch).await?;
-
-        let cells_written = new_cells.len();
-        let rows_written: u64 = new_cells.iter().map(|c| c.rows).sum();
-        let bytes_written: u64 = new_cells.iter().map(|c| c.bytes).sum();
-
-        // Remove all old cells, add new ones
-        let removed: Vec<_> = ledger.active_cells().iter().map(|c| c.id.clone()).collect();
-
-        let version = ledger
-            .commit(
-                LedgerAction::RewriteCells {
-                    removed,
-                    added: new_cells,
-                },
-                &self.config.node_id,
+        let table = self.frame_table(hive, box_name, frame_name).await?;
+        let committed = self
+            .comb
+            .overwrite(
+                &table,
+                batch,
+                self.config.target_cell_size,
+                CellState::Nectar,
             )
             .await?;
 
-        let duration_ms = (self.env.clock().monotonic() - start).as_millis() as u64;
-        let temperature = self.thermometer.measure(&self.bee_pool).await;
-
-        Ok(WriteResult {
-            version,
-            cells_written,
-            rows_written,
-            bytes_written,
-            duration_ms,
-            temperature,
-        })
+        Ok(self.write_result(committed, start).await)
     }
 
-    /// Initialize the ledger for a frame (called after create_frame in registry).
-    pub async fn init_frame_ledger(
+    /// Create the Delta table for a frame (called after create_frame in the
+    /// registry). Safe to call again: an existing table is left as it is.
+    pub async fn init_frame_table(
         &self,
         hive: &str,
         box_name: &str,
         frame_name: &str,
     ) -> Result<()> {
+        self.frame_table(hive, box_name, frame_name).await?;
+        Ok(())
+    }
+
+    /// Open a frame's Delta table, creating it from the registry's schema if
+    /// it has not been written to yet.
+    async fn frame_table(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+    ) -> Result<apiary_comb::DeltaTable> {
+        if let Some(table) = self
+            .comb
+            .open_frame_table(hive, box_name, frame_name)
+            .await?
+        {
+            return Ok(table);
+        }
         let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
         let schema = FrameSchema::from_json_value(&frame.schema)?;
-        let frame_path = format!("{}/{}/{}", hive, box_name, frame_name);
+        self.comb
+            .create_frame_table(hive, box_name, frame_name, &schema, &frame.partition_by)
+            .await
+    }
 
-        Ledger::create(
-            Arc::clone(&self.storage),
-            &frame_path,
-            schema,
-            frame.partition_by.clone(),
-            &self.config.node_id,
-        )
-        .await?;
-
-        Ok(())
+    async fn write_result(
+        &self,
+        committed: apiary_comb::Committed,
+        start: std::time::Duration,
+    ) -> WriteResult {
+        let duration_ms = (self.env.clock().monotonic() - start).as_millis() as u64;
+        let temperature = self.thermometer.measure(&self.bee_pool).await;
+        WriteResult {
+            version: committed.version,
+            cells_written: committed.cells,
+            rows_written: committed.rows,
+            bytes_written: committed.bytes,
+            duration_ms,
+            temperature,
+        }
     }
 
     /// Execute a SQL query and return results as RecordBatches.
@@ -587,20 +516,6 @@ pub struct ColonyStatus {
     pub regulation: String,
     /// Temperature setpoint.
     pub setpoint: f64,
-}
-
-/// Best-effort home directory detection.
-fn home_dir() -> Option<std::path::PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("USERPROFILE")
-            .ok()
-            .map(std::path::PathBuf::from)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::env::var("HOME").ok().map(std::path::PathBuf::from)
-    }
 }
 
 #[cfg(test)]

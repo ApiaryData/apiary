@@ -4,7 +4,7 @@
 //! for ergonomic error definitions. Library code never uses `unwrap()` —
 //! all fallible operations return `Result<T, ApiaryError>`.
 
-use crate::types::{BeeId, FrameId};
+use crate::types::BeeId;
 use thiserror::Error;
 
 /// The unified error type for all Apiary operations.
@@ -104,15 +104,6 @@ pub enum ApiaryError {
     #[error("Unsupported: {message}")]
     Unsupported {
         /// Description of the unsupported operation.
-        message: String,
-    },
-
-    /// A ledger operation failed.
-    #[error("Ledger error for frame {frame_id}: {message}")]
-    Ledger {
-        /// The frame whose ledger had an error.
-        frame_id: FrameId,
-        /// Description of the ledger error.
         message: String,
     },
 

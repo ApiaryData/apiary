@@ -7,26 +7,24 @@
 
 pub mod timing;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::StringArray;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use datafusion::prelude::*;
 use tracing::info;
 
-use apiary_comb::cell_reader::CellReader;
-use apiary_comb::ledger::Ledger;
+use apiary_comb::Comb;
+use apiary_comb::FrameStats;
+use apiary_comb::schema::delta_schema;
 use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
-use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
 
 /// The Apiary query context — wraps DataFusion with Apiary namespace resolution.
 pub struct ApiaryQueryContext {
-    storage: Arc<dyn StorageBackend>,
+    comb: Arc<Comb>,
     registry: Arc<RegistryManager>,
     current_hive: Option<String>,
     current_box: Option<String>,
@@ -36,18 +34,14 @@ pub struct ApiaryQueryContext {
 
 impl ApiaryQueryContext {
     /// Create a new query context.
-    pub fn new(storage: Arc<dyn StorageBackend>, registry: Arc<RegistryManager>) -> Self {
-        Self::with_node_id(storage, registry, NodeId::from("local"))
+    pub fn new(comb: Arc<Comb>, registry: Arc<RegistryManager>) -> Self {
+        Self::with_node_id(comb, registry, NodeId::from("local"))
     }
 
     /// Create a new query context with a specific node ID.
-    pub fn with_node_id(
-        storage: Arc<dyn StorageBackend>,
-        registry: Arc<RegistryManager>,
-        node_id: NodeId,
-    ) -> Self {
+    pub fn with_node_id(comb: Arc<Comb>, registry: Arc<RegistryManager>, node_id: NodeId) -> Self {
         Self {
-            storage,
+            comb,
             registry,
             current_hive: None,
             current_box: None,
@@ -203,19 +197,16 @@ impl ApiaryQueryContext {
         frame_name: &str,
     ) -> Result<RecordBatch> {
         let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
-        let frame_path = format!("{hive}/{box_name}/{frame_name}");
-
-        // Get cell count and total size from ledger
-        let (cell_count, total_rows, total_bytes) =
-            match Ledger::open(Arc::clone(&self.storage), &frame_path).await {
-                Ok(ledger) => {
-                    let cells = ledger.active_cells();
-                    let rows: u64 = cells.iter().map(|c| c.rows).sum();
-                    let bytes: u64 = cells.iter().map(|c| c.bytes).sum();
-                    (cells.len() as u64, rows, bytes)
-                }
-                Err(_) => (0, 0, 0),
-            };
+        // Cell count and total size come from the Delta log
+        let stats = match self
+            .comb
+            .open_frame_table(hive, box_name, frame_name)
+            .await?
+        {
+            Some(table) => self.comb.frame_stats(&table)?,
+            None => FrameStats::default(),
+        };
+        let (cell_count, total_rows, total_bytes) = (stats.cells, stats.rows, stats.bytes);
 
         let schema_json = serde_json::to_string(&frame.schema).unwrap_or_else(|_| "{}".into());
 
@@ -278,9 +269,6 @@ impl ApiaryQueryContext {
             });
         }
 
-        // Extract simple WHERE predicates for pruning
-        let predicates = extract_where_predicates(sql);
-
         if let (Some(t), Some(s)) = (timings.as_mut(), parse_start) {
             t.end_phase("parse", s);
         }
@@ -289,111 +277,78 @@ impl ApiaryQueryContext {
         let plan_start = timings.as_ref().map(|t| t.start_phase());
 
         // Create a fresh session for this query (avoids stale table registrations)
-        let session = SessionContext::new();
+        let session = apiary_comb::query_session();
 
         if let (Some(t), Some(s)) = (timings.as_mut(), plan_start) {
             t.end_phase("plan", s);
         }
 
-        // Resolve and register each table
+        // Resolve and register each table. Tables are scanned lazily: DataFusion
+        // prunes partitions and skips files from Delta statistics, so the time
+        // to read data is part of the execute phase.
         let mut file_discovery_total = std::time::Duration::ZERO;
         let mut metadata_read_total = std::time::Duration::ZERO;
-        let mut data_read_total = std::time::Duration::ZERO;
 
         for table_ref in &table_refs {
             let (hive, box_name, frame_name, register_name) = self.resolve_table_ref(table_ref)?;
 
-            // --- file_discovery phase (ledger open + cell listing) ---
+            // --- file_discovery phase (open the Delta table: read its log) ---
             let fd_start = timings.as_ref().map(|t| t.start_phase());
-
-            let frame_path = format!("{hive}/{box_name}/{frame_name}");
-            let ledger = Ledger::open(Arc::clone(&self.storage), &frame_path).await?;
-
+            let table = self
+                .comb
+                .open_frame_table(&hive, &box_name, &frame_name)
+                .await?;
             if let Some(s) = fd_start {
                 file_discovery_total += s.elapsed();
             }
 
-            // --- metadata_read phase (pruning with partition/stat filters) ---
+            // --- metadata_read phase (build the scan: file index and statistics) ---
             let mr_start = timings.as_ref().map(|t| t.start_phase());
-
-            // Build partition and stat filters from predicates
-            let partition_by: Vec<String> = ledger.partition_by().to_vec();
-            let (partition_filters, stat_filters) = build_filters(&predicates, &partition_by);
-
-            let cells = if partition_filters.is_empty() && stat_filters.is_empty() {
-                ledger.active_cells().iter().collect::<Vec<_>>()
-            } else {
-                ledger.prune_cells(&partition_filters, &stat_filters)
-            };
-
+            match table {
+                Some(table) => {
+                    self.comb
+                        .register_table(&session, &register_name, &table)
+                        .await?;
+                    info!(
+                        frame = %format!("{hive}/{box_name}/{frame_name}"),
+                        version = ?table.version(),
+                        "Frame table registered"
+                    );
+                }
+                None => {
+                    // A registered frame that has never been written is empty,
+                    // with the schema it was created with.
+                    let frame = self
+                        .registry
+                        .get_frame(&hive, &box_name, &frame_name)
+                        .await?;
+                    let schema =
+                        delta_schema(&apiary_core::FrameSchema::from_json_value(&frame.schema)?);
+                    let empty_batch = RecordBatch::new_empty(schema);
+                    let mem_table = datafusion::datasource::MemTable::try_new(
+                        empty_batch.schema(),
+                        vec![vec![empty_batch]],
+                    )
+                    .map_err(|e| ApiaryError::Internal {
+                        message: format!("Failed to create empty MemTable: {e}"),
+                    })?;
+                    session
+                        .register_table(&register_name, Arc::new(mem_table))
+                        .map_err(|e| ApiaryError::Internal {
+                            message: format!("Failed to register table: {e}"),
+                        })?;
+                }
+            }
             if let Some(s) = mr_start {
                 metadata_read_total += s.elapsed();
             }
-
-            info!(
-                frame = %frame_path,
-                total_cells = ledger.active_cells().len(),
-                surviving_cells = cells.len(),
-                "Cell pruning complete"
-            );
-
-            if cells.is_empty() {
-                // Register an empty table with the correct schema
-                let arrow_schema = frame_schema_to_arrow(ledger.schema())?;
-                let empty_batch = RecordBatch::new_empty(Arc::new(arrow_schema));
-                let mem_table = datafusion::datasource::MemTable::try_new(
-                    empty_batch.schema(),
-                    vec![vec![empty_batch]],
-                )
-                .map_err(|e| ApiaryError::Internal {
-                    message: format!("Failed to create empty MemTable: {e}"),
-                })?;
-                session
-                    .register_table(&register_name, Arc::new(mem_table))
-                    .map_err(|e| ApiaryError::Internal {
-                        message: format!("Failed to register table: {e}"),
-                    })?;
-                continue;
-            }
-
-            // --- data_read phase (reading Parquet cells from storage) ---
-            let dr_start = timings.as_ref().map(|t| t.start_phase());
-
-            let reader = CellReader::new(Arc::clone(&self.storage), frame_path);
-            let merged = reader.read_cells_merged(&cells, None).await?;
-
-            if let Some(s) = dr_start {
-                data_read_total += s.elapsed();
-            }
-
-            let batches = match merged {
-                Some(batch) => vec![vec![batch]],
-                None => {
-                    let arrow_schema = frame_schema_to_arrow(ledger.schema())?;
-                    vec![vec![RecordBatch::new_empty(Arc::new(arrow_schema))]]
-                }
-            };
-
-            let schema = batches[0][0].schema();
-            let mem_table =
-                datafusion::datasource::MemTable::try_new(schema, batches).map_err(|e| {
-                    ApiaryError::Internal {
-                        message: format!("Failed to create MemTable: {e}"),
-                    }
-                })?;
-
-            session
-                .register_table(&register_name, Arc::new(mem_table))
-                .map_err(|e| ApiaryError::Internal {
-                    message: format!("Failed to register table '{register_name}': {e}"),
-                })?;
         }
 
         // Record accumulated I/O phase timings
         if let Some(t) = timings.as_mut() {
             t.add_accumulated_phase("file_discovery", file_discovery_total);
             t.add_accumulated_phase("metadata_read", metadata_read_total);
-            t.add_accumulated_phase("data_read", data_read_total);
+            t.add_accumulated_phase("data_read", std::time::Duration::ZERO);
         }
 
         // Rewrite the SQL to use the registered table names
@@ -545,189 +500,6 @@ fn extract_table_references(sql: &str) -> Vec<String> {
     refs
 }
 
-/// A simple WHERE predicate extracted from SQL.
-#[derive(Debug, Clone)]
-struct Predicate {
-    column: String,
-    op: PredicateOp,
-    value: String,
-}
-
-#[derive(Debug, Clone)]
-enum PredicateOp {
-    Eq,
-    Gt,
-    Lt,
-    Gte,
-    Lte,
-}
-
-/// Extract simple WHERE predicates from SQL for pruning.
-///
-/// Handles patterns like:
-/// - `column = 'value'` or `column = value`
-/// - `column > N`
-/// - `column < N`
-/// - `column >= N`
-/// - `column <= N`
-fn extract_where_predicates(sql: &str) -> Vec<Predicate> {
-    let mut predicates = Vec::new();
-
-    // Find WHERE clause
-    let upper = sql.to_uppercase();
-    let where_pos = match upper.find(" WHERE ") {
-        Some(pos) => pos + 7,
-        None => return predicates,
-    };
-
-    let where_clause = &sql[where_pos..];
-    // Truncate at GROUP BY, ORDER BY, LIMIT, HAVING
-    let end_keywords = [" GROUP ", " ORDER ", " LIMIT ", " HAVING ", ";"];
-    let end_pos = end_keywords
-        .iter()
-        .filter_map(|kw| where_clause.to_uppercase().find(kw))
-        .min()
-        .unwrap_or(where_clause.len());
-    let where_clause = &where_clause[..end_pos];
-
-    // Split by AND (simple approach — doesn't handle OR or nested parens)
-    let parts: Vec<&str> = split_on_and(where_clause);
-
-    for part in parts {
-        let part = part.trim();
-        if let Some(pred) = parse_predicate(part) {
-            predicates.push(pred);
-        }
-    }
-
-    predicates
-}
-
-/// Split a WHERE clause on AND keywords (case-insensitive).
-fn split_on_and(clause: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let upper = clause.to_uppercase();
-    let mut last = 0;
-
-    for (i, _) in upper.match_indices(" AND ") {
-        parts.push(&clause[last..i]);
-        last = i + 5; // " AND ".len()
-    }
-    parts.push(&clause[last..]);
-    parts
-}
-
-/// Parse a single predicate condition.
-fn parse_predicate(condition: &str) -> Option<Predicate> {
-    let condition = condition.trim();
-
-    // Try >=, <=, >, <, = operators
-    let ops = [
-        (">=", PredicateOp::Gte),
-        ("<=", PredicateOp::Lte),
-        (">", PredicateOp::Gt),
-        ("<", PredicateOp::Lt),
-        ("=", PredicateOp::Eq),
-    ];
-
-    for (op_str, op) in &ops {
-        if let Some(pos) = condition.find(op_str) {
-            let col = condition[..pos].trim();
-            let val = condition[pos + op_str.len()..].trim();
-
-            // Clean the value: strip quotes
-            let val = val.trim_matches('\'').trim_matches('"').to_string();
-
-            if !col.is_empty() && !val.is_empty() {
-                return Some(Predicate {
-                    column: col.to_string(),
-                    op: op.clone(),
-                    value: val,
-                });
-            }
-        }
-    }
-
-    None
-}
-
-/// Stat filter: maps column name → (min bound, max bound).
-type StatFilters = HashMap<String, (Option<serde_json::Value>, Option<serde_json::Value>)>;
-
-/// Build partition and stat filters from predicates.
-fn build_filters(
-    predicates: &[Predicate],
-    partition_columns: &[String],
-) -> (HashMap<String, String>, StatFilters) {
-    let mut partition_filters = HashMap::new();
-    let mut stat_filters: StatFilters = HashMap::new();
-
-    for pred in predicates {
-        if partition_columns.contains(&pred.column) {
-            // Partition filter: only support equality
-            if matches!(pred.op, PredicateOp::Eq) {
-                partition_filters.insert(pred.column.clone(), pred.value.clone());
-            }
-        }
-
-        // Stat filter: convert numeric predicates
-        if let Ok(num) = pred.value.parse::<f64>() {
-            let json_val = serde_json::json!(num);
-            let entry = stat_filters
-                .entry(pred.column.clone())
-                .or_insert((None, None));
-            match pred.op {
-                PredicateOp::Gt | PredicateOp::Gte => {
-                    // min_filter: skip cells where max < this value
-                    entry.0 = Some(json_val);
-                }
-                PredicateOp::Lt | PredicateOp::Lte => {
-                    // max_filter: skip cells where min > this value
-                    entry.1 = Some(json_val);
-                }
-                PredicateOp::Eq => {
-                    // Both bounds
-                    entry.0 = Some(json_val.clone());
-                    entry.1 = Some(json_val);
-                }
-            }
-        }
-    }
-
-    (partition_filters, stat_filters)
-}
-
-/// Convert a FrameSchema to an Arrow Schema.
-fn frame_schema_to_arrow(schema: &apiary_core::FrameSchema) -> Result<Schema> {
-    let fields: Vec<Field> = schema
-        .fields
-        .iter()
-        .map(|f| {
-            let dt = match f.data_type.as_str() {
-                "int8" => DataType::Int8,
-                "int16" => DataType::Int16,
-                "int32" => DataType::Int32,
-                "int64" => DataType::Int64,
-                "uint8" => DataType::UInt8,
-                "uint16" => DataType::UInt16,
-                "uint32" => DataType::UInt32,
-                "uint64" => DataType::UInt64,
-                "float32" | "float" => DataType::Float32,
-                "float64" | "double" => DataType::Float64,
-                "string" | "utf8" => DataType::Utf8,
-                "boolean" | "bool" => DataType::Boolean,
-                "datetime" | "timestamp" => {
-                    DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None)
-                }
-                _ => DataType::Utf8,
-            };
-            Field::new(&f.name, dt, f.nullable)
-        })
-        .collect();
-
-    Ok(Schema::new(fields))
-}
-
 /// Rewrite SQL to replace 3-part or 2-part table references with the registered names.
 fn rewrite_sql_table_refs(
     sql: &str,
@@ -782,23 +554,19 @@ fn string_list_batch(column_name: &str, values: &[String]) -> RecordBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apiary_comb::cell_writer::CellWriter;
-    use apiary_comb::ledger::Ledger;
     use apiary_comb::local::LocalBackend;
-    use apiary_core::{CellSizingPolicy, FieldDef, FrameSchema, NodeId};
+    use apiary_comb::{CellState, Comb};
+    use apiary_core::{FieldDef, FrameSchema, StorageBackend};
     use arrow::array::{Float64Array, Int64Array};
 
-    async fn make_test_env() -> (
-        Arc<dyn StorageBackend>,
-        Arc<RegistryManager>,
-        tempfile::TempDir,
-    ) {
+    async fn make_test_env() -> (Arc<Comb>, Arc<RegistryManager>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let backend = LocalBackend::new(dir.path().to_path_buf()).await.unwrap();
         let storage: Arc<dyn StorageBackend> = Arc::new(backend);
         let registry = Arc::new(RegistryManager::new(Arc::clone(&storage)));
         let _ = registry.load_or_create().await.unwrap();
-        (storage, registry, dir)
+        let comb = Arc::new(Comb::from_local_path(dir.path()).unwrap());
+        (comb, registry, dir)
     }
 
     fn test_schema() -> serde_json::Value {
@@ -809,7 +577,7 @@ mod tests {
         })
     }
 
-    async fn setup_frame(storage: &Arc<dyn StorageBackend>, registry: &Arc<RegistryManager>) {
+    async fn setup_frame(comb: &Arc<Comb>, registry: &Arc<RegistryManager>) {
         registry.create_hive("test_hive").await.unwrap();
         registry.create_box("test_hive", "test_box").await.unwrap();
         registry
@@ -844,28 +612,16 @@ mod tests {
             ],
         };
 
-        let node_id = NodeId::new("test_node");
-        let frame_path = "test_hive/test_box/sensors";
-
-        let mut ledger = Ledger::create(
-            Arc::clone(storage),
-            frame_path,
-            frame_schema.clone(),
-            vec!["region".into()],
-            &node_id,
-        )
-        .await
-        .unwrap();
-
-        let sizing = CellSizingPolicy::new(256 * 1024 * 1024, 512 * 1024 * 1024, 16 * 1024 * 1024);
-
-        let writer = CellWriter::new(
-            Arc::clone(storage),
-            frame_path.into(),
-            frame_schema,
-            vec!["region".into()],
-            sizing,
-        );
+        let table = comb
+            .create_frame_table(
+                "test_hive",
+                "test_box",
+                "sensors",
+                &frame_schema,
+                &["region".to_string()],
+            )
+            .await
+            .unwrap();
 
         // Write test data
         let schema = Arc::new(Schema::new(vec![
@@ -884,19 +640,17 @@ mod tests {
         )
         .unwrap();
 
-        let cells = writer.write(&batch).await.unwrap();
-        ledger
-            .commit(apiary_core::LedgerAction::AddCells { cells }, &node_id)
+        comb.append(&table, &batch, 256 * 1024 * 1024, CellState::Nectar)
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn test_select_all() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("SELECT * FROM test_hive.test_box.sensors")
             .await
@@ -908,10 +662,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_aggregation() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("SELECT region, AVG(temp) as avg_temp FROM test_hive.test_box.sensors GROUP BY region ORDER BY region")
             .await
@@ -924,10 +678,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_use_hive_and_box() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         ctx.sql("USE HIVE test_hive").await.unwrap();
         ctx.sql("USE BOX test_box").await.unwrap();
         let results = ctx.sql("SELECT * FROM sensors").await.unwrap();
@@ -938,10 +692,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_hives() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx.sql("SHOW HIVES").await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -950,10 +704,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_frames() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx.sql("SHOW FRAMES IN test_hive.test_box").await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -962,10 +716,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_describe() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("DESCRIBE test_hive.test_box.sensors")
             .await
@@ -977,8 +731,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_blocked() {
-        let (storage, registry, _dir) = make_test_env().await;
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let (comb, registry, _dir) = make_test_env().await;
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
 
         let result = ctx.sql("DELETE FROM test_hive.test_box.sensors").await;
         assert!(result.is_err());
@@ -988,8 +742,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_blocked() {
-        let (storage, registry, _dir) = make_test_env().await;
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let (comb, registry, _dir) = make_test_env().await;
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
 
         let result = ctx
             .sql("UPDATE test_hive.test_box.sensors SET temp = 0")
@@ -1001,10 +755,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_where_filter() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("SELECT * FROM test_hive.test_box.sensors WHERE region = 'north'")
             .await
@@ -1016,10 +770,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_projection() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("SELECT temp FROM test_hive.test_box.sensors")
             .await
@@ -1040,17 +794,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_predicates() {
-        let preds =
-            extract_where_predicates("SELECT * FROM t WHERE region = 'north' AND temp > 25");
-        assert_eq!(preds.len(), 2);
-        assert_eq!(preds[0].column, "region");
-        assert_eq!(preds[0].value, "north");
-        assert_eq!(preds[1].column, "temp");
-        assert_eq!(preds[1].value, "25");
-    }
-
-    #[test]
     fn test_check_unsupported_dml() {
         assert!(check_unsupported_dml("DELETE FROM t").is_some());
         assert!(check_unsupported_dml("UPDATE t SET x = 1").is_some());
@@ -1059,10 +802,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_boxes_without_qualifier() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         ctx.sql("USE HIVE test_hive").await.unwrap();
 
         let results = ctx.sql("SHOW BOXES").await.unwrap();
@@ -1073,10 +816,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_frames_without_qualifier() {
-        let (storage, registry, _dir) = make_test_env().await;
-        setup_frame(&storage, &registry).await;
+        let (comb, registry, _dir) = make_test_env().await;
+        setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(storage, registry);
+        let mut ctx = ApiaryQueryContext::new(comb, registry);
         ctx.sql("USE HIVE test_hive").await.unwrap();
         ctx.sql("USE BOX test_box").await.unwrap();
 

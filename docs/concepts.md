@@ -135,16 +135,14 @@ meadow/
 │           └── frames.json
 ├── _heartbeats/
 │   └── {node_id}.json
-├── _queries/
-│   └── {query_id}/
-│       ├── manifest.json
-│       └── results/
-└── {hive}/{box}/{frame}/
-    ├── _ledger/
-    │   ├── 000001.json
-    │   └── checkpoint.json
-    └── cells/
-        └── {cell_id}.parquet
+└── {hive}/{box}/{frame}/          # a Delta Lake table
+    ├── _delta_log/
+    │   ├── 00000000000000000000.json
+    │   └── 00000000000000000001.json
+    └── {partition}={value}/       # partition directories, when the frame is partitioned
+        └── part-*.snappy.parquet  # cells
 ```
+
+Each frame is a standard Delta Lake table, so Spark and Databricks can read it. Cells carry an `apiary.state` tag (`nectar` or `capped`) in the Delta log.
 
 All metadata, coordination state, and data live in the meadow. A fresh node with access to the bucket can reconstruct the full system state.
