@@ -174,6 +174,13 @@ impl CellCache {
                 source: Some(Box::new(e)),
             })?;
 
+        // tokio buffers file writes on a background task: without a flush, a
+        // read straight after `get` can see an incomplete file.
+        file.flush().await.map_err(|e| ApiaryError::Storage {
+            message: format!("Failed to flush cache file: {:?}", local_path),
+            source: Some(Box::new(e)),
+        })?;
+
         // Add to cache entries
         {
             let mut entries = self.entries.write().await;
