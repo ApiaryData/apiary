@@ -21,37 +21,3 @@ pub use heartbeat::{
     Heartbeat, HeartbeatWriter, NodeState, NodeStatus, WorldView, WorldViewBuilder,
 };
 pub use node::{ApiaryNode, ColonyStatus, SwarmNodeInfo, SwarmStatus};
-
-/// Convert WorldView to a vector of NodeInfo for distributed query planning.
-pub fn world_view_to_node_info(world_view: &WorldView) -> Vec<apiary_query::distributed::NodeInfo> {
-    world_view
-        .alive_nodes()
-        .iter()
-        .map(|node| {
-            // Extract cached cells from heartbeat
-            // Note: This clones the HashMap, which is acceptable for v1 since:
-            // 1. Heartbeats are updated every 5 seconds, not on every query
-            // 2. Typical cache sizes are small (dozens to hundreds of cells)
-            // 3. Query planning is not on the critical path
-            // Future optimization: use Arc<HashMap> if this becomes a bottleneck
-            let cached_cells = node.heartbeat.cache.cached_cells.clone();
-
-            apiary_query::distributed::NodeInfo {
-                node_id: node.node_id.clone(),
-                state: match node.state {
-                    NodeState::Alive => apiary_query::distributed::NodeState::Alive,
-                    NodeState::Suspect => apiary_query::distributed::NodeState::Suspect,
-                    NodeState::Dead => apiary_query::distributed::NodeState::Dead,
-                },
-                cores: node.heartbeat.capacity.cores,
-                memory_bytes: node.heartbeat.capacity.memory_total_bytes,
-                memory_per_bee: node.heartbeat.capacity.memory_per_bee,
-                target_cell_size: node.heartbeat.capacity.target_cell_size,
-                bees_total: node.heartbeat.load.bees_total,
-                bees_busy: node.heartbeat.load.bees_busy,
-                idle_bees: node.heartbeat.load.bees_idle,
-                cached_cells,
-            }
-        })
-        .collect()
-}

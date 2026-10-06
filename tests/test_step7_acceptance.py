@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Step 7 Acceptance Tests — Distributed Query Execution.
 
-Tests that the distributed query infrastructure is in place and
-single-node queries still work.
+Single-node queries and the world view. (The V1 object-storage
+distributed query path was removed in the redesign; see the design doc.)
 """
 
 import os
