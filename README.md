@@ -156,12 +156,11 @@ Apiary is in active development. See [BUILD_STATUS.md](docs/BUILD_STATUS.md) for
 - ✅ Typed identifiers (HiveId, BoxId, FrameId, TaskId, etc.)
 - ✅ Registry with DDL operations (create/list hives, boxes, frames)
 - ✅ Dual terminology (bee-themed and traditional database naming)
-- ✅ Transaction ledger with optimistic concurrency
-- ✅ Parquet cell writing with LZ4 compression
-- ✅ Cell-level statistics for query pruning
-- ✅ Partitioning with partition pruning on read
+- ✅ Every Frame is a Delta Lake table (`delta-rs`): commits by conditional put, readable by Spark and Databricks
+- ✅ Parquet cells (Snappy), tagged `apiary.state` = nectar or capped in the Delta log
+- ✅ File statistics and partitioning, with pruning and file skipping on read
 - ✅ Leafcutter cell sizing
-- ✅ Schema validation (null partition rejection)
+- ✅ Schema validation (declared schema enforced; null partition rejection)
 - ✅ Frame overwrite (atomic cell replacement)
 - ✅ Ledger checkpointing
 - ✅ SQL queries via Apache DataFusion
@@ -205,7 +204,7 @@ Apiary is in active development. See [BUILD_STATUS.md](docs/BUILD_STATUS.md) for
 apiary/
 ├── crates/
 │   ├── apiary-core/       # Core types and traits
-│   ├── apiary-comb/       # Storage backends and ledger
+│   ├── apiary-comb/       # The comb (Delta tables) and storage backends
 │   ├── apiary-runtime/    # Node runtime
 │   ├── apiary-floor/      # Dance floor (skeleton, phase 5)
 │   ├── apiary-colony/     # Bees, roles, signals (skeleton, phase 4)

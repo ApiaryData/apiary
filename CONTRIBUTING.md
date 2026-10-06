@@ -106,7 +106,7 @@ python tests/test_step1_acceptance.py
 apiary/
 ├── crates/
 │   ├── apiary-core/       # Core types and traits
-│   ├── apiary-comb/       # Storage backends and ledger (local, S3)
+│   ├── apiary-comb/       # The comb (Delta tables) and storage backends (local, S3)
 │   ├── apiary-runtime/    # Node runtime and bee pool
 │   ├── apiary-floor/      # Dance floor (skeleton, phase 5)
 │   ├── apiary-colony/     # Bees, roles, signals (skeleton, phase 4)

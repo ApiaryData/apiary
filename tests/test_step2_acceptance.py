@@ -41,13 +41,7 @@ def test_registry_operations():
         print(f"✓ List boxes: {boxes}")
         
         # Test 6: Create frame
-        schema = {
-            "fields": [
-                {"name": "timestamp", "type": {"name": "timestamp", "unit": "SECOND"}},
-                {"name": "temperature", "type": {"name": "floatingpoint", "precision": "DOUBLE"}},
-                {"name": "region", "type": {"name": "utf8"}},
-            ]
-        }
+        schema = {"timestamp": "datetime", "temperature": "float64", "region": "string"}
         ap.create_frame("analytics", "sensors", "temperature", schema, ["region"])
         print("✓ Created frame 'analytics.sensors.temperature' with partitioning")
         
@@ -61,12 +55,12 @@ def test_registry_operations():
         assert frame_meta["schema"] == schema, "Schema should match"
         assert frame_meta["partition_by"] == ["region"], "Partition columns should match"
         assert frame_meta["max_partitions"] == 10000, "Default max_partitions should be 10000"
-        print(f"✓ Get frame metadata: {len(frame_meta['schema']['fields'])} fields, partitioned by {frame_meta['partition_by']}")
+        print(f"✓ Get frame metadata: {len(frame_meta['schema'])} fields, partitioned by {frame_meta['partition_by']}")
         
         # Test 9: Create multiple entities
         ap.create_hive("production")
         ap.create_box("production", "events")
-        ap.create_frame("production", "events", "clicks", {"fields": []}, [])
+        ap.create_frame("production", "events", "clicks", {"url": "string"}, [])
         
         hives = ap.list_hives()
         assert len(hives) == 2, f"Expected 2 hives, got {len(hives)}"

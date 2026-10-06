@@ -1,46 +1,11 @@
-//! Types for the transaction ledger and cell metadata.
+//! Types for Frames: their schemas, cell sizing and write results.
 //!
-//! Each frame has a ledger — an ordered sequence of JSON entries describing
-//! every mutation to the frame's state. These types define the ledger entries,
-//! cell metadata, column statistics, and the write result.
+//! A Frame is stored as a Delta Lake table (see the `apiary-comb` crate); these
+//! are the Apiary-side descriptions around it.
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
-use crate::types::{CellId, NodeId};
-
-/// A single entry in a frame's transaction ledger.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LedgerEntry {
-    /// Monotonically increasing version number.
-    pub version: u64,
-    /// When this entry was committed.
-    pub timestamp: DateTime<Utc>,
-    /// The node that committed this entry.
-    pub node_id: NodeId,
-    /// The action performed.
-    pub action: LedgerAction,
-}
-
-/// The action recorded in a ledger entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum LedgerAction {
-    /// Frame was created with the given schema and partition columns.
-    CreateFrame {
-        schema: FrameSchema,
-        partition_by: Vec<String>,
-    },
-    /// New cells were added to the frame.
-    AddCells { cells: Vec<CellMetadata> },
-    /// Cells were rewritten (removed old + added new). Used by overwrite and compaction.
-    RewriteCells {
-        removed: Vec<CellId>,
-        added: Vec<CellMetadata>,
-    },
-}
-
-/// Schema definition for a frame, stored as field name → type string mappings.
+/// Schema definition for a frame, stored as field name to type string mappings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrameSchema {
     /// Ordered list of field definitions.
@@ -61,38 +26,6 @@ pub struct FieldDef {
 
 fn default_nullable() -> bool {
     true
-}
-
-/// Metadata about a single Parquet cell file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CellMetadata {
-    /// Unique cell identifier.
-    pub id: CellId,
-    /// Relative path within frame directory (e.g., "region=north/cell_abc.parquet").
-    pub path: String,
-    /// Storage format — always "parquet" for v1.
-    pub format: String,
-    /// Partition column values for this cell.
-    pub partition_values: HashMap<String, String>,
-    /// Number of rows in this cell.
-    pub rows: u64,
-    /// Size of the cell file in bytes.
-    pub bytes: u64,
-    /// Per-column statistics for query pruning.
-    pub stats: HashMap<String, ColumnStats>,
-}
-
-/// Per-column statistics used for cell-level pruning.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ColumnStats {
-    /// Minimum value in the column (as JSON value).
-    pub min: Option<serde_json::Value>,
-    /// Maximum value in the column (as JSON value).
-    pub max: Option<serde_json::Value>,
-    /// Number of null values.
-    pub null_count: u64,
-    /// Distinct value count (optional, expensive to compute).
-    pub distinct_count: Option<u64>,
 }
 
 /// Policy for cell sizing, inspired by leafcutter bees.
@@ -130,7 +63,7 @@ impl CellSizingPolicy {
 /// Result returned from a write operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteResult {
-    /// Ledger version after the write was committed.
+    /// Delta table version after the write was committed.
     pub version: u64,
     /// Number of cells written.
     pub cells_written: usize,
@@ -145,23 +78,26 @@ pub struct WriteResult {
     pub temperature: f64,
 }
 
-/// A checkpoint captures the full active cell set at a given version.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LedgerCheckpoint {
-    /// The version this checkpoint represents.
-    pub version: u64,
-    /// The frame schema at this version.
-    pub schema: FrameSchema,
-    /// Partition columns.
-    pub partition_by: Vec<String>,
-    /// All active cells at this version.
-    pub active_cells: Vec<CellMetadata>,
-}
-
 impl FrameSchema {
-    /// Create a FrameSchema from a JSON schema definition (dict of name → type).
+    /// Create a FrameSchema from a JSON schema definition.
+    ///
+    /// Two forms are accepted:
+    /// - a dict of name to type, such as `{"ts": "datetime", "temp": "float64"}`
+    ///   (every field is nullable);
+    /// - the serialised form of a [`FrameSchema`], such as
+    ///   `{"fields": [{"name": "ts", "data_type": "datetime", "nullable": false}]}`.
+    ///
+    /// The forms cannot be confused: in the first, a column named `fields` has a
+    /// string value, while the second has an array.
     pub fn from_json_value(value: &serde_json::Value) -> crate::Result<Self> {
         match value {
+            serde_json::Value::Object(map)
+                if map.len() == 1 && map.get("fields").is_some_and(|v| v.is_array()) =>
+            {
+                serde_json::from_value(value.clone()).map_err(|e| crate::ApiaryError::Schema {
+                    message: format!("Invalid frame schema: {e}"),
+                })
+            }
             serde_json::Value::Object(map) => {
                 let fields = map
                     .iter()
@@ -209,42 +145,30 @@ mod tests {
     }
 
     #[test]
-    fn test_cell_metadata_serialization() {
-        let cell = CellMetadata {
-            id: CellId::new("cell_001"),
-            path: "region=north/cell_001.parquet".into(),
-            format: "parquet".into(),
-            partition_values: HashMap::from([("region".into(), "north".into())]),
-            rows: 1000,
-            bytes: 4096,
-            stats: HashMap::new(),
-        };
-        let json = serde_json::to_string(&cell).unwrap();
-        let cell2: CellMetadata = serde_json::from_str(&json).unwrap();
-        assert_eq!(cell2.rows, 1000);
-    }
+    fn test_frame_schema_from_serialised_form() {
+        let json = serde_json::json!({
+            "fields": [
+                {"name": "x", "data_type": "Int64"},
+                {"name": "y", "data_type": "string", "nullable": false}
+            ]
+        });
+        let schema = FrameSchema::from_json_value(&json).unwrap();
+        assert_eq!(schema.field_names(), vec!["x", "y"]);
+        assert!(schema.field("x").unwrap().nullable);
+        assert!(!schema.field("y").unwrap().nullable);
 
-    #[test]
-    fn test_ledger_entry_serialization() {
-        let entry = LedgerEntry {
-            version: 1,
-            timestamp: Utc::now(),
-            node_id: NodeId::new("node_1"),
-            action: LedgerAction::AddCells {
-                cells: vec![CellMetadata {
-                    id: CellId::new("cell_001"),
-                    path: "cell_001.parquet".into(),
-                    format: "parquet".into(),
-                    partition_values: HashMap::new(),
-                    rows: 100,
-                    bytes: 2048,
-                    stats: HashMap::new(),
-                }],
-            },
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        let entry2: LedgerEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(entry2.version, 1);
+        // Round trip through serde
+        let again = FrameSchema::from_json_value(&serde_json::to_value(&schema).unwrap()).unwrap();
+        assert_eq!(again.field_names(), vec!["x", "y"]);
+
+        // A column literally named "fields" is still a flat-form column
+        let flat = serde_json::json!({"fields": "string"});
+        let schema = FrameSchema::from_json_value(&flat).unwrap();
+        assert_eq!(schema.field_names(), vec!["fields"]);
+
+        // Malformed serialised form is an error, not a silent column
+        let bad = serde_json::json!({"fields": [{"nom": "x"}]});
+        assert!(FrameSchema::from_json_value(&bad).is_err());
     }
 
     #[test]

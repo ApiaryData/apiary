@@ -27,23 +27,23 @@ Key operations: `put`, `get`, `list`, `delete`, and **`put_if_not_exists`** (con
 
 ### Data Format
 
-- **Cells** are Parquet files with LZ4 compression.
-- **Ledger entries** are JSON files recording each transaction (append, overwrite).
+- **Cells** are Parquet files (Snappy), tagged `apiary.state` = `nectar` or `capped` in the Delta log.
+- **Frames** are Delta Lake tables, so Spark and Databricks can read them. The Delta log is the commit record.
 - **Registry** is JSON metadata for hives, boxes, and frames.
 
 ### Transaction Model
 
-Apiary uses an **optimistic concurrency** model inspired by Delta Lake:
+Commits go through the Delta Lake protocol (`delta-rs`), which needs no lock service and no leader:
 
-1. Writer reads the current ledger version.
-2. Writer creates a new ledger entry (e.g., `000042.json`).
-3. Writer uses `put_if_not_exists` to commit. If the version already exists (another writer won the race), the write is retried with the updated state.
+1. Writer writes its Parquet cells.
+2. Writer commits by creating the next log entry (`_delta_log/00000000000000000042.json`) with a conditional put (create-if-absent).
+3. If another writer won the race, a blind append is retried against the new version; a change that conflicts (an overwrite racing an append) fails with an error.
 
-No distributed locks, no Raft, no two-phase commit.
+No distributed locks, no Raft, no two-phase commit. The store must support create-if-absent: the local filesystem, AWS S3, R2 and MinIO do.
 
-### Ledger Checkpointing
+### Checkpointing
 
-Over time, the ledger accumulates entries. Periodic **checkpointing** compacts the ledger into a single snapshot, speeding up reads.
+`delta-rs` writes Delta checkpoints, speeding up reads of tables with long logs.
 
 ## Coordination
 

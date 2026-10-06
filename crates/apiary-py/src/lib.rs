@@ -237,7 +237,7 @@ impl Apiary {
 
         // Initialize the frame's ledger so DESCRIBE works immediately
         self.runtime
-            .block_on(async { node.init_frame_ledger(&hive, &box_name, &name).await })
+            .block_on(async { node.init_frame_table(&hive, &box_name, &name).await })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to init frame ledger: {e}")))?;
 
         Ok(())
