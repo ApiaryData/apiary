@@ -12,6 +12,6 @@ classifiers = [
 dynamic = ["version"]
 
 [tool.maturin]
-manifest-path = "crates/apiary-python/Cargo.toml"
+manifest-path = "crates/apiary-py/Cargo.toml"
 python-source = "python"
 features = ["pyo3/extension-module"]

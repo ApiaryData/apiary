@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 apiary-core.workspace = true
-apiary-storage.workspace = true
+apiary-comb.workspace = true
 apiary-runtime.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -467,8 +467,8 @@ async fn wait_for_cancel(rx: &tokio::sync::watch::Receiver<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apiary_comb::local::LocalBackend;
     use apiary_core::config::NodeConfig;
-    use apiary_storage::local::LocalBackend;
 
     async fn make_storage(tmp: &tempfile::TempDir) -> Arc<dyn StorageBackend> {
         Arc::new(LocalBackend::new(tmp.path()).await.unwrap())

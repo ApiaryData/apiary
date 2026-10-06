@@ -284,7 +284,7 @@ impl CellCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apiary_storage::local::LocalBackend;
+    use apiary_comb::local::LocalBackend;
     use tempfile::TempDir;
 
     #[tokio::test]

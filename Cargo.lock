@@ -65,12 +65,36 @@ dependencies = [
 name = "apiary-cli"
 version = "0.1.2-alpha"
 dependencies = [
+ "apiary-comb",
  "apiary-core",
  "apiary-runtime",
- "apiary-storage",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "apiary-colony"
+version = "0.1.2-alpha"
+
+[[package]]
+name = "apiary-comb"
+version = "0.1.2-alpha"
+dependencies = [
+ "apiary-core",
+ "arrow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "object_store",
+ "parquet",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -89,29 +113,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "apiary-python"
+name = "apiary-entrance"
 version = "0.1.2-alpha"
-dependencies = [
- "apiary-core",
- "apiary-query",
- "apiary-runtime",
- "apiary-storage",
- "arrow",
- "chrono",
- "pyo3",
- "pythonize",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
-name = "apiary-query"
+name = "apiary-floor"
+version = "0.1.2-alpha"
+
+[[package]]
+name = "apiary-forage"
+version = "0.1.2-alpha"
+
+[[package]]
+name = "apiary-net"
+version = "0.1.2-alpha"
+
+[[package]]
+name = "apiary-observe"
+version = "0.1.2-alpha"
+
+[[package]]
+name = "apiary-plan"
 version = "0.1.2-alpha"
 dependencies = [
+ "apiary-comb",
  "apiary-core",
- "apiary-storage",
  "arrow",
  "async-trait",
  "datafusion",
@@ -124,12 +150,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "apiary-py"
+version = "0.1.2-alpha"
+dependencies = [
+ "apiary-comb",
+ "apiary-core",
+ "apiary-plan",
+ "apiary-runtime",
+ "arrow",
+ "chrono",
+ "pyo3",
+ "pythonize",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "apiary-runtime"
 version = "0.1.2-alpha"
 dependencies = [
+ "apiary-comb",
  "apiary-core",
- "apiary-query",
- "apiary-storage",
+ "apiary-plan",
  "arrow",
  "async-trait",
  "chrono",
@@ -139,26 +183,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "apiary-storage"
-version = "0.1.2-alpha"
-dependencies = [
- "apiary-core",
- "arrow",
- "async-trait",
- "bytes",
- "chrono",
- "futures",
- "object_store",
- "parquet",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]

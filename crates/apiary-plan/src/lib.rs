@@ -16,13 +16,13 @@ use arrow::record_batch::RecordBatch;
 use datafusion::prelude::*;
 use tracing::info;
 
+use apiary_comb::cell_reader::CellReader;
+use apiary_comb::ledger::Ledger;
 use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
-use apiary_storage::cell_reader::CellReader;
-use apiary_storage::ledger::Ledger;
 
 /// The Apiary query context — wraps DataFusion with Apiary namespace resolution.
 pub struct ApiaryQueryContext {
@@ -782,10 +782,10 @@ fn string_list_batch(column_name: &str, values: &[String]) -> RecordBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apiary_comb::cell_writer::CellWriter;
+    use apiary_comb::ledger::Ledger;
+    use apiary_comb::local::LocalBackend;
     use apiary_core::{CellSizingPolicy, FieldDef, FrameSchema, NodeId};
-    use apiary_storage::cell_writer::CellWriter;
-    use apiary_storage::ledger::Ledger;
-    use apiary_storage::local::LocalBackend;
     use arrow::array::{Float64Array, Int64Array};
 
     async fn make_test_env() -> (

@@ -11,7 +11,7 @@ pub mod cache;
 pub mod heartbeat;
 pub mod node;
 
-pub use apiary_query::ApiaryQueryContext;
+pub use apiary_plan::ApiaryQueryContext;
 pub use bee::{BeePool, BeeState, BeeStatus, MasonChamber};
 pub use behavioral::{
     AbandonmentDecision, AbandonmentTracker, ColonyThermometer, TemperatureRegulation,

@@ -8,8 +8,8 @@ license.workspace = true
 
 [dependencies]
 apiary-core.workspace = true
-apiary-storage.workspace = true
-apiary-query.workspace = true
+apiary-comb.workspace = true
+apiary-plan.workspace = true
 arrow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

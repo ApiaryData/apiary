@@ -1,0 +1,7 @@
+[package]
+name = "apiary-net"
+version.workspace = true
+edition.workspace = true
+description = "Apiary networking: iroh transport, membership certificates, discovery, WAN budgets"
+license.workspace = true
+publish = false # empty until phase 2 of the redesign

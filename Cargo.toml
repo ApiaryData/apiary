@@ -1,10 +1,16 @@
 [workspace]
 members = [
     "crates/apiary-core",
-    "crates/apiary-storage",
+    "crates/apiary-floor",
+    "crates/apiary-colony",
+    "crates/apiary-forage",
+    "crates/apiary-entrance",
+    "crates/apiary-net",
+    "crates/apiary-observe",
+    "crates/apiary-comb",
     "crates/apiary-runtime",
-    "crates/apiary-query",
-    "crates/apiary-python",
+    "crates/apiary-plan",
+    "crates/apiary-py",
     "crates/apiary-cli",
 ]
 resolver = "2"
@@ -18,9 +24,9 @@ rust-version = "1.94"
 [workspace.dependencies]
 # Internal crates
 apiary-core = { version = "0.1.2-alpha", path = "crates/apiary-core" }
-apiary-storage = { version = "0.1.2-alpha", path = "crates/apiary-storage" }
+apiary-comb = { version = "0.1.2-alpha", path = "crates/apiary-comb" }
 apiary-runtime = { version = "0.1.2-alpha", path = "crates/apiary-runtime" }
-apiary-query = { version = "0.1.2-alpha", path = "crates/apiary-query" }
+apiary-plan = { version = "0.1.2-alpha", path = "crates/apiary-plan" }
 
 # Async
 tokio = { version = "1", features = ["full"] }

@@ -13,17 +13,17 @@ use arrow::record_batch::RecordBatch;
 use tokio::sync::RwLock;
 use tracing::info;
 
+use apiary_comb::cell_reader::CellReader;
+use apiary_comb::cell_writer::CellWriter;
+use apiary_comb::ledger::Ledger;
+use apiary_comb::local::LocalBackend;
+use apiary_comb::s3::S3Backend;
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
 use apiary_core::{CellSizingPolicy, Env, FrameSchema, LedgerAction, Result, WriteResult};
-use apiary_query::ApiaryQueryContext;
-use apiary_storage::cell_reader::CellReader;
-use apiary_storage::cell_writer::CellWriter;
-use apiary_storage::ledger::Ledger;
-use apiary_storage::local::LocalBackend;
-use apiary_storage::s3::S3Backend;
+use apiary_plan::ApiaryQueryContext;
 
 use crate::bee::{BeePool, BeeStatus};
 use crate::behavioral::{AbandonmentTracker, ColonyThermometer};
