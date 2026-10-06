@@ -194,7 +194,7 @@ impl ApiaryNode {
         // The crop: where ingested rows land first, on this Node's disk. It
         // outlives restarts, so rows ingested before a crash are deposited by
         // the next run.
-        let crop = Arc::new(Crop::open(config.crop_dir())?);
+        let crop = Arc::new(Crop::open(config.crop_dir())?.with_sync(config.crop_sync));
 
         // One long-lived query session for the Node: a memory pool shared by
         // all queries, a spill directory, joins planned to fit a Bee, and

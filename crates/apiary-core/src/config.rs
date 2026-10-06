@@ -59,6 +59,16 @@ pub struct NodeConfig {
     /// Crop size in bytes that triggers a deposit before the interval is up.
     #[serde(default = "default_crop_max_bytes")]
     pub crop_max_bytes: u64,
+
+    /// Whether each ingest is synced to disk before it returns (the default).
+    /// Turning this off is faster but a power cut can lose the most recent
+    /// ingests; it is meant for benchmarks and for a crop on a RAM disk.
+    #[serde(default = "default_crop_sync")]
+    pub crop_sync: bool,
+}
+
+fn default_crop_sync() -> bool {
+    true
 }
 
 fn default_deposit_interval() -> Duration {
@@ -149,6 +159,7 @@ impl NodeConfig {
             dead_threshold: DEFAULT_DEAD_THRESHOLD,
             deposit_interval: DEFAULT_DEPOSIT_INTERVAL,
             crop_max_bytes: DEFAULT_CROP_MAX_BYTES,
+            crop_sync: true,
         }
     }
 }
