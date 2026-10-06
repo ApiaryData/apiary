@@ -205,14 +205,21 @@ Apiary is in active development. See [BUILD_STATUS.md](docs/BUILD_STATUS.md) for
 apiary/
 ├── crates/
 │   ├── apiary-core/       # Core types and traits
-│   ├── apiary-storage/    # Storage backends
+│   ├── apiary-comb/       # Storage backends and ledger
 │   ├── apiary-runtime/    # Node runtime
-│   ├── apiary-query/      # DataFusion SQL engine
-│   ├── apiary-python/     # PyO3 bindings
+│   ├── apiary-floor/      # Dance floor (skeleton, phase 5)
+│   ├── apiary-colony/     # Bees, roles, signals (skeleton, phase 4)
+│   ├── apiary-forage/     # Patch execution (skeleton, phase 5)
+│   ├── apiary-entrance/   # Flight SQL and ingest (skeleton, phase 1e)
+│   ├── apiary-net/        # iroh networking (skeleton, phase 2)
+│   ├── apiary-observe/    # Deterministic simulator (skeleton, phase 3)
+│   ├── apiary-plan/       # DataFusion SQL engine
+│   ├── apiary-py/         # PyO3 bindings
 │   └── apiary-cli/        # Command-line interface
 ├── python/                # Python package source
 ├── docs/                  # Documentation
-│   ├── architecture/      # Design documentation
+│   ├── design/            # The redesign (source of truth)
+│   ├── architecture/      # V1 design, kept as history
 │   └── development/       # Step completion records
 ├── tests/                 # Acceptance tests
 ├── deploy/                # Raspberry Pi docker-compose configs

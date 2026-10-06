@@ -1,0 +1,7 @@
+[package]
+name = "apiary-colony"
+version.workspace = true
+edition.workspace = true
+description = "Bees, roles, response thresholds, dances, tremble and stop signals for Apiary"
+license.workspace = true
+publish = false # empty until phase 4 of the redesign

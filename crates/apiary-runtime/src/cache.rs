@@ -6,18 +6,19 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use apiary_core::Result;
+use apiary_core::clock::{Clock, SystemClock};
 use apiary_core::error::ApiaryError;
 use apiary_core::storage::StorageBackend;
-use apiary_core::Result;
 
 /// A single entry in the cell cache.
 #[derive(Debug, Clone)]
@@ -31,8 +32,9 @@ pub struct CacheEntry {
     /// Size of the cached file in bytes.
     pub size: u64,
 
-    /// Last time this entry was accessed (for LRU eviction).
-    pub last_accessed: Instant,
+    /// Last time this entry was accessed, on the cache clock's monotonic
+    /// timeline (for LRU eviction).
+    pub last_accessed: Duration,
 }
 
 /// Local cell cache with LRU eviction policy.
@@ -60,6 +62,9 @@ pub struct CellCache {
 
     /// Reference to the storage backend for fetching cells on cache miss.
     storage: Arc<dyn StorageBackend>,
+
+    /// Source of access times.
+    clock: Arc<dyn Clock>,
 }
 
 impl CellCache {
@@ -99,7 +104,14 @@ impl CellCache {
             current_size: Arc::new(AtomicU64::new(0)),
             entries: Arc::new(RwLock::new(HashMap::new())),
             storage,
+            clock: SystemClock::shared(),
         })
+    }
+
+    /// Use `clock` for access times (the default is the system clock).
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Get a cell from the cache or fetch it from storage on cache miss.
@@ -128,7 +140,7 @@ impl CellCache {
                 // Update last accessed time with write lock
                 let mut entries_write = self.entries.write().await;
                 if let Some(entry) = entries_write.get_mut(storage_key) {
-                    entry.last_accessed = Instant::now();
+                    entry.last_accessed = self.clock.monotonic();
                 }
 
                 debug!(storage_key, "Cache hit");
@@ -171,7 +183,7 @@ impl CellCache {
                     storage_key: storage_key.to_string(),
                     local_path: local_path.clone(),
                     size,
-                    last_accessed: Instant::now(),
+                    last_accessed: self.clock.monotonic(),
                 },
             );
         }
@@ -272,7 +284,7 @@ impl CellCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apiary_storage::local::LocalBackend;
+    use apiary_comb::local::LocalBackend;
     use tempfile::TempDir;
 
     #[tokio::test]

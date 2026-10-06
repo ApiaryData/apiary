@@ -5,7 +5,6 @@
 //! the frame's active Parquet cells.  Custom SQL commands (USE, SHOW,
 //! DESCRIBE) are intercepted before they reach DataFusion.
 
-pub mod distributed;
 pub mod timing;
 
 use std::collections::HashMap;
@@ -15,15 +14,15 @@ use arrow::array::StringArray;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::prelude::*;
-use tracing::{info, warn};
+use tracing::info;
 
+use apiary_comb::cell_reader::CellReader;
+use apiary_comb::ledger::Ledger;
+use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
-use apiary_core::Result;
-use apiary_storage::cell_reader::CellReader;
-use apiary_storage::ledger::Ledger;
 
 /// The Apiary query context — wraps DataFusion with Apiary namespace resolution.
 pub struct ApiaryQueryContext {
@@ -31,7 +30,7 @@ pub struct ApiaryQueryContext {
     registry: Arc<RegistryManager>,
     current_hive: Option<String>,
     current_box: Option<String>,
-    #[allow(dead_code)] // Will be used for distributed execution
+    #[allow(dead_code)] // Node identity, used once Nodes exchange work directly
     node_id: NodeId,
 }
 
@@ -476,265 +475,6 @@ impl ApiaryQueryContext {
             }),
         }
     }
-
-    /// Execute a query using distributed execution (stub for Step 7).
-    ///
-    /// For v1, this is a simplified implementation that:
-    /// - Creates tasks from cell assignments
-    /// - Generates SQL fragments (simple pass-through)
-    /// - Writes the query manifest
-    /// - Executes local tasks
-    /// - Polls for partial results from other nodes
-    /// - Merges results (simple concatenation)
-    /// - Cleans up query files
-    pub async fn execute_distributed(
-        &self,
-        sql: &str,
-        assignments: HashMap<NodeId, Vec<distributed::CellInfo>>,
-    ) -> Result<Vec<RecordBatch>> {
-        use distributed::*;
-
-        let mut timings = timing::QueryTimings::begin_from_sql(&format!("distributed:{sql}"));
-
-        // --- coordination_overhead phase ---
-        let coord_start = timings.as_ref().map(|t| t.start_phase());
-
-        // 1. Create tasks from assignments
-        let mut tasks = Vec::new();
-        for (node_id, cells) in &assignments {
-            let task_id = format!("{}_{}", node_id.as_str(), uuid::Uuid::new_v4());
-            let cell_keys: Vec<String> = cells.iter().map(|c| c.storage_key.clone()).collect();
-
-            tasks.push(PlannedTask {
-                task_id,
-                node_id: node_id.clone(),
-                cells: cell_keys,
-                sql_fragment: sql.to_string(), // For v1, use original SQL
-            });
-        }
-
-        // 2. Create and write manifest
-        let manifest = create_manifest(sql, tasks.clone(), None, 60);
-        write_manifest(&self.storage, &manifest).await?;
-
-        info!(
-            query_id = %manifest.query_id,
-            tasks = tasks.len(),
-            "Distributed query manifest written"
-        );
-
-        if let (Some(t), Some(s)) = (timings.as_mut(), coord_start) {
-            t.end_phase("coordination", s);
-        }
-
-        // --- query_execute phase (local tasks) ---
-        let exec_start = timings.as_ref().map(|t| t.start_phase());
-
-        // 3. Execute local tasks
-        let local_tasks: Vec<_> = tasks.iter().filter(|t| t.node_id == self.node_id).collect();
-
-        let mut local_results = Vec::new();
-        for task in local_tasks {
-            match self.execute_task(&task.sql_fragment, &task.cells).await {
-                Ok(batches) => {
-                    if !batches.is_empty() {
-                        local_results.extend(batches);
-                    }
-                }
-                Err(e) => {
-                    warn!(task_id = %task.task_id, error = %e, "Local task failed");
-                }
-            }
-        }
-
-        // Write local partial result
-        if !local_results.is_empty() {
-            write_partial_result(
-                &self.storage,
-                &manifest.query_id,
-                &self.node_id,
-                &local_results,
-            )
-            .await?;
-        }
-
-        if let (Some(t), Some(s)) = (timings.as_mut(), exec_start) {
-            t.end_phase("execute", s);
-        }
-
-        // --- result_collect phase ---
-        let collect_start = timings.as_ref().map(|t| t.start_phase());
-
-        // 4. Poll for partial results from other nodes
-        let remote_nodes: Vec<_> = tasks
-            .iter()
-            .filter(|t| t.node_id != self.node_id)
-            .map(|t| t.node_id.clone())
-            .collect();
-
-        let timeout = std::time::Duration::from_secs(manifest.timeout_secs);
-        let start = std::time::Instant::now();
-        let mut collected_results = local_results;
-
-        for remote_node in &remote_nodes {
-            let deadline = timeout.saturating_sub(start.elapsed());
-            if start.elapsed() >= timeout {
-                warn!(query_id = %manifest.query_id, "Query timeout reached");
-                break;
-            }
-
-            // Poll for partial result
-            let poll_interval = std::time::Duration::from_millis(500);
-            let mut attempts = 0;
-            let max_attempts = (deadline.as_millis() / poll_interval.as_millis()) as usize;
-
-            while attempts < max_attempts {
-                match read_partial_result(&self.storage, &manifest.query_id, remote_node).await {
-                    Ok(batches) => {
-                        info!(
-                            query_id = %manifest.query_id,
-                            node_id = %remote_node,
-                            "Partial result received"
-                        );
-                        collected_results.extend(batches);
-                        break;
-                    }
-                    Err(_) => {
-                        tokio::time::sleep(poll_interval).await;
-                        attempts += 1;
-                    }
-                }
-            }
-        }
-
-        // 5. Cleanup
-        if let Err(e) = cleanup_query(&self.storage, &manifest.query_id).await {
-            warn!(query_id = %manifest.query_id, error = %e, "Failed to cleanup query");
-        }
-
-        if let (Some(t), Some(s)) = (timings.as_mut(), collect_start) {
-            t.end_phase("result_collect", s);
-        }
-
-        if let Some(t) = timings {
-            t.finish();
-        }
-
-        Ok(collected_results)
-    }
-
-    /// Execute a task on a specific set of cells.
-    ///
-    /// # Arguments
-    /// * `sql` - The SQL query to execute
-    /// * `cell_keys` - Storage keys of cells to scan. Only these cells are registered
-    ///   as the table for the query, enabling true work partitioning across nodes.
-    pub async fn execute_task(&self, sql: &str, cell_keys: &[String]) -> Result<Vec<RecordBatch>> {
-        if cell_keys.is_empty() {
-            // No cells assigned — fall back to standard execution
-            return self.execute_standard_sql(sql).await;
-        }
-
-        // Extract table references from SQL
-        let table_refs = extract_table_references(sql);
-
-        if table_refs.is_empty() {
-            return Err(ApiaryError::Config {
-                message: "No table references found in query".into(),
-            });
-        }
-
-        // Create a fresh session for this query
-        let session = SessionContext::new();
-
-        // Build a set for O(1) cell key lookups
-        let cell_key_set: std::collections::HashSet<&String> = cell_keys.iter().collect();
-
-        // Resolve and register each table, filtering to only the assigned cells
-        for table_ref in &table_refs {
-            let (hive, box_name, frame_name, register_name) = self.resolve_table_ref(table_ref)?;
-
-            let frame_path = format!("{hive}/{box_name}/{frame_name}");
-            let ledger = Ledger::open(Arc::clone(&self.storage), &frame_path).await?;
-
-            // Filter active cells to only those in our assigned cell_keys
-            let cells: Vec<_> = ledger
-                .active_cells()
-                .iter()
-                .filter(|cell| {
-                    let cell_storage_key = format!("{}/{}", frame_path, cell.path);
-                    cell_key_set.contains(&cell_storage_key)
-                })
-                .collect();
-
-            info!(
-                frame = %frame_path,
-                total_cells = ledger.active_cells().len(),
-                assigned_cells = cells.len(),
-                "Cell filtering for distributed task"
-            );
-
-            if cells.is_empty() {
-                let arrow_schema = frame_schema_to_arrow(ledger.schema())?;
-                let empty_batch = RecordBatch::new_empty(Arc::new(arrow_schema));
-                let mem_table = datafusion::datasource::MemTable::try_new(
-                    empty_batch.schema(),
-                    vec![vec![empty_batch]],
-                )
-                .map_err(|e| ApiaryError::Internal {
-                    message: format!("Failed to create empty MemTable: {e}"),
-                })?;
-                session
-                    .register_table(&register_name, Arc::new(mem_table))
-                    .map_err(|e| ApiaryError::Internal {
-                        message: format!("Failed to register table: {e}"),
-                    })?;
-                continue;
-            }
-
-            // Read only the assigned cells
-            let reader = CellReader::new(Arc::clone(&self.storage), frame_path);
-            let merged = reader.read_cells_merged(&cells, None).await?;
-
-            let batches = match merged {
-                Some(batch) => vec![vec![batch]],
-                None => {
-                    let arrow_schema = frame_schema_to_arrow(ledger.schema())?;
-                    vec![vec![RecordBatch::new_empty(Arc::new(arrow_schema))]]
-                }
-            };
-
-            let schema = batches[0][0].schema();
-            let mem_table =
-                datafusion::datasource::MemTable::try_new(schema, batches).map_err(|e| {
-                    ApiaryError::Internal {
-                        message: format!("Failed to create MemTable: {e}"),
-                    }
-                })?;
-
-            session
-                .register_table(&register_name, Arc::new(mem_table))
-                .map_err(|e| ApiaryError::Internal {
-                    message: format!("Failed to register table '{register_name}': {e}"),
-                })?;
-        }
-
-        // Rewrite the SQL to use the registered table names
-        let rewritten =
-            rewrite_sql_table_refs(sql, &table_refs, &self.current_hive, &self.current_box);
-
-        // Execute via DataFusion
-        let df = session
-            .sql(&rewritten)
-            .await
-            .map_err(|e| ApiaryError::Internal {
-                message: format!("DataFusion query error: {e}"),
-            })?;
-
-        df.collect().await.map_err(|e| ApiaryError::Internal {
-            message: format!("DataFusion execution error: {e}"),
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,10 +782,10 @@ fn string_list_batch(column_name: &str, values: &[String]) -> RecordBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apiary_comb::cell_writer::CellWriter;
+    use apiary_comb::ledger::Ledger;
+    use apiary_comb::local::LocalBackend;
     use apiary_core::{CellSizingPolicy, FieldDef, FrameSchema, NodeId};
-    use apiary_storage::cell_writer::CellWriter;
-    use apiary_storage::ledger::Ledger;
-    use apiary_storage::local::LocalBackend;
     use arrow::array::{Float64Array, Int64Array};
 
     async fn make_test_env() -> (

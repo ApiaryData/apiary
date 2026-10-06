@@ -7,10 +7,10 @@ This document provides a high-level overview of Apiary's architecture for contri
 ```
 crates/
 ├── apiary-core/       Core types, traits, and identifiers
-├── apiary-storage/    StorageBackend trait + LocalBackend + S3Backend
+├── apiary-comb/    StorageBackend trait + LocalBackend + S3Backend
 ├── apiary-runtime/    Node runtime, bee pool, heartbeat, world view
-├── apiary-query/      DataFusion integration, SQL parsing, distributed planner
-├── apiary-python/     PyO3 bindings exposing the Python SDK
+├── apiary-plan/      DataFusion integration, SQL parsing, distributed planner
+├── apiary-py/     PyO3 bindings exposing the Python SDK
 └── apiary-cli/        Command-line interface
 ```
 

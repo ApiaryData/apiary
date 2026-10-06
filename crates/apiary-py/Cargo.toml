@@ -1,5 +1,5 @@
 [package]
-name = "apiary-python"
+name = "apiary-py"
 version.workspace = true
 edition.workspace = true
 description = "Python bindings for the Apiary distributed data processing framework"
@@ -12,9 +12,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 apiary-core.workspace = true
-apiary-storage.workspace = true
+apiary-comb.workspace = true
 apiary-runtime.workspace = true
-apiary-query.workspace = true
+apiary-plan.workspace = true
 arrow.workspace = true
 chrono.workspace = true
 pyo3.workspace = true

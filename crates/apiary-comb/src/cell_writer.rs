@@ -10,8 +10,8 @@ use std::sync::Arc;
 use arrow::array::*;
 use arrow::compute;
 use arrow::datatypes::{
-    ArrowPrimitiveType, DataType, Field, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
-    Int8Type, Schema, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+    ArrowPrimitiveType, DataType, Field, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type,
+    Int64Type, Schema, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;

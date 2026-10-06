@@ -106,14 +106,21 @@ python tests/test_step1_acceptance.py
 apiary/
 ├── crates/
 │   ├── apiary-core/       # Core types and traits
-│   ├── apiary-storage/    # Storage backends (local, S3)
+│   ├── apiary-comb/       # Storage backends and ledger (local, S3)
 │   ├── apiary-runtime/    # Node runtime and bee pool
-│   ├── apiary-query/      # DataFusion SQL engine integration
-│   ├── apiary-python/     # PyO3 Python bindings
+│   ├── apiary-floor/      # Dance floor (skeleton, phase 5)
+│   ├── apiary-colony/     # Bees, roles, signals (skeleton, phase 4)
+│   ├── apiary-forage/     # Patch execution (skeleton, phase 5)
+│   ├── apiary-entrance/   # Flight SQL and ingest (skeleton, phase 1e)
+│   ├── apiary-net/        # iroh networking (skeleton, phase 2)
+│   ├── apiary-observe/    # Deterministic simulator (skeleton, phase 3)
+│   ├── apiary-plan/       # DataFusion SQL engine integration
+│   ├── apiary-py/         # PyO3 Python bindings
 │   └── apiary-cli/        # Command-line interface
 ├── python/                # Python package source
 ├── docs/                  # Documentation
-│   └── architecture/      # Design documentation
+│   ├── design/            # The redesign (source of truth)
+│   └── architecture/      # V1 design, kept as history
 ├── tests/                 # Acceptance tests
 ├── deploy/                # Docker Compose configs
 ├── scripts/               # Benchmark and utility scripts

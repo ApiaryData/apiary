@@ -573,7 +573,7 @@ readinessProbe:
 # Use structured logging
 env:
 - name: RUST_LOG
-  value: "apiary=info,apiary_storage=debug"
+  value: "apiary=info,apiary_comb=debug"
 ```
 
 View logs:

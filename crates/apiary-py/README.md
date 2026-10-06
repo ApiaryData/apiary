@@ -1,10 +1,10 @@
-# apiary-python
+# apiary-py
 
 Python bindings for the [Apiary](https://github.com/ApiaryData/apiary) distributed data processing framework.
 
 ## Overview
 
-`apiary-python` provides a Python SDK via [PyO3](https://pyo3.rs/) and [maturin](https://www.maturin.rs/), exposing the full Apiary runtime to Python:
+`apiary-py` provides a Python SDK via [PyO3](https://pyo3.rs/) and [maturin](https://www.maturin.rs/), exposing the full Apiary runtime to Python:
 
 - **`Apiary` class** — Main entry point for creating and managing nodes
 - **SQL queries** — Execute SQL and get results as Python dictionaries

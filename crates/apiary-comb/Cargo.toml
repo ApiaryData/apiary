@@ -1,5 +1,5 @@
 [package]
-name = "apiary-storage"
+name = "apiary-comb"
 version.workspace = true
 edition.workspace = true
 description = "Storage backends and transaction ledger for the Apiary distributed data processing framework"

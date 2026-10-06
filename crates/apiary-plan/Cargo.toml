@@ -1,5 +1,5 @@
 [package]
-name = "apiary-query"
+name = "apiary-plan"
 version.workspace = true
 edition.workspace = true
 description = "DataFusion-based SQL query engine for the Apiary distributed data processing framework"
@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 apiary-core.workspace = true
-apiary-storage.workspace = true
+apiary-comb.workspace = true
 arrow.workspace = true
 async-trait.workspace = true
 datafusion.workspace = true

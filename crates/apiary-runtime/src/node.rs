@@ -13,17 +13,17 @@ use arrow::record_batch::RecordBatch;
 use tokio::sync::RwLock;
 use tracing::info;
 
+use apiary_comb::cell_reader::CellReader;
+use apiary_comb::cell_writer::CellWriter;
+use apiary_comb::ledger::Ledger;
+use apiary_comb::local::LocalBackend;
+use apiary_comb::s3::S3Backend;
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
-use apiary_core::{CellSizingPolicy, FrameSchema, LedgerAction, Result, WriteResult};
-use apiary_query::ApiaryQueryContext;
-use apiary_storage::cell_reader::CellReader;
-use apiary_storage::cell_writer::CellWriter;
-use apiary_storage::ledger::Ledger;
-use apiary_storage::local::LocalBackend;
-use apiary_storage::s3::S3Backend;
+use apiary_core::{CellSizingPolicy, Env, FrameSchema, LedgerAction, Result, WriteResult};
+use apiary_plan::ApiaryQueryContext;
 
 use crate::bee::{BeePool, BeeStatus};
 use crate::behavioral::{AbandonmentTracker, ColonyThermometer};
@@ -73,14 +73,25 @@ pub struct ApiaryNode {
 
     /// Cancellation channel to stop background tasks on shutdown.
     cancel_tx: tokio::sync::watch::Sender<bool>,
+
+    /// Clock and seed this node runs under (the system clock in production,
+    /// a virtual one in the observation hive).
+    pub env: Env,
 }
 
 impl ApiaryNode {
     /// Start a new Apiary node with the given configuration.
     ///
     /// Initialises the appropriate storage backend based on `config.storage_uri`
-    /// and logs the node's capacity.
+    /// and logs the node's capacity. Runs on the system clock; see
+    /// [`start_with_env`](Self::start_with_env) to supply another.
     pub async fn start(config: NodeConfig) -> Result<Self> {
+        Self::start_with_env(config, Env::system()).await
+    }
+
+    /// Start a node under the given [`Env`]: every time read, sleep and seeded
+    /// random choice goes through it.
+    pub async fn start_with_env(config: NodeConfig, env: Env) -> Result<Self> {
         let storage: Arc<dyn StorageBackend> = if config.storage_uri.starts_with("s3://") {
             Arc::new(S3Backend::new(&config.storage_uri)?)
         } else {
@@ -134,7 +145,7 @@ impl ApiaryNode {
                         );
                         last_err = Some(e);
                         if attempt < max_retries {
-                            tokio::time::sleep(delay).await;
+                            env.clock().sleep(delay).await;
                             delay = (delay * 2).min(Duration::from_secs(10));
                         }
                     }
@@ -154,32 +165,43 @@ impl ApiaryNode {
         )));
 
         // Initialize bee pool
-        let bee_pool = Arc::new(BeePool::new(&config));
+        let bee_pool = Arc::new(
+            BeePool::new(&config).with_rng(env.rng(config.node_id.as_str(), BEE_POOL_STREAM)),
+        );
         info!(bees = config.cores, "Bee pool initialized");
 
         // Initialize cell cache
         let cache_dir = config.cache_dir.join("cells");
-        let cell_cache =
-            Arc::new(CellCache::new(cache_dir, config.max_cache_size, Arc::clone(&storage)).await?);
+        let cell_cache = Arc::new(
+            CellCache::new(cache_dir, config.max_cache_size, Arc::clone(&storage))
+                .await?
+                .with_clock(env.clock()),
+        );
         info!(
             max_cache_mb = config.max_cache_size / (1024 * 1024),
             "Cell cache initialized"
         );
 
         // Initialize heartbeat writer
-        let heartbeat_writer = Arc::new(HeartbeatWriter::new(
-            Arc::clone(&storage),
-            &config,
-            Arc::clone(&bee_pool),
-            Arc::clone(&cell_cache),
-        ));
+        let heartbeat_writer = Arc::new(
+            HeartbeatWriter::new(
+                Arc::clone(&storage),
+                &config,
+                Arc::clone(&bee_pool),
+                Arc::clone(&cell_cache),
+            )
+            .with_clock(env.clock()),
+        );
 
         // Initialize world view builder
-        let world_view_builder = Arc::new(WorldViewBuilder::new(
-            Arc::clone(&storage),
-            config.heartbeat_interval, // poll at same rate as heartbeat
-            config.dead_threshold,
-        ));
+        let world_view_builder = Arc::new(
+            WorldViewBuilder::new(
+                Arc::clone(&storage),
+                config.heartbeat_interval, // poll at same rate as heartbeat
+                config.dead_threshold,
+            )
+            .with_clock(env.clock()),
+        );
         let world_view = world_view_builder.world_view();
 
         // Write initial heartbeat and build initial world view synchronously
@@ -209,18 +231,7 @@ impl ApiaryNode {
             });
         }
 
-        // Start query worker task poller (for distributed execution)
-        {
-            let storage = Arc::clone(&storage);
-            let query_ctx = Arc::clone(&query_ctx);
-            let node_id = config.node_id.clone();
-            let rx = cancel_rx.clone();
-            tokio::spawn(async move {
-                run_query_worker_poller(storage, query_ctx, node_id, rx).await;
-            });
-        }
-
-        info!("Heartbeat, world view, and query worker background tasks started");
+        info!("Heartbeat and world view background tasks started");
 
         Ok(Self {
             config,
@@ -235,6 +246,7 @@ impl ApiaryNode {
             world_view,
             world_view_builder,
             cancel_tx,
+            env,
         })
     }
 
@@ -249,13 +261,16 @@ impl ApiaryNode {
         let _ = self.cancel_tx.send(true);
 
         // Allow background tasks a moment to stop
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        self.env.clock().sleep(Duration::from_millis(100)).await;
 
         // Delete our heartbeat file (graceful departure)
-        if let Err(e) = self.heartbeat_writer.delete_heartbeat().await {
-            tracing::warn!(error = %e, "Failed to delete heartbeat during shutdown");
-        } else {
-            info!(node_id = %self.config.node_id, "Heartbeat deleted (graceful departure)");
+        match self.heartbeat_writer.delete_heartbeat().await {
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to delete heartbeat during shutdown");
+            }
+            _ => {
+                info!(node_id = %self.config.node_id, "Heartbeat deleted (graceful departure)");
+            }
         }
     }
 
@@ -273,7 +288,7 @@ impl ApiaryNode {
         frame_name: &str,
         batch: &RecordBatch,
     ) -> Result<WriteResult> {
-        let start = std::time::Instant::now();
+        let start = self.env.clock().monotonic();
 
         // Resolve frame metadata
         let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
@@ -321,7 +336,7 @@ impl ApiaryNode {
             .commit(LedgerAction::AddCells { cells }, &self.config.node_id)
             .await?;
 
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = (self.env.clock().monotonic() - start).as_millis() as u64;
         let temperature = self.thermometer.measure(&self.bee_pool).await;
 
         Ok(WriteResult {
@@ -374,7 +389,7 @@ impl ApiaryNode {
         frame_name: &str,
         batch: &RecordBatch,
     ) -> Result<WriteResult> {
-        let start = std::time::Instant::now();
+        let start = self.env.clock().monotonic();
 
         let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
         let schema = FrameSchema::from_json_value(&frame.schema)?;
@@ -415,7 +430,7 @@ impl ApiaryNode {
             )
             .await?;
 
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = (self.env.clock().monotonic() - start).as_millis() as u64;
         let temperature = self.thermometer.measure(&self.bee_pool).await;
 
         Ok(WriteResult {
@@ -536,19 +551,10 @@ impl ApiaryNode {
             setpoint: self.thermometer.setpoint(),
         }
     }
-
-    /// Execute a distributed query (v2 feature - explicit control).
-    ///
-    /// This method is reserved for v2 when users want explicit control over
-    /// distributed execution strategy. In v1, distributed execution happens
-    /// transparently within the query context based on query planning.
-    #[allow(dead_code)] // Reserved for v2 explicit distribution control
-    pub async fn sql_distributed(&self, query: &str) -> Result<Vec<RecordBatch>> {
-        // v1: Distributed execution is transparent in query context
-        // v2: This will allow explicit control over distribution strategy
-        self.sql(query).await
-    }
 }
+
+/// Stream index for the bee pool's random numbers, distinct from any Bee index.
+const BEE_POOL_STREAM: u64 = u64::MAX;
 
 /// Summary of the swarm as seen by this node.
 #[derive(Debug, Clone)]
@@ -597,124 +603,6 @@ fn home_dir() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Background task that polls for distributed query manifests and executes assigned tasks.
-async fn run_query_worker_poller(
-    storage: Arc<dyn StorageBackend>,
-    query_ctx: Arc<tokio::sync::Mutex<ApiaryQueryContext>>,
-    node_id: apiary_core::types::NodeId,
-    cancel: tokio::sync::watch::Receiver<bool>,
-) {
-    use apiary_query::distributed;
-
-    info!(node_id = %node_id, "Query worker poller started");
-
-    let poll_interval = Duration::from_millis(500);
-
-    loop {
-        tokio::select! {
-            _ = tokio::time::sleep(poll_interval) => {
-                // List query manifests
-                match storage.list("_queries/").await {
-                    Ok(keys) => {
-                        // Find manifest files
-                        for key in keys {
-                            if !key.ends_with("/manifest.json") {
-                                continue;
-                            }
-
-                            // Extract query_id from path: _queries/{query_id}/manifest.json
-                            let parts: Vec<&str> = key.split('/').collect();
-                            if parts.len() < 3 {
-                                continue;
-                            }
-                            let query_id = parts[1];
-
-                            // Try to read the manifest
-                            match distributed::read_manifest(&storage, query_id).await {
-                                Ok(manifest) => {
-                                    // Check if any tasks are assigned to this node
-                                    let my_tasks: Vec<_> = manifest.tasks.iter()
-                                        .filter(|t| t.node_id == node_id)
-                                        .collect();
-
-                                    if my_tasks.is_empty() {
-                                        continue;
-                                    }
-
-                                    // Check if we've already written our partial result
-                                    let partial_path = distributed::partial_result_path(query_id, &node_id);
-                                    if storage.get(&partial_path).await.is_ok() {
-                                        // Already completed
-                                        continue;
-                                    }
-
-                                    // Execute tasks and write partial result
-                                    info!(
-                                        query_id = %query_id,
-                                        tasks = my_tasks.len(),
-                                        "Executing distributed query tasks"
-                                    );
-
-                                    let mut results = Vec::new();
-                                    let ctx = query_ctx.lock().await;
-
-                                    for task in my_tasks {
-                                        match ctx.execute_task(&task.sql_fragment, &task.cells).await {
-                                            Ok(batches) => {
-                                                results.extend(batches);
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    task_id = %task.task_id,
-                                                    error = %e,
-                                                    "Task execution failed"
-                                                );
-                                            }
-                                        }
-                                    }
-
-                                    // Write partial result
-                                    if !results.is_empty() {
-                                        if let Err(e) = distributed::write_partial_result(
-                                            &storage,
-                                            query_id,
-                                            &node_id,
-                                            &results,
-                                        ).await {
-                                            tracing::warn!(
-                                                query_id = %query_id,
-                                                error = %e,
-                                                "Failed to write partial result"
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(_) => {
-                                    // Manifest not readable yet or deleted
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to list query manifests");
-                    }
-                }
-            }
-            _ = wait_for_cancel(&cancel) => {
-                tracing::debug!(node_id = %node_id, "Query worker poller stopping");
-                break;
-            }
-        }
-    }
-}
-
-/// Helper to wait for cancellation.
-async fn wait_for_cancel(cancel: &tokio::sync::watch::Receiver<bool>) {
-    let mut rx = cancel.clone();
-    let _ = rx.wait_for(|&v| v).await;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,6 +615,27 @@ mod tests {
         let node = ApiaryNode::start(config).await.unwrap();
         assert!(node.config.cores > 0);
         node.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_start_with_env_uses_the_injected_clock() {
+        use apiary_core::ManualClock;
+        use chrono::TimeZone;
+
+        let origin = chrono::Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap();
+        let env = Env::new(Arc::new(ManualClock::new(origin)), 7);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = NodeConfig::detect("local://test");
+        config.storage_uri = format!("local://{}", tmp.path().display());
+
+        // The manual clock never advances, so the node's heartbeat and world
+        // view carry exactly its time and not the machine's. (No shutdown:
+        // its settle delay would wait on the stopped clock.)
+        let node = ApiaryNode::start_with_env(config, env).await.unwrap();
+        let view = node.world_view().await;
+        assert_eq!(view.updated_at, origin);
+        let status = view.nodes.values().next().expect("own heartbeat");
+        assert_eq!(status.heartbeat.timestamp, origin);
     }
 
     #[tokio::test]

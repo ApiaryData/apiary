@@ -1,0 +1,7 @@
+[package]
+name = "apiary-floor"
+version.workspace = true
+edition.workspace = true
+description = "The dance floor: gossiped, fading entries shared between Apiary Nodes"
+license.workspace = true
+publish = false # empty until phase 5 of the redesign

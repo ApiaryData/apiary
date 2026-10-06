@@ -5,8 +5,8 @@
 //! [`WorldView`] — a snapshot of all known nodes and their status.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -14,10 +14,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use apiary_core::Result;
+use apiary_core::clock::{Clock, SystemClock};
 use apiary_core::error::ApiaryError;
 use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
-use apiary_core::Result;
 
 use crate::bee::BeePool;
 use crate::behavioral::ColonyThermometer;
@@ -84,6 +85,7 @@ pub struct HeartbeatWriter {
     memory_total_bytes: u64,
     memory_per_bee: u64,
     target_cell_size: u64,
+    clock: Arc<dyn Clock>,
 }
 
 impl HeartbeatWriter {
@@ -106,7 +108,14 @@ impl HeartbeatWriter {
             memory_total_bytes: config.memory_bytes,
             memory_per_bee: config.memory_per_bee,
             target_cell_size: config.target_cell_size,
+            clock: SystemClock::shared(),
         }
+    }
+
+    /// Use `clock` for timestamps and the write interval (the default is the system clock).
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Collect a heartbeat snapshot from the current node state.
@@ -138,7 +147,7 @@ impl HeartbeatWriter {
 
         Heartbeat {
             node_id: self.node_id.as_str().to_string(),
-            timestamp: Utc::now(),
+            timestamp: self.clock.now_utc(),
             version,
             capacity: HeartbeatCapacity {
                 cores: self.cores,
@@ -173,15 +182,18 @@ impl HeartbeatWriter {
     /// Run the heartbeat writer loop until the cancellation token fires.
     pub async fn run(&self, cancel: tokio::sync::watch::Receiver<bool>) {
         // Write the first heartbeat immediately on start (join the swarm).
-        if let Err(e) = self.write_once().await {
-            warn!(error = %e, "Failed to write initial heartbeat");
-        } else {
-            info!(node_id = %self.node_id, "Heartbeat writer started");
+        match self.write_once().await {
+            Err(e) => {
+                warn!(error = %e, "Failed to write initial heartbeat");
+            }
+            _ => {
+                info!(node_id = %self.node_id, "Heartbeat writer started");
+            }
         }
 
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(self.interval) => {
+                _ = self.clock.sleep(self.interval) => {
                     if let Err(e) = self.write_once().await {
                         warn!(error = %e, "Failed to write heartbeat");
                     }
@@ -232,11 +244,16 @@ pub struct WorldView {
 }
 
 impl WorldView {
-    /// Create an empty world view.
+    /// Create an empty world view stamped with the system time.
     pub fn empty() -> Self {
+        Self::empty_at(Utc::now())
+    }
+
+    /// Create an empty world view stamped with `now`.
+    pub fn empty_at(now: DateTime<Utc>) -> Self {
         Self {
             nodes: HashMap::new(),
-            updated_at: Utc::now(),
+            updated_at: now,
         }
     }
 
@@ -275,6 +292,7 @@ pub struct WorldViewBuilder {
     poll_interval: Duration,
     dead_threshold: Duration,
     world_view: Arc<RwLock<WorldView>>,
+    clock: Arc<dyn Clock>,
 }
 
 impl WorldViewBuilder {
@@ -289,7 +307,15 @@ impl WorldViewBuilder {
             poll_interval,
             dead_threshold,
             world_view: Arc::new(RwLock::new(WorldView::empty())),
+            clock: SystemClock::shared(),
         }
+    }
+
+    /// Use `clock` for ages and the poll interval (the default is the system clock).
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.world_view = Arc::new(RwLock::new(WorldView::empty_at(clock.now_utc())));
+        self.clock = clock;
+        self
     }
 
     /// Return a shared handle to the world view.
@@ -300,7 +326,7 @@ impl WorldViewBuilder {
     /// Build the world view once by reading all heartbeat files.
     pub async fn build_once(&self) -> Result<WorldView> {
         let keys = self.storage.list("_heartbeats/").await?;
-        let now = Utc::now();
+        let now = self.clock.now_utc();
         let mut nodes = HashMap::new();
 
         for key in &keys {
@@ -364,15 +390,18 @@ impl WorldViewBuilder {
     /// Run the world view builder loop until cancellation.
     pub async fn run(&self, cancel: tokio::sync::watch::Receiver<bool>) {
         // Build immediately on start.
-        if let Err(e) = self.poll_once().await {
-            warn!(error = %e, "Failed to build initial world view");
-        } else {
-            info!("World view builder started");
+        match self.poll_once().await {
+            Err(e) => {
+                warn!(error = %e, "Failed to build initial world view");
+            }
+            _ => {
+                info!("World view builder started");
+            }
         }
 
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(self.poll_interval) => {
+                _ = self.clock.sleep(self.poll_interval) => {
                     if let Err(e) = self.poll_once().await {
                         warn!(error = %e, "Failed to poll world view");
                     }
@@ -388,7 +417,7 @@ impl WorldViewBuilder {
     /// Clean up heartbeat files for nodes that have been dead longer than `cleanup_age`.
     pub async fn cleanup_stale(&self, cleanup_age: Duration) -> Result<usize> {
         let view = self.world_view.read().await;
-        let now = Utc::now();
+        let now = self.clock.now_utc();
         let mut cleaned = 0;
 
         for status in view.nodes.values() {
@@ -399,11 +428,14 @@ impl WorldViewBuilder {
                     .unwrap_or(Duration::from_secs(0));
                 if age > cleanup_age {
                     let key = format!("_heartbeats/node_{}.json", status.heartbeat.node_id);
-                    if let Err(e) = self.storage.delete(&key).await {
-                        warn!(key = %key, error = %e, "Failed to clean up stale heartbeat");
-                    } else {
-                        cleaned += 1;
-                        info!(node_id = %status.heartbeat.node_id, "Cleaned up stale heartbeat");
+                    match self.storage.delete(&key).await {
+                        Err(e) => {
+                            warn!(key = %key, error = %e, "Failed to clean up stale heartbeat");
+                        }
+                        _ => {
+                            cleaned += 1;
+                            info!(node_id = %status.heartbeat.node_id, "Cleaned up stale heartbeat");
+                        }
                     }
                 }
             }
@@ -435,8 +467,8 @@ async fn wait_for_cancel(rx: &tokio::sync::watch::Receiver<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apiary_comb::local::LocalBackend;
     use apiary_core::config::NodeConfig;
-    use apiary_storage::local::LocalBackend;
 
     async fn make_storage(tmp: &tempfile::TempDir) -> Arc<dyn StorageBackend> {
         Arc::new(LocalBackend::new(tmp.path()).await.unwrap())
@@ -536,16 +568,20 @@ mod tests {
         let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
 
         writer.write_once().await.unwrap();
-        assert!(storage
-            .exists("_heartbeats/node_del-node.json")
-            .await
-            .unwrap());
+        assert!(
+            storage
+                .exists("_heartbeats/node_del-node.json")
+                .await
+                .unwrap()
+        );
 
         writer.delete_heartbeat().await.unwrap();
-        assert!(!storage
-            .exists("_heartbeats/node_del-node.json")
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("_heartbeats/node_del-node.json")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -864,10 +900,12 @@ mod tests {
         assert_eq!(cleaned, 1);
 
         // File should be gone
-        assert!(!storage
-            .exists("_heartbeats/node_ancient-node.json")
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("_heartbeats/node_ancient-node.json")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

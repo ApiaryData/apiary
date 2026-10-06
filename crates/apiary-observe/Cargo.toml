@@ -1,0 +1,7 @@
+[package]
+name = "apiary-observe"
+version.workspace = true
+edition.workspace = true
+description = "Apiary observation hive: deterministic simulator, fault injection and tracing"
+license.workspace = true
+publish = false # empty until phase 3 of the redesign

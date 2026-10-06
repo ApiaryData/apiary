@@ -4,8 +4,8 @@
 
 use apiary_core::config::NodeConfig;
 use apiary_core::types::TaskId;
-use apiary_runtime::behavioral::{AbandonmentDecision, AbandonmentTracker};
 use apiary_runtime::ApiaryNode;
+use apiary_runtime::behavioral::{AbandonmentDecision, AbandonmentTracker};
 
 #[tokio::test]
 async fn test_abandonment_tracker_retry_then_abandon() {

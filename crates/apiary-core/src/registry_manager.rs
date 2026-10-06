@@ -4,10 +4,10 @@
 //! using conditional writes for atomic updates.
 
 use crate::{
+    Result,
     error::ApiaryError,
     registry::{Box as ApiaryBox, Frame, Hive, Registry},
     storage::StorageBackend,
-    Result,
 };
 use bytes::Bytes;
 use std::sync::Arc;
