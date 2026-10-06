@@ -26,8 +26,8 @@ use datafusion::prelude::{SessionConfig, SessionContext, col, lit};
 use deltalake::DeltaTable;
 use deltalake::DeltaTableError;
 use deltalake::kernel::engine::arrow_conversion::TryIntoKernel;
-use deltalake::kernel::transaction::CommitBuilder;
-use deltalake::kernel::{Action, StructType};
+use deltalake::kernel::transaction::{CommitBuilder, CommitProperties};
+use deltalake::kernel::{Action, StructType, Transaction};
 use deltalake::operations::create::CreateBuilder;
 use deltalake::protocol::{DeltaOperation, SaveMode};
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
@@ -39,6 +39,10 @@ use apiary_core::{ApiaryError, FrameSchema, Result};
 use crate::local::expand_local_path;
 use crate::s3::{extract_query_param, parse_s3_uri};
 use crate::schema::{conform_batch, delta_schema};
+
+/// The virtual column every Frame has, naming where a row is: `crop`, `comb`
+/// or `harvested`. A Frame cannot declare a column of this name.
+pub const STAGE_COLUMN: &str = "_stage";
 
 /// The Delta `add` tag that records a Cell's ripeness.
 pub const STATE_TAG: &str = "apiary.state";
@@ -238,6 +242,18 @@ impl Comb {
                 ),
             });
         }
+        if let Some(reserved) = schema
+            .fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case(STAGE_COLUMN))
+        {
+            return Err(ApiaryError::Schema {
+                message: format!(
+                    "Column '{}' is reserved: every Frame has a virtual `{STAGE_COLUMN}`                      column that says where each row is (crop, comb or harvested)",
+                    reserved.name
+                ),
+            });
+        }
         let url = self.frame_url(hive, box_name, frame)?;
         let arrow_schema = delta_schema(schema);
         let kernel_schema: StructType =
@@ -329,8 +345,57 @@ impl Comb {
         let adds = self
             .write_cells(table, batch, target_cell_size, state)
             .await?;
-        self.commit(table, adds, Vec::new(), SaveMode::Append, batch.num_rows())
+        self.commit(
+            table,
+            adds,
+            Vec::new(),
+            SaveMode::Append,
+            batch.num_rows(),
+            None,
+        )
+        .await
+    }
+
+    /// Deposit rows from a crop: an append that also records, in the same
+    /// Delta commit, that the crop's segments up to `version` are now in the
+    /// table.
+    ///
+    /// The record is a Delta application transaction `(app_id, version)`. If the
+    /// Node dies after the commit but before it cleans up its crop, the next run
+    /// reads the version back with [`deposited_version`](Self::deposited_version)
+    /// and releases those segments instead of depositing them twice.
+    pub async fn deposit(
+        &self,
+        table: &DeltaTable,
+        batch: &RecordBatch,
+        target_cell_size: u64,
+        app_id: &str,
+        version: u64,
+    ) -> Result<Committed> {
+        let adds = self
+            .write_cells(table, batch, target_cell_size, CellState::Nectar)
+            .await?;
+        let transaction = Transaction::new(app_id, version as i64);
+        self.commit(
+            table,
+            adds,
+            Vec::new(),
+            SaveMode::Append,
+            batch.num_rows(),
+            Some(transaction),
+        )
+        .await
+    }
+
+    /// The highest crop segment recorded as deposited under `app_id`, or 0.
+    pub async fn deposited_version(&self, table: &DeltaTable, app_id: &str) -> Result<u64> {
+        let version = table
+            .snapshot()
+            .map_err(|e| delta_err("Failed to read table snapshot", e))?
+            .transaction_version(table.log_store().as_ref(), app_id)
             .await
+            .map_err(|e| delta_err("Failed to read deposit records", e))?;
+        Ok(version.unwrap_or(0).max(0) as u64)
     }
 
     /// Replace all of a Frame's data with a batch, in one commit that removes
@@ -345,6 +410,21 @@ impl Comb {
         target_cell_size: u64,
         state: CellState,
     ) -> Result<Committed> {
+        self.overwrite_superseding(table, batch, target_cell_size, state, None)
+            .await
+    }
+
+    /// An [`overwrite`](Self::overwrite) that also records, in the same commit,
+    /// that a crop's segments up to `version` are superseded: they will never be
+    /// deposited, so rows still in the crop do not reappear after the overwrite.
+    pub async fn overwrite_superseding(
+        &self,
+        table: &DeltaTable,
+        batch: &RecordBatch,
+        target_cell_size: u64,
+        state: CellState,
+        supersedes: Option<(&str, u64)>,
+    ) -> Result<Committed> {
         let adds = self
             .write_cells(table, batch, target_cell_size, state)
             .await?;
@@ -355,8 +435,15 @@ impl Comb {
             .into_iter()
             .map(|file| Action::Remove(file.remove_action(true)))
             .collect();
-        self.commit(table, adds, removes, SaveMode::Overwrite, batch.num_rows())
-            .await
+        self.commit(
+            table,
+            adds,
+            removes,
+            SaveMode::Overwrite,
+            batch.num_rows(),
+            supersedes.map(|(app_id, version)| Transaction::new(app_id, version as i64)),
+        )
+        .await
     }
 
     /// Write the batch to data files and tag them. Nothing is committed yet.
@@ -407,12 +494,15 @@ impl Comb {
         removes: Vec<Action>,
         mode: SaveMode,
         rows: usize,
+        transaction: Option<Transaction>,
     ) -> Result<Committed> {
         let snapshot = table
             .snapshot()
             .map_err(|e| delta_err("Failed to read table snapshot", e))?;
 
-        if adds.is_empty() && removes.is_empty() {
+        // An empty write with a transaction still commits: the transaction is
+        // the point (a deposit record, or a crop being superseded).
+        if adds.is_empty() && removes.is_empty() && transaction.is_none() {
             debug!("Empty write, nothing to commit");
             return Ok(Committed {
                 version: snapshot.version(),
@@ -428,7 +518,13 @@ impl Comb {
         let partition_by = (!partition_cols.is_empty()).then_some(partition_cols);
 
         let actions: Vec<Action> = adds.into_iter().map(Action::Add).chain(removes).collect();
-        let finalized = CommitBuilder::default()
+        let properties = match transaction {
+            Some(transaction) => {
+                CommitProperties::default().with_application_transaction(transaction)
+            }
+            None => CommitProperties::default(),
+        };
+        let finalized = CommitBuilder::from(properties)
             .with_max_retries(COMMIT_RETRIES)
             .with_actions(actions)
             .build(

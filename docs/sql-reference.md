@@ -85,6 +85,33 @@ FROM warehouse.sales.orders o
 JOIN warehouse.sales.customers c ON o.customer_id = c.id;
 ```
 
+## Where rows are: the `_stage` column
+
+Every frame has a virtual `_stage` column that says where each row is:
+
+| `_stage` | Meaning |
+|----------|---------|
+| `crop`   | Ingested on this node, not yet deposited into the comb |
+| `comb`   | Committed to the frame's Delta table |
+
+`SELECT *` includes `_stage` as the last column. A frame cannot declare a column of that name.
+
+```sql
+SELECT _stage, count(*) FROM warehouse.sales.orders GROUP BY _stage;
+```
+
+Filtering on `_stage` skips the other stage entirely: `WHERE _stage = 'comb'` never reads the crop.
+
+Every query over frames also reports how many rows it read from each stage. The counts are in the schema metadata of each result batch, under `apiary.rows.crop` and `apiary.rows.comb`:
+
+```python
+table = deserialize(ap.sql("SELECT sum(amount) FROM warehouse.sales.orders"))
+table.schema.metadata[b"apiary.rows.crop"]   # b"2"
+table.schema.metadata[b"apiary.rows.comb"]   # b"4"
+```
+
+A query answered from table statistics alone (such as a bare `count(*)`) reads no rows from either stage. A query sees only this node's crop; a multi-node colony will see every node's crop once nodes share a dance floor.
+
 ## Custom Commands
 
 ### USE HIVE

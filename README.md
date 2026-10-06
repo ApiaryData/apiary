@@ -159,6 +159,7 @@ Apiary is in active development. See [BUILD_STATUS.md](docs/BUILD_STATUS.md) for
 - ✅ Every Frame is a Delta Lake table (`delta-rs`): commits by conditional put, readable by Spark and Databricks
 - ✅ Parquet cells (Snappy), tagged `apiary.state` = nectar or capped in the Delta log
 - ✅ File statistics and partitioning, with pruning and file skipping on read
+- ✅ Ingest lands in a durable per-node crop, queryable at once as `_stage = 'crop'`, and is deposited into the Delta table on a cadence (idempotent across crashes)
 - ✅ Leafcutter cell sizing
 - ✅ Schema validation (declared schema enforced; null partition rejection)
 - ✅ Frame overwrite (atomic cell replacement)

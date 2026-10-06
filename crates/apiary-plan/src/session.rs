@@ -11,7 +11,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use apiary_comb::Comb;
+use apiary_comb::{Comb, Crop};
 use apiary_core::config::NodeConfig;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::{ApiaryError, Result};
@@ -47,6 +47,9 @@ pub struct QueryOptions {
     /// spilling to a chosen directory (DataFusion then uses the system
     /// temporary directory).
     pub spill_dir: Option<PathBuf>,
+    /// This Node's crop. When set, every Frame includes the rows ingested to it
+    /// and not yet deposited into the comb.
+    pub crop: Option<Arc<Crop>>,
 }
 
 impl Default for QueryOptions {
@@ -58,6 +61,7 @@ impl Default for QueryOptions {
             memory_per_bee: u64::MAX / 4,
             target_partitions: cores,
             spill_dir: None,
+            crop: None,
         }
     }
 }
@@ -73,6 +77,7 @@ impl QueryOptions {
             memory_per_bee: config.memory_per_bee,
             target_partitions: config.cores.max(1),
             spill_dir: Some(config.cache_dir.join("spill")),
+            crop: None,
         }
     }
 }
@@ -140,6 +145,7 @@ pub(crate) fn build_session(
     let catalogs = Arc::new(ApiaryCatalogList::new(Arc::new(CatalogShared {
         registry,
         comb,
+        crop: options.crop.clone(),
         scan_state,
     })));
 
@@ -210,6 +216,7 @@ mod tests {
             memory_per_bee: 16 * 1024 * 1024,
             target_partitions: 4,
             spill_dir: Some(dir.path().to_path_buf()),
+            crop: None,
         };
         let registry_dir = tempfile::tempdir().unwrap();
         let backend: Arc<dyn apiary_core::StorageBackend> = Arc::new(

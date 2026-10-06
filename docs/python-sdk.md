@@ -144,6 +144,29 @@ result = ap.write_to_frame("warehouse", "sales", "orders", sink.getvalue().to_py
 # {"cells_written": 2, "rows_written": 3}
 ```
 
+### Ingest
+
+```python
+ingest(hive: str, box_name: str, frame_name: str, ipc_data: bytes) -> dict
+flush_crop() -> dict
+```
+
+`ingest` is the streaming path. It lands the batch in the node's **crop**, on the node's own disk, and returns once the batch is synced there. The rows are queryable at once and show `_stage = 'crop'`; every deposit interval (10 seconds by default) the node commits them to the frame's Delta table, after which they show `_stage = 'comb'`.
+
+Unlike `write_to_frame`, which commits before it returns, ingested rows exist only on this node until they are deposited. The crop survives restarts: rows ingested before a crash are deposited by the next run. `shutdown()` deposits whatever is left.
+
+The batch is checked against the frame's schema first; one that does not fit is refused and nothing is written.
+
+```python
+result = ap.ingest("warehouse", "sales", "orders", ipc_bytes)
+# {"rows": 3, "segment": 1, "crop_bytes": 2048}
+
+ap.flush_crop()    # deposit now instead of waiting for the interval
+# {"frames": 1, "segments": 1, "rows": 3}
+```
+
+Use `write_to_frame` for bulk loads that should be in the comb when the call returns, and `ingest` for a stream of small batches.
+
 ### Read
 
 ```python

@@ -7,11 +7,13 @@
 //! Schemas, and conforming incoming batches to them, are in [`schema`].
 
 pub mod comb;
+pub mod crop;
 pub mod local;
 pub mod s3;
 pub mod schema;
 
-pub use comb::{CellState, Comb, Committed, FrameStats, STATE_TAG, query_session};
+pub use comb::{CellState, Comb, Committed, FrameStats, STAGE_COLUMN, STATE_TAG, query_session};
+pub use crop::{Crop, FrameCrop, FrameKey, Segment};
 pub use deltalake::DeltaTable;
 pub use local::LocalBackend;
 pub use s3::S3Backend;

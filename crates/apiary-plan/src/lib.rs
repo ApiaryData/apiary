@@ -11,26 +11,41 @@
 mod catalog;
 pub mod join_policy;
 mod session;
+mod staged;
 pub mod timing;
 
 pub use join_policy::FitJoinsToBee;
 pub use session::QueryOptions;
+pub use staged::{ROWS_FROM_COMB, ROWS_FROM_CROP, StageRows};
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use arrow::array::StringArray;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
+use datafusion::common::{Column, TableReference};
+use datafusion::logical_expr::{Expr, cast, lit};
 use datafusion::prelude::SessionContext;
 
 use apiary_comb::Comb;
-use apiary_comb::FrameStats;
+use apiary_comb::{FrameStats, STAGE_COLUMN};
 use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::types::NodeId;
 
 use crate::catalog::{NO_BOX, NO_HIVE, TableIo, into_apiary_error, record_table_io};
+
+/// The result of a query: its rows, and how many rows each stage gave it.
+#[derive(Debug)]
+pub struct QueryOutput {
+    /// The result batches. For a query over Frames, each batch's schema metadata
+    /// carries the stage counts under [`ROWS_FROM_CROP`] and [`ROWS_FROM_COMB`].
+    pub batches: Vec<RecordBatch>,
+    /// Rows the query read from the crop and from the comb.
+    pub stages: StageRows,
+}
 
 /// The hive and box chosen with `USE HIVE` and `USE BOX`.
 #[derive(Clone, Debug, Default)]
@@ -108,7 +123,18 @@ impl ApiaryQueryContext {
     }
 
     /// Execute a SQL query and return results as RecordBatches.
+    ///
+    /// For a query over Frames, every batch carries the rows read from each
+    /// stage in its schema metadata. Use [`sql_with_stages`](Self::sql_with_stages)
+    /// to get the counts directly.
     pub async fn sql(&self, query: &str) -> Result<Vec<RecordBatch>> {
+        self.sql_with_stages(query)
+            .await
+            .map(|output| output.batches)
+    }
+
+    /// Execute a SQL query and report how many rows each stage gave it.
+    pub async fn sql_with_stages(&self, query: &str) -> Result<QueryOutput> {
         let trimmed = query.trim();
 
         // Detect and block unsupported DML
@@ -117,8 +143,11 @@ impl ApiaryQueryContext {
         }
 
         // Handle custom commands
-        if let Some(result) = self.handle_custom_command(trimmed).await? {
-            return Ok(result);
+        if let Some(batches) = self.handle_custom_command(trimmed).await? {
+            return Ok(QueryOutput {
+                batches,
+                stages: StageRows::default(),
+            });
         }
 
         // Standard SQL: resolve frame references, register tables, execute
@@ -311,7 +340,7 @@ impl ApiaryQueryContext {
     /// Execute standard SQL on the Node's session. DataFusion resolves
     /// `hive.box.frame` (or a shorter name, after USE HIVE / USE BOX) through
     /// the catalogue and scans each Frame's Delta table lazily.
-    async fn execute_standard_sql(&self, sql: &str) -> Result<Vec<RecordBatch>> {
+    async fn execute_standard_sql(&self, sql: &str) -> Result<QueryOutput> {
         let mut timings = timing::QueryTimings::begin_from_sql(sql);
 
         // --- parse phase ---
@@ -352,10 +381,15 @@ impl ApiaryQueryContext {
             .execute_logical_plan(plan)
             .await
             .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
-        let results = df
-            .collect()
+        let task_ctx = Arc::new(df.task_ctx());
+        let physical = df
+            .create_physical_plan()
+            .await
+            .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        let results = datafusion::physical_plan::collect(Arc::clone(&physical), task_ctx)
             .await
             .map_err(|e| into_apiary_error(e, "DataFusion execution error"))?;
+        let stages = staged::stage_rows(&physical);
         if let (Some(t), Some(s)) = (timings.as_mut(), exec_start) {
             t.end_phase("execute", s);
         }
@@ -364,7 +398,50 @@ impl ApiaryQueryContext {
             t.finish();
         }
 
-        Ok(results)
+        Ok(QueryOutput {
+            batches: staged::with_stage_metadata(results, stages),
+            stages,
+        })
+    }
+
+    /// Read a Frame into one batch, optionally keeping only rows whose
+    /// partition columns equal the given values. Rows still in the crop are
+    /// included; the `_stage` column is not. `None` if no rows match.
+    pub async fn read_frame(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame: &str,
+        partition_filter: Option<&HashMap<String, String>>,
+    ) -> Result<Option<RecordBatch>> {
+        let session = self.query_session();
+        let to_error = |e| into_apiary_error(e, "Failed to read frame");
+        let mut df = session
+            .table(TableReference::full(hive, box_name, frame))
+            .await
+            .map_err(to_error)?;
+
+        if let Some(filter) = partition_filter {
+            for (column, value) in filter {
+                // Filter values arrive as strings, whatever the column type.
+                let column = Expr::Column(Column::new_unqualified(column));
+                df = df
+                    .filter(cast(column, DataType::Utf8).eq(lit(value.as_str())))
+                    .map_err(to_error)?;
+            }
+        }
+
+        let df = df.drop_columns(&[STAGE_COLUMN]).map_err(to_error)?;
+        let schema = Arc::new(df.schema().as_arrow().clone());
+        let batches = df.collect().await.map_err(to_error)?;
+        if batches.iter().map(RecordBatch::num_rows).sum::<usize>() == 0 {
+            return Ok(None);
+        }
+        arrow::compute::concat_batches(&schema, &batches)
+            .map(Some)
+            .map_err(|e| ApiaryError::Internal {
+                message: format!("Failed to merge result batches: {e}"),
+            })
     }
 }
 
@@ -708,3 +785,6 @@ mod tests {
 
 #[cfg(test)]
 mod catalog_tests;
+
+#[cfg(test)]
+mod staged_tests;
