@@ -20,6 +20,7 @@ use std::sync::{Arc, Once};
 use arrow::compute::concat_batches;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
+use datafusion::execution::SessionState;
 use datafusion::logical_expr::cast;
 use datafusion::prelude::{SessionConfig, SessionContext, col, lit};
 use deltalake::DeltaTable;
@@ -464,6 +465,18 @@ impl Comb {
         Ok(stats)
     }
 
+    /// A lazy scan of a Frame's table, for sessions configured like `state`.
+    ///
+    /// Used by the query catalogue, which resolves Frames on demand. The
+    /// table's object store is registered with `state`'s runtime.
+    pub async fn table_provider(
+        &self,
+        state: &SessionState,
+        table: &DeltaTable,
+    ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+        table_provider(state, table).await
+    }
+
     /// Register a Frame's table with a query session under `name`.
     ///
     /// The table is scanned lazily, with partition pruning and file skipping
@@ -474,7 +487,7 @@ impl Comb {
         name: &str,
         table: &DeltaTable,
     ) -> Result<()> {
-        let provider = table_provider(ctx, table).await?;
+        let provider = table_provider(&ctx.state(), table).await?;
         ctx.register_table(name, provider).map_err(df_err)?;
         Ok(())
     }
@@ -487,7 +500,7 @@ impl Comb {
         partition_filter: Option<&HashMap<String, String>>,
     ) -> Result<Option<RecordBatch>> {
         let ctx = query_session();
-        let provider = table_provider(&ctx, table).await?;
+        let provider = table_provider(&ctx.state(), table).await?;
         let mut frame = ctx.read_table(provider).map_err(df_err)?;
 
         if let Some(filter) = partition_filter {
@@ -513,22 +526,22 @@ impl Comb {
     }
 }
 
-/// A scan of a Frame table for `ctx`.
+/// A scan of a Frame table for sessions configured like `state`.
 ///
 /// The provider inherits the session's settings (in particular, no view
-/// types, see [`query_session`]); without the session it would use delta-rs
-/// defaults and return `Utf8View`.
+/// types, see [`query_session`]); without them it would use delta-rs defaults
+/// and return `Utf8View`. The table's object store is registered with the
+/// session's runtime, so scans can reach it.
 async fn table_provider(
-    ctx: &SessionContext,
+    state: &SessionState,
     table: &DeltaTable,
 ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
-    let state = ctx.state();
     table
-        .update_datafusion_session(&state)
+        .update_datafusion_session(state)
         .map_err(|e| delta_err("Failed to prepare the query session", e))?;
     table
         .table_provider()
-        .with_session(Arc::new(state))
+        .with_session(Arc::new(state.clone()))
         .await
         .map_err(df_err)
 }

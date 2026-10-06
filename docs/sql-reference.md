@@ -156,17 +156,19 @@ Apiary does not support DML via SQL. These statements return clear error message
 | `CREATE TABLE` | `create_frame()` |
 | `DROP TABLE`   | Not yet supported |
 | `ALTER TABLE`  | Not yet supported |
+| `COPY`  | Not supported; query results are returned to the caller |
+| `SET`, `RESET` | Not supported; the Node configures its own query session |
 
 ## Query Execution
 
 1. **Parse** — DataFusion parses the SQL.
-2. **Resolve** — Table names are resolved to `hive.box.frame` using current context.
-3. **Prune** — WHERE predicates and partition filters identify which cells to read.
-4. **Plan** — DataFusion builds a physical plan with projection pushdown.
-5. **Execute** — Bees process cells in sealed chambers with memory budgets.
+2. **Resolve** — Table names are resolved through the registry to a Frame's Delta table, using the current hive and box for short names. Names are matched exactly first, then case-insensitively.
+3. **Plan** — DataFusion builds a physical plan with projection pushdown, partition pruning and file skipping from Delta statistics. Scans are lazy: no Frame is loaded into memory first.
+4. **Fit joins to a Bee** — A hash join stays only if its build side is known to fit a Bee's memory; otherwise it becomes a sort-merge join, which spills to disk.
+5. **Execute** — Bees run the plan under the Node's shared memory pool; operators that exceed it spill to the Node's spill directory.
 6. **Return** — Results are serialized as Arrow IPC bytes.
 
-For distributed queries across multiple nodes, the coordinator assigns cells to workers based on cache locality and capacity. Workers write partial results to storage; the coordinator merges them.
+All queries on a Node share one long-lived session, so they run concurrently, and `USE HIVE` / `USE BOX` apply to every caller of that Node.
 
 ## Examples
 

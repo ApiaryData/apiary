@@ -165,6 +165,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "datafusion",
+ "futures",
  "serde",
  "serde_json",
  "tempfile",

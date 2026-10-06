@@ -1,56 +1,114 @@
 //! DataFusion-based SQL query engine for Apiary.
 //!
-//! [`ApiaryQueryContext`] wraps a DataFusion `SessionContext` and resolves
-//! Apiary frame references (hive.box.frame) to in-memory tables built from
-//! the frame's active Parquet cells.  Custom SQL commands (USE, SHOW,
-//! DESCRIBE) are intercepted before they reach DataFusion.
+//! [`ApiaryQueryContext`] owns one long-lived DataFusion session per Node. The
+//! session resolves `hive.box.frame` natively, through a catalogue backed by
+//! the registry and the comb (see the `catalog` module), and scans each Frame's
+//! Delta table lazily. All queries share one memory pool with a spill
+//! directory, and hash joins that might not fit a Bee become sort-merge joins
+//! ([`join_policy`]). Custom SQL commands (USE, SHOW, DESCRIBE) are
+//! intercepted before they reach DataFusion.
 
+mod catalog;
+pub mod join_policy;
+mod session;
 pub mod timing;
 
-use std::sync::Arc;
+pub use join_policy::FitJoinsToBee;
+pub use session::QueryOptions;
+
+use std::sync::{Arc, Mutex};
 
 use arrow::array::StringArray;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use tracing::info;
+use datafusion::prelude::SessionContext;
 
 use apiary_comb::Comb;
 use apiary_comb::FrameStats;
-use apiary_comb::schema::delta_schema;
 use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::types::NodeId;
 
-/// The Apiary query context — wraps DataFusion with Apiary namespace resolution.
+use crate::catalog::{NO_BOX, NO_HIVE, TableIo, into_apiary_error, record_table_io};
+
+/// The hive and box chosen with `USE HIVE` and `USE BOX`.
+#[derive(Clone, Debug, Default)]
+struct Selection {
+    hive: Option<String>,
+    box_name: Option<String>,
+}
+
+/// The Apiary query context: a Node's long-lived DataFusion session with
+/// Apiary namespace resolution.
+///
+/// Shared by every caller on the Node, so `sql` takes `&self`. The current
+/// hive and box are shared too.
 pub struct ApiaryQueryContext {
+    session: SessionContext,
     comb: Arc<Comb>,
     registry: Arc<RegistryManager>,
-    current_hive: Option<String>,
-    current_box: Option<String>,
+    selection: Mutex<Selection>,
     #[allow(dead_code)] // Node identity, used once Nodes exchange work directly
     node_id: NodeId,
 }
 
 impl ApiaryQueryContext {
-    /// Create a new query context.
+    /// Create a query context with default options (unbounded memory, one
+    /// partition per core), for tests and tools.
     pub fn new(comb: Arc<Comb>, registry: Arc<RegistryManager>) -> Self {
-        Self::with_node_id(comb, registry, NodeId::from("local"))
-    }
-
-    /// Create a new query context with a specific node ID.
-    pub fn with_node_id(comb: Arc<Comb>, registry: Arc<RegistryManager>, node_id: NodeId) -> Self {
-        Self {
+        Self::with_options(
             comb,
             registry,
-            current_hive: None,
-            current_box: None,
+            NodeId::from("local"),
+            QueryOptions::default(),
+        )
+        .expect("default query options are valid")
+    }
+
+    /// Create a query context for a Node: its memory pool, spill directory
+    /// and Bee budget come from `options` (see [`QueryOptions::from_node`]).
+    pub fn with_options(
+        comb: Arc<Comb>,
+        registry: Arc<RegistryManager>,
+        node_id: NodeId,
+        options: QueryOptions,
+    ) -> Result<Self> {
+        let session = session::build_session(&options, Arc::clone(&registry), Arc::clone(&comb))?;
+        Ok(Self {
+            session,
+            comb,
+            registry,
+            selection: Mutex::new(Selection::default()),
             node_id,
-        }
+        })
+    }
+
+    fn selection(&self) -> Selection {
+        self.selection.lock().expect("selection poisoned").clone()
+    }
+
+    fn select_hive(&self, name: String) {
+        self.selection.lock().expect("selection poisoned").hive = Some(name);
+    }
+
+    fn select_box(&self, name: String) {
+        self.selection.lock().expect("selection poisoned").box_name = Some(name);
+    }
+
+    /// A context for one query: the shared runtime and catalogue, with this
+    /// moment's hive and box as the default namespace.
+    fn query_session(&self) -> SessionContext {
+        let selection = self.selection();
+        let mut state = self.session.state();
+        let catalog = &mut state.config_mut().options_mut().catalog;
+        catalog.default_catalog = selection.hive.unwrap_or_else(|| NO_HIVE.to_string());
+        catalog.default_schema = selection.box_name.unwrap_or_else(|| NO_BOX.to_string());
+        SessionContext::new_with_state(state)
     }
 
     /// Execute a SQL query and return results as RecordBatches.
-    pub async fn sql(&mut self, query: &str) -> Result<Vec<RecordBatch>> {
+    pub async fn sql(&self, query: &str) -> Result<Vec<RecordBatch>> {
         let trimmed = query.trim();
 
         // Detect and block unsupported DML
@@ -68,7 +126,7 @@ impl ApiaryQueryContext {
     }
 
     /// Handle custom SQL commands (USE, SHOW, DESCRIBE).
-    async fn handle_custom_command(&mut self, sql: &str) -> Result<Option<Vec<RecordBatch>>> {
+    async fn handle_custom_command(&self, sql: &str) -> Result<Option<Vec<RecordBatch>>> {
         let upper = sql.to_uppercase();
         let upper = upper.trim_end_matches(';').trim();
 
@@ -83,7 +141,7 @@ impl ApiaryQueryContext {
                     name: name.clone(),
                 });
             }
-            self.current_hive = Some(name.clone());
+            self.select_hive(name.clone());
             let batch = single_message_batch(&format!("Current hive set to '{name}'"));
             return Ok(Some(vec![batch]));
         }
@@ -91,21 +149,18 @@ impl ApiaryQueryContext {
         // USE BOX <name>
         if let Some(name) = upper.strip_prefix("USE BOX ") {
             let name = name.trim().to_lowercase();
-            let hive = self
-                .current_hive
-                .as_ref()
-                .ok_or_else(|| ApiaryError::Config {
-                    message: "No hive selected. Run USE HIVE <name> first.".into(),
-                })?;
+            let hive = self.selection().hive.ok_or_else(|| ApiaryError::Config {
+                message: "No hive selected. Run USE HIVE <name> first.".into(),
+            })?;
             // Verify box exists
-            let boxes = self.registry.list_boxes(hive).await?;
+            let boxes = self.registry.list_boxes(&hive).await?;
             if !boxes.iter().any(|b| b.to_lowercase() == name) {
                 return Err(ApiaryError::EntityNotFound {
                     entity_type: "Box".into(),
                     name: name.clone(),
                 });
             }
-            self.current_box = Some(name.clone());
+            self.select_box(name.clone());
             let batch = single_message_batch(&format!("Current box set to '{name}'"));
             return Ok(Some(vec![batch]));
         }
@@ -127,15 +182,12 @@ impl ApiaryQueryContext {
 
         // SHOW BOXES (using current hive context)
         if upper == "SHOW BOXES" {
-            let hive = self
-                .current_hive
-                .as_ref()
-                .ok_or_else(|| ApiaryError::Config {
-                    message:
-                        "No hive selected. Run USE HIVE <name> first, or use SHOW BOXES IN <hive>."
-                            .into(),
-                })?;
-            let boxes = self.registry.list_boxes(hive).await?;
+            let hive = self.selection().hive.ok_or_else(|| ApiaryError::Config {
+                message:
+                    "No hive selected. Run USE HIVE <name> first, or use SHOW BOXES IN <hive>."
+                        .into(),
+            })?;
+            let boxes = self.registry.list_boxes(&hive).await?;
             let batch = string_list_batch("box", &boxes);
             return Ok(Some(vec![batch]));
         }
@@ -157,13 +209,16 @@ impl ApiaryQueryContext {
 
         // SHOW FRAMES (using current hive and box context)
         if upper == "SHOW FRAMES" {
-            let hive = self.current_hive.as_ref().ok_or_else(|| ApiaryError::Config {
+            let selection = self.selection();
+            let hive = selection.hive.ok_or_else(|| ApiaryError::Config {
                 message: "No hive selected. Run USE HIVE <name> first, or use SHOW FRAMES IN <hive>.<box>.".into(),
             })?;
-            let box_name = self.current_box.as_ref().ok_or_else(|| ApiaryError::Config {
-                message: "No box selected. Run USE BOX <name> first, or use SHOW FRAMES IN <hive>.<box>.".into(),
+            let box_name = selection.box_name.ok_or_else(|| ApiaryError::Config {
+                message:
+                    "No box selected. Run USE BOX <name> first, or use SHOW FRAMES IN <hive>.<box>."
+                        .into(),
             })?;
-            let frames = self.registry.list_frames(hive, box_name).await?;
+            let frames = self.registry.list_frames(&hive, &box_name).await?;
             let batch = string_list_batch("frame", &frames);
             return Ok(Some(vec![batch]));
         }
@@ -253,122 +308,54 @@ impl ApiaryQueryContext {
         })
     }
 
-    /// Execute standard SQL by resolving frame references and delegating to DataFusion.
+    /// Execute standard SQL on the Node's session. DataFusion resolves
+    /// `hive.box.frame` (or a shorter name, after USE HIVE / USE BOX) through
+    /// the catalogue and scans each Frame's Delta table lazily.
     async fn execute_standard_sql(&self, sql: &str) -> Result<Vec<RecordBatch>> {
         let mut timings = timing::QueryTimings::begin_from_sql(sql);
 
-        // --- query_parse phase ---
+        // --- parse phase ---
         let parse_start = timings.as_ref().map(|t| t.start_phase());
-
-        // Extract table references from SQL
-        let table_refs = extract_table_references(sql);
-
-        if table_refs.is_empty() {
-            return Err(ApiaryError::Config {
-                message: "No table references found in query".into(),
-            });
-        }
-
+        let session = self.query_session();
+        let state = session.state();
+        let dialect = state.config_options().sql_parser.dialect;
+        let statement = state
+            .sql_to_statement(sql, &dialect)
+            .map_err(|e| into_apiary_error(e, "SQL parse error"))?;
         if let (Some(t), Some(s)) = (timings.as_mut(), parse_start) {
             t.end_phase("parse", s);
         }
 
-        // --- query_plan phase ---
-        let plan_start = timings.as_ref().map(|t| t.start_phase());
+        // --- plan phase: resolve names (this opens each table) and build the
+        // logical plan. Table-open time is reported as its own phases.
+        let plan_start = std::time::Instant::now();
+        let (plan, io) =
+            record_table_io(TableIo::default(), state.statement_to_plan(statement)).await;
+        let plan = plan.map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        let file_discovery = io.file_discovery.get();
+        let metadata_read = io.metadata_read.get();
+        let plan_only = plan_start
+            .elapsed()
+            .saturating_sub(file_discovery + metadata_read);
 
-        // Create a fresh session for this query (avoids stale table registrations)
-        let session = apiary_comb::query_session();
-
-        if let (Some(t), Some(s)) = (timings.as_mut(), plan_start) {
-            t.end_phase("plan", s);
-        }
-
-        // Resolve and register each table. Tables are scanned lazily: DataFusion
-        // prunes partitions and skips files from Delta statistics, so the time
-        // to read data is part of the execute phase.
-        let mut file_discovery_total = std::time::Duration::ZERO;
-        let mut metadata_read_total = std::time::Duration::ZERO;
-
-        for table_ref in &table_refs {
-            let (hive, box_name, frame_name, register_name) = self.resolve_table_ref(table_ref)?;
-
-            // --- file_discovery phase (open the Delta table: read its log) ---
-            let fd_start = timings.as_ref().map(|t| t.start_phase());
-            let table = self
-                .comb
-                .open_frame_table(&hive, &box_name, &frame_name)
-                .await?;
-            if let Some(s) = fd_start {
-                file_discovery_total += s.elapsed();
-            }
-
-            // --- metadata_read phase (build the scan: file index and statistics) ---
-            let mr_start = timings.as_ref().map(|t| t.start_phase());
-            match table {
-                Some(table) => {
-                    self.comb
-                        .register_table(&session, &register_name, &table)
-                        .await?;
-                    info!(
-                        frame = %format!("{hive}/{box_name}/{frame_name}"),
-                        version = ?table.version(),
-                        "Frame table registered"
-                    );
-                }
-                None => {
-                    // A registered frame that has never been written is empty,
-                    // with the schema it was created with.
-                    let frame = self
-                        .registry
-                        .get_frame(&hive, &box_name, &frame_name)
-                        .await?;
-                    let schema =
-                        delta_schema(&apiary_core::FrameSchema::from_json_value(&frame.schema)?);
-                    let empty_batch = RecordBatch::new_empty(schema);
-                    let mem_table = datafusion::datasource::MemTable::try_new(
-                        empty_batch.schema(),
-                        vec![vec![empty_batch]],
-                    )
-                    .map_err(|e| ApiaryError::Internal {
-                        message: format!("Failed to create empty MemTable: {e}"),
-                    })?;
-                    session
-                        .register_table(&register_name, Arc::new(mem_table))
-                        .map_err(|e| ApiaryError::Internal {
-                            message: format!("Failed to register table: {e}"),
-                        })?;
-                }
-            }
-            if let Some(s) = mr_start {
-                metadata_read_total += s.elapsed();
-            }
-        }
-
-        // Record accumulated I/O phase timings
         if let Some(t) = timings.as_mut() {
-            t.add_accumulated_phase("file_discovery", file_discovery_total);
-            t.add_accumulated_phase("metadata_read", metadata_read_total);
+            t.add_accumulated_phase("plan", plan_only);
+            t.add_accumulated_phase("file_discovery", file_discovery);
+            t.add_accumulated_phase("metadata_read", metadata_read);
+            // Scans are lazy: reading data is part of the execute phase.
             t.add_accumulated_phase("data_read", std::time::Duration::ZERO);
         }
 
-        // Rewrite the SQL to use the registered table names
-        let rewritten =
-            rewrite_sql_table_refs(sql, &table_refs, &self.current_hive, &self.current_box);
-
-        // --- query_execute phase (DataFusion planning + execution) ---
+        // --- execute phase (DataFusion planning + execution) ---
         let exec_start = timings.as_ref().map(|t| t.start_phase());
-
         let df = session
-            .sql(&rewritten)
+            .execute_logical_plan(plan)
             .await
-            .map_err(|e| ApiaryError::Internal {
-                message: format!("DataFusion query error: {e}"),
-            })?;
-
-        let results = df.collect().await.map_err(|e| ApiaryError::Internal {
-            message: format!("DataFusion execution error: {e}"),
-        })?;
-
+            .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        let results = df
+            .collect()
+            .await
+            .map_err(|e| into_apiary_error(e, "DataFusion execution error"))?;
         if let (Some(t), Some(s)) = (timings.as_mut(), exec_start) {
             t.end_phase("execute", s);
         }
@@ -378,57 +365,6 @@ impl ApiaryQueryContext {
         }
 
         Ok(results)
-    }
-
-    /// Resolve a table reference to (hive, box, frame, register_name).
-    fn resolve_table_ref(&self, table_ref: &str) -> Result<(String, String, String, String)> {
-        let parts: Vec<&str> = table_ref.split('.').collect();
-
-        match parts.len() {
-            3 => {
-                let hive = parts[0].to_string();
-                let box_name = parts[1].to_string();
-                let frame_name = parts[2].to_string();
-                // Register with just the frame name to simplify SQL rewriting
-                let register_name = frame_name.clone();
-                Ok((hive, box_name, frame_name, register_name))
-            }
-            2 => {
-                let hive = self.current_hive.as_ref().ok_or_else(|| {
-                    ApiaryError::Resolution {
-                        path: table_ref.into(),
-                        reason: "No hive selected. Use 3-part name (hive.box.frame) or run USE HIVE first.".into(),
-                    }
-                })?;
-                let box_name = parts[0].to_string();
-                let frame_name = parts[1].to_string();
-                let register_name = frame_name.clone();
-                Ok((hive.clone(), box_name, frame_name, register_name))
-            }
-            1 => {
-                let hive = self
-                    .current_hive
-                    .as_ref()
-                    .ok_or_else(|| ApiaryError::Resolution {
-                        path: table_ref.into(),
-                        reason: "No hive selected. Use 3-part name or run USE HIVE first.".into(),
-                    })?;
-                let box_name =
-                    self.current_box
-                        .as_ref()
-                        .ok_or_else(|| ApiaryError::Resolution {
-                            path: table_ref.into(),
-                            reason: "No box selected. Use 3-part name or run USE BOX first.".into(),
-                        })?;
-                let frame_name = parts[0].to_string();
-                let register_name = frame_name.clone();
-                Ok((hive.clone(), box_name.clone(), frame_name, register_name))
-            }
-            _ => Err(ApiaryError::Resolution {
-                path: table_ref.into(),
-                reason: "Invalid table reference. Use hive.box.frame format.".into(),
-            }),
-        }
     }
 }
 
@@ -460,65 +396,14 @@ fn check_unsupported_dml(sql: &str) -> Option<ApiaryError> {
         "ALTER" => Some(ApiaryError::Unsupported {
             message: "ALTER is not supported via SQL. Use the registry API for DDL operations.".into(),
         }),
+        "COPY" => Some(ApiaryError::Unsupported {
+            message: "COPY is not supported via SQL. Query results are returned to the caller.".into(),
+        }),
+        "SET" | "RESET" => Some(ApiaryError::Unsupported {
+            message: "SET and RESET are not supported via SQL. The Node configures its own query session.".into(),
+        }),
         _ => None,
     }
-}
-
-/// Extract table references from SQL.
-///
-/// Finds patterns like `FROM table` and `JOIN table`, where table can be
-/// `hive.box.frame`, `box.frame`, or `frame`.
-fn extract_table_references(sql: &str) -> Vec<String> {
-    let mut refs = Vec::new();
-    let tokens: Vec<&str> = sql.split_whitespace().collect();
-
-    for i in 0..tokens.len() {
-        let upper = tokens[i].to_uppercase();
-        if (upper == "FROM" || upper == "JOIN") && i + 1 < tokens.len() {
-            let table_name = tokens[i + 1]
-                .trim_end_matches(',')
-                .trim_end_matches(')')
-                .trim_end_matches(';');
-            // Skip subqueries
-            if table_name.starts_with('(') || table_name.is_empty() {
-                continue;
-            }
-            // Skip SQL keywords that follow FROM (e.g., FROM (SELECT ...))
-            let table_upper = table_name.to_uppercase();
-            if matches!(
-                table_upper.as_str(),
-                "SELECT" | "WHERE" | "GROUP" | "ORDER" | "LIMIT" | "HAVING"
-            ) {
-                continue;
-            }
-            if !refs.contains(&table_name.to_string()) {
-                refs.push(table_name.to_string());
-            }
-        }
-    }
-
-    refs
-}
-
-/// Rewrite SQL to replace 3-part or 2-part table references with the registered names.
-fn rewrite_sql_table_refs(
-    sql: &str,
-    table_refs: &[String],
-    _current_hive: &Option<String>,
-    _current_box: &Option<String>,
-) -> String {
-    let mut result = sql.to_string();
-
-    for table_ref in table_refs {
-        let parts: Vec<&str> = table_ref.split('.').collect();
-        let register_name = parts.last().unwrap_or(&table_ref.as_str()).to_string();
-        if parts.len() > 1 {
-            // Replace full reference with just the frame name
-            result = result.replace(table_ref, &register_name);
-        }
-    }
-
-    result
 }
 
 /// Create a single-row batch with a message.
@@ -650,7 +535,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("SELECT * FROM test_hive.test_box.sensors")
             .await
@@ -665,7 +550,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("SELECT region, AVG(temp) as avg_temp FROM test_hive.test_box.sensors GROUP BY region ORDER BY region")
             .await
@@ -681,7 +566,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         ctx.sql("USE HIVE test_hive").await.unwrap();
         ctx.sql("USE BOX test_box").await.unwrap();
         let results = ctx.sql("SELECT * FROM sensors").await.unwrap();
@@ -695,7 +580,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx.sql("SHOW HIVES").await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -707,7 +592,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx.sql("SHOW FRAMES IN test_hive.test_box").await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -719,7 +604,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("DESCRIBE test_hive.test_box.sensors")
             .await
@@ -732,7 +617,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_blocked() {
         let (comb, registry, _dir) = make_test_env().await;
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
 
         let result = ctx.sql("DELETE FROM test_hive.test_box.sensors").await;
         assert!(result.is_err());
@@ -743,7 +628,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_blocked() {
         let (comb, registry, _dir) = make_test_env().await;
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
 
         let result = ctx
             .sql("UPDATE test_hive.test_box.sensors SET temp = 0")
@@ -758,7 +643,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("SELECT * FROM test_hive.test_box.sensors WHERE region = 'north'")
             .await
@@ -773,7 +658,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         let results = ctx
             .sql("SELECT temp FROM test_hive.test_box.sensors")
             .await
@@ -782,15 +667,6 @@ mod tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].num_columns(), 1);
         assert_eq!(results[0].schema().field(0).name(), "temp");
-    }
-
-    #[test]
-    fn test_extract_table_references() {
-        let refs = extract_table_references("SELECT * FROM hive.box.frame WHERE x = 1");
-        assert_eq!(refs, vec!["hive.box.frame"]);
-
-        let refs = extract_table_references("SELECT * FROM frame1 JOIN frame2 ON x = y");
-        assert_eq!(refs, vec!["frame1", "frame2"]);
     }
 
     #[test]
@@ -805,7 +681,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         ctx.sql("USE HIVE test_hive").await.unwrap();
 
         let results = ctx.sql("SHOW BOXES").await.unwrap();
@@ -819,7 +695,7 @@ mod tests {
         let (comb, registry, _dir) = make_test_env().await;
         setup_frame(&comb, &registry).await;
 
-        let mut ctx = ApiaryQueryContext::new(comb, registry);
+        let ctx = ApiaryQueryContext::new(comb, registry);
         ctx.sql("USE HIVE test_hive").await.unwrap();
         ctx.sql("USE BOX test_box").await.unwrap();
 
@@ -829,3 +705,6 @@ mod tests {
         assert_eq!(results[0].schema().field(0).name(), "frame");
     }
 }
+
+#[cfg(test)]
+mod catalog_tests;

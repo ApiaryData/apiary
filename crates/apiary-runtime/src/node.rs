@@ -21,7 +21,7 @@ use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
 use apiary_core::{Env, FrameSchema, Result, WriteResult};
-use apiary_plan::ApiaryQueryContext;
+use apiary_plan::{ApiaryQueryContext, QueryOptions};
 
 use crate::bee::{BeePool, BeeStatus};
 use crate::behavioral::{AbandonmentTracker, ColonyThermometer};
@@ -48,7 +48,7 @@ pub struct ApiaryNode {
     pub registry: Arc<RegistryManager>,
 
     /// DataFusion-based SQL query context.
-    pub query_ctx: Arc<tokio::sync::Mutex<ApiaryQueryContext>>,
+    pub query_ctx: Arc<ApiaryQueryContext>,
 
     /// Pool of bees for isolated task execution.
     pub bee_pool: Arc<BeePool>,
@@ -154,11 +154,14 @@ impl ApiaryNode {
         // Every Frame is a Delta table under the comb
         let comb = Arc::new(Comb::from_storage_uri(&config.storage_uri)?);
 
-        let query_ctx = Arc::new(tokio::sync::Mutex::new(ApiaryQueryContext::with_node_id(
+        // One long-lived query session for the Node: a memory pool shared by
+        // all queries, a spill directory, and joins planned to fit a Bee.
+        let query_ctx = Arc::new(ApiaryQueryContext::with_options(
             Arc::clone(&comb),
             Arc::clone(&registry),
             config.node_id.clone(),
-        )));
+            QueryOptions::from_node(&config),
+        )?);
 
         // Initialize bee pool
         let bee_pool = Arc::new(
@@ -413,12 +416,7 @@ impl ApiaryNode {
 
         let handle = self
             .bee_pool
-            .submit(move || {
-                rt_handle.block_on(async {
-                    let mut ctx = query_ctx.lock().await;
-                    ctx.sql(&query_owned).await
-                })
-            })
+            .submit(move || rt_handle.block_on(async { query_ctx.sql(&query_owned).await }))
             .await;
 
         handle.await.map_err(|e| ApiaryError::Internal {
