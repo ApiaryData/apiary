@@ -131,11 +131,11 @@ fn detect_memory() -> u64 {
             for line in contents.lines() {
                 if let Some(rest) = line.strip_prefix("MemTotal:") {
                     let rest = rest.trim();
-                    if let Some(kb_str) = rest.strip_suffix("kB") {
-                        if let Ok(kb) = kb_str.trim().parse::<u64>() {
-                            host_memory = Some(kb * 1024);
-                            break;
-                        }
+                    if let Some(kb_str) = rest.strip_suffix("kB")
+                        && let Ok(kb) = kb_str.trim().parse::<u64>()
+                    {
+                        host_memory = Some(kb * 1024);
+                        break;
                     }
                 }
             }
@@ -229,22 +229,21 @@ fn read_cgroup_memory_limit() -> Option<u64> {
     // cgroup v2: the limit file contains a decimal byte count or "max"
     if let Ok(contents) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
         let trimmed = contents.trim();
-        if trimmed != "max" {
-            if let Ok(bytes) = trimmed.parse::<u64>() {
-                return Some(bytes);
-            }
+        if trimmed != "max"
+            && let Ok(bytes) = trimmed.parse::<u64>()
+        {
+            return Some(bytes);
         }
     }
 
     // cgroup v1: the limit file always contains a decimal byte count; when no
     // limit is set the kernel writes a very large sentinel value (close to
     // u64::MAX).  We treat anything above 2^62 bytes (~4.6 EiB) as "no limit".
-    if let Ok(contents) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
-        if let Ok(bytes) = contents.trim().parse::<u64>() {
-            if bytes < (1u64 << 62) {
-                return Some(bytes);
-            }
-        }
+    if let Ok(contents) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        && let Ok(bytes) = contents.trim().parse::<u64>()
+        && bytes < (1u64 << 62)
+    {
+        return Some(bytes);
     }
 
     None
@@ -313,7 +312,7 @@ mod tests {
     fn test_cgroup_limit_wins_over_larger_host_memory() {
         let cgroup_limit: u64 = 512 * 1024 * 1024; // 512 MB
         let host_memory: u64 = 16 * 1024 * 1024 * 1024; // 16 GB
-                                                        // cgroup limit should win
+        // cgroup limit should win
         assert_eq!(cgroup_limit.min(host_memory), cgroup_limit);
     }
 
@@ -336,7 +335,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_cgroup_v1_real_limit_below_sentinel() {
         let limit: u64 = 256 * 1024 * 1024; // 256 MB
-                                            // Must be below our 2^62 threshold so it is used.
+        // Must be below our 2^62 threshold so it is used.
         assert!(limit < (1u64 << 62));
     }
 

@@ -252,10 +252,13 @@ impl ApiaryNode {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Delete our heartbeat file (graceful departure)
-        if let Err(e) = self.heartbeat_writer.delete_heartbeat().await {
-            tracing::warn!(error = %e, "Failed to delete heartbeat during shutdown");
-        } else {
-            info!(node_id = %self.config.node_id, "Heartbeat deleted (graceful departure)");
+        match self.heartbeat_writer.delete_heartbeat().await {
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to delete heartbeat during shutdown");
+            }
+            _ => {
+                info!(node_id = %self.config.node_id, "Heartbeat deleted (graceful departure)");
+            }
         }
     }
 
@@ -674,8 +677,8 @@ async fn run_query_worker_poller(
                                     }
 
                                     // Write partial result
-                                    if !results.is_empty() {
-                                        if let Err(e) = distributed::write_partial_result(
+                                    if !results.is_empty()
+                                        && let Err(e) = distributed::write_partial_result(
                                             &storage,
                                             query_id,
                                             &node_id,
@@ -687,7 +690,6 @@ async fn run_query_worker_poller(
                                                 "Failed to write partial result"
                                             );
                                         }
-                                    }
                                 }
                                 Err(_) => {
                                     // Manifest not readable yet or deleted

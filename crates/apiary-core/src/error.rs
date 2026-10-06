@@ -60,9 +60,7 @@ pub enum ApiaryError {
     },
 
     /// A bee exceeded its memory budget.
-    #[error(
-        "Memory exceeded for bee {bee_id}: requested {requested} bytes, budget {budget} bytes"
-    )]
+    #[error("Memory exceeded for bee {bee_id}: requested {requested} bytes, budget {budget} bytes")]
     MemoryExceeded {
         /// The bee that exceeded its budget.
         bee_id: BeeId,

@@ -94,7 +94,7 @@ impl Apiary {
     ///
     /// Returns:
     ///     dict: Node status including node_id, cores, memory_gb, bees, and storage type.
-    fn status(&self) -> PyResult<PyObject> {
+    fn status(&self) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -109,8 +109,8 @@ impl Apiary {
             "local"
         };
 
-        Python::with_gil(|py| {
-            let dict = pyo3::types::PyDict::new_bound(py);
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
             dict.set_item("name", &self.name)?;
             dict.set_item("node_id", node.config.node_id.as_str())?;
             dict.set_item("cores", node.config.cores)?;
@@ -313,7 +313,7 @@ impl Apiary {
     ///
     /// Returns:
     ///     dict: Frame metadata including schema and partition columns.
-    fn get_frame(&self, hive: String, box_name: String, name: String) -> PyResult<PyObject> {
+    fn get_frame(&self, hive: String, box_name: String, name: String) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -327,8 +327,8 @@ impl Apiary {
             .block_on(async { node.registry.get_frame(&hive, &box_name, &name).await })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to get frame: {e}")))?;
 
-        Python::with_gil(|py| {
-            let dict = pyo3::types::PyDict::new_bound(py);
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
             dict.set_item("schema", pythonize::pythonize(py, &frame.schema)?)?;
             dict.set_item("partition_by", frame.partition_by)?;
             dict.set_item("max_partitions", frame.max_partitions)?;
@@ -356,7 +356,7 @@ impl Apiary {
         box_name: String,
         frame_name: String,
         ipc_data: &Bound<'_, PyBytes>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -377,8 +377,8 @@ impl Apiary {
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to write: {e}")))?;
 
-        Python::with_gil(|py| {
-            let dict = pyo3::types::PyDict::new_bound(py);
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
             dict.set_item("version", result.version)?;
             dict.set_item("cells_written", result.cells_written)?;
             dict.set_item("rows_written", result.rows_written)?;
@@ -408,7 +408,7 @@ impl Apiary {
         box_name: String,
         frame_name: String,
         partition_filter: Option<HashMap<String, String>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -425,10 +425,10 @@ impl Apiary {
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to read: {e}")))?;
 
-        Python::with_gil(|py| match result {
+        Python::attach(|py| match result {
             Some(batch) => {
                 let ipc_data = batch_to_ipc_bytes(&batch)?;
-                let py_bytes = PyBytes::new_bound(py, &ipc_data);
+                let py_bytes = PyBytes::new(py, &ipc_data);
                 Ok(py_bytes.into())
             }
             None => Ok(py.None()),
@@ -451,7 +451,7 @@ impl Apiary {
         box_name: String,
         frame_name: String,
         ipc_data: &Bound<'_, PyBytes>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -471,8 +471,8 @@ impl Apiary {
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to overwrite: {e}")))?;
 
-        Python::with_gil(|py| {
-            let dict = pyo3::types::PyDict::new_bound(py);
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
             dict.set_item("version", result.version)?;
             dict.set_item("cells_written", result.cells_written)?;
             dict.set_item("rows_written", result.rows_written)?;
@@ -496,7 +496,7 @@ impl Apiary {
     ///
     /// Returns:
     ///     bytes: Arrow IPC stream bytes (deserialize with PyArrow), or None if empty result.
-    fn sql(&self, query: String) -> PyResult<PyObject> {
+    fn sql(&self, query: String) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -510,7 +510,7 @@ impl Apiary {
             .block_on(async { node.sql(&query).await })
             .map_err(|e| PyRuntimeError::new_err(format!("SQL error: {e}")))?;
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             if batches.is_empty() {
                 return Ok(py.None());
             }
@@ -525,7 +525,7 @@ impl Apiary {
             };
 
             let ipc_data = batch_to_ipc_bytes(&merged)?;
-            let py_bytes = PyBytes::new_bound(py, &ipc_data);
+            let py_bytes = PyBytes::new(py, &ipc_data);
             Ok(py_bytes.into())
         })
     }
@@ -536,7 +536,7 @@ impl Apiary {
     ///
     /// Returns:
     ///     list[dict]: A list of bee status dicts, each with bee_id, state, memory_used, memory_budget.
-    fn bee_status(&self) -> PyResult<PyObject> {
+    fn bee_status(&self) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -547,10 +547,10 @@ impl Apiary {
 
         let statuses = self.runtime.block_on(async { node.bee_status().await });
 
-        Python::with_gil(|py| {
-            let list = pyo3::types::PyList::empty_bound(py);
+        Python::attach(|py| {
+            let list = pyo3::types::PyList::empty(py);
             for s in statuses {
-                let dict = pyo3::types::PyDict::new_bound(py);
+                let dict = pyo3::types::PyDict::new(py);
                 dict.set_item("bee_id", &s.bee_id)?;
                 dict.set_item("state", &s.state)?;
                 dict.set_item("memory_used", s.memory_used)?;
@@ -566,7 +566,7 @@ impl Apiary {
     /// Returns:
     ///     dict: Swarm status with 'nodes' (list of node info dicts),
     ///           'total_bees', and 'total_idle_bees'.
-    fn swarm_status(&self) -> PyResult<PyObject> {
+    fn swarm_status(&self) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -577,10 +577,10 @@ impl Apiary {
 
         let status = self.runtime.block_on(async { node.swarm_status().await });
 
-        Python::with_gil(|py| {
-            let nodes_list = pyo3::types::PyList::empty_bound(py);
+        Python::attach(|py| {
+            let nodes_list = pyo3::types::PyList::empty(py);
             for n in &status.nodes {
-                let d = pyo3::types::PyDict::new_bound(py);
+                let d = pyo3::types::PyDict::new(py);
                 d.set_item("node_id", &n.node_id)?;
                 d.set_item("state", &n.state)?;
                 d.set_item("bees", n.bees)?;
@@ -589,7 +589,7 @@ impl Apiary {
                 d.set_item("colony_temperature", n.colony_temperature)?;
                 nodes_list.append(d)?;
             }
-            let result = pyo3::types::PyDict::new_bound(py);
+            let result = pyo3::types::PyDict::new(py);
             result.set_item("nodes", nodes_list)?;
             result.set_item("total_bees", status.total_bees)?;
             result.set_item("total_idle_bees", status.total_idle_bees)?;
@@ -602,7 +602,7 @@ impl Apiary {
     /// Returns:
     ///     dict: Colony status with 'temperature' (0.0-1.0), 'regulation'
     ///           ("cold"/"ideal"/"warm"/"hot"/"critical"), and 'setpoint'.
-    fn colony_status(&self) -> PyResult<PyObject> {
+    fn colony_status(&self) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
             .lock()
@@ -613,8 +613,8 @@ impl Apiary {
 
         let status = self.runtime.block_on(async { node.colony_status().await });
 
-        Python::with_gil(|py| {
-            let dict = pyo3::types::PyDict::new_bound(py);
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
             dict.set_item("temperature", status.temperature)?;
             dict.set_item("regulation", &status.regulation)?;
             dict.set_item("setpoint", status.setpoint)?;
@@ -661,7 +661,7 @@ impl Apiary {
     }
 
     /// Alias for get_frame.
-    fn get_table(&self, database: String, schema: String, name: String) -> PyResult<PyObject> {
+    fn get_table(&self, database: String, schema: String, name: String) -> PyResult<Py<PyAny>> {
         self.get_frame(database, schema, name)
     }
 }

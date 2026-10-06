@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tokio::fs;
@@ -15,9 +15,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::storage::StorageBackend;
-use apiary_core::Result;
 
 /// A single entry in the cell cache.
 #[derive(Debug, Clone)]

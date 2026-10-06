@@ -17,11 +17,11 @@ use arrow::record_batch::RecordBatch;
 use datafusion::prelude::*;
 use tracing::{info, warn};
 
+use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
-use apiary_core::Result;
 use apiary_storage::cell_reader::CellReader;
 use apiary_storage::ledger::Ledger;
 

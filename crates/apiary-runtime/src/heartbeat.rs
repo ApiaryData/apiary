@@ -5,8 +5,8 @@
 //! [`WorldView`] — a snapshot of all known nodes and their status.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -14,10 +14,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
-use apiary_core::Result;
 
 use crate::bee::BeePool;
 use crate::behavioral::ColonyThermometer;
@@ -173,10 +173,13 @@ impl HeartbeatWriter {
     /// Run the heartbeat writer loop until the cancellation token fires.
     pub async fn run(&self, cancel: tokio::sync::watch::Receiver<bool>) {
         // Write the first heartbeat immediately on start (join the swarm).
-        if let Err(e) = self.write_once().await {
-            warn!(error = %e, "Failed to write initial heartbeat");
-        } else {
-            info!(node_id = %self.node_id, "Heartbeat writer started");
+        match self.write_once().await {
+            Err(e) => {
+                warn!(error = %e, "Failed to write initial heartbeat");
+            }
+            _ => {
+                info!(node_id = %self.node_id, "Heartbeat writer started");
+            }
         }
 
         loop {
@@ -364,10 +367,13 @@ impl WorldViewBuilder {
     /// Run the world view builder loop until cancellation.
     pub async fn run(&self, cancel: tokio::sync::watch::Receiver<bool>) {
         // Build immediately on start.
-        if let Err(e) = self.poll_once().await {
-            warn!(error = %e, "Failed to build initial world view");
-        } else {
-            info!("World view builder started");
+        match self.poll_once().await {
+            Err(e) => {
+                warn!(error = %e, "Failed to build initial world view");
+            }
+            _ => {
+                info!("World view builder started");
+            }
         }
 
         loop {
@@ -399,11 +405,14 @@ impl WorldViewBuilder {
                     .unwrap_or(Duration::from_secs(0));
                 if age > cleanup_age {
                     let key = format!("_heartbeats/node_{}.json", status.heartbeat.node_id);
-                    if let Err(e) = self.storage.delete(&key).await {
-                        warn!(key = %key, error = %e, "Failed to clean up stale heartbeat");
-                    } else {
-                        cleaned += 1;
-                        info!(node_id = %status.heartbeat.node_id, "Cleaned up stale heartbeat");
+                    match self.storage.delete(&key).await {
+                        Err(e) => {
+                            warn!(key = %key, error = %e, "Failed to clean up stale heartbeat");
+                        }
+                        _ => {
+                            cleaned += 1;
+                            info!(node_id = %status.heartbeat.node_id, "Cleaned up stale heartbeat");
+                        }
                     }
                 }
             }
@@ -536,16 +545,20 @@ mod tests {
         let writer = HeartbeatWriter::new(Arc::clone(&storage), &config, pool, cache);
 
         writer.write_once().await.unwrap();
-        assert!(storage
-            .exists("_heartbeats/node_del-node.json")
-            .await
-            .unwrap());
+        assert!(
+            storage
+                .exists("_heartbeats/node_del-node.json")
+                .await
+                .unwrap()
+        );
 
         writer.delete_heartbeat().await.unwrap();
-        assert!(!storage
-            .exists("_heartbeats/node_del-node.json")
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("_heartbeats/node_del-node.json")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -864,10 +877,12 @@ mod tests {
         assert_eq!(cleaned, 1);
 
         // File should be gone
-        assert!(!storage
-            .exists("_heartbeats/node_ancient-node.json")
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("_heartbeats/node_ancient-node.json")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

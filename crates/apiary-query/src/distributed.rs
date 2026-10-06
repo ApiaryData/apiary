@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
-use apiary_core::Result;
 
 /// Node state in the swarm.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

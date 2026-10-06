@@ -335,10 +335,10 @@ impl Ledger {
             .filter(|cell| {
                 // Partition pruning: skip cells whose partition values don't match
                 for (col, val) in partition_filters {
-                    if let Some(cell_val) = cell.partition_values.get(col) {
-                        if cell_val != val {
-                            return false;
-                        }
+                    if let Some(cell_val) = cell.partition_values.get(col)
+                        && cell_val != val
+                    {
+                        return false;
                     }
                 }
 
@@ -346,16 +346,16 @@ impl Ledger {
                 for (col, (min_filter, max_filter)) in stat_filters {
                     if let Some(col_stats) = cell.stats.get(col) {
                         // If filter has a minimum and cell's max is less, skip
-                        if let (Some(filter_min), Some(cell_max)) = (min_filter, &col_stats.max) {
-                            if json_value_lt(cell_max, filter_min) {
-                                return false;
-                            }
+                        if let (Some(filter_min), Some(cell_max)) = (min_filter, &col_stats.max)
+                            && json_value_lt(cell_max, filter_min)
+                        {
+                            return false;
                         }
                         // If filter has a maximum and cell's min is greater, skip
-                        if let (Some(filter_max), Some(cell_min)) = (max_filter, &col_stats.min) {
-                            if json_value_lt(filter_max, cell_min) {
-                                return false;
-                            }
+                        if let (Some(filter_max), Some(cell_min)) = (max_filter, &col_stats.min)
+                            && json_value_lt(filter_max, cell_min)
+                        {
+                            return false;
                         }
                     }
                 }

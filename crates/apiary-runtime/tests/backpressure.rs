@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use apiary_core::config::NodeConfig;
-use apiary_runtime::behavioral::{ColonyThermometer, TemperatureRegulation};
 use apiary_runtime::BeePool;
+use apiary_runtime::behavioral::{ColonyThermometer, TemperatureRegulation};
 
 fn test_config(cores: usize) -> (NodeConfig, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().unwrap();

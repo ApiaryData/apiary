@@ -11,9 +11,9 @@ use bytes::Bytes;
 use tokio::fs;
 use tracing::{debug, instrument};
 
+use apiary_core::Result;
 use apiary_core::error::ApiaryError;
 use apiary_core::storage::StorageBackend;
-use apiary_core::Result;
 
 /// A [`StorageBackend`] backed by the local filesystem.
 ///
@@ -187,7 +187,7 @@ async fn list_recursive(
             return Err(ApiaryError::storage(
                 format!("Failed to read directory {}", dir.display()),
                 e,
-            ))
+            ));
         }
     };
 

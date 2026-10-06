@@ -6,17 +6,17 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 
+use apiary_core::Result;
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::types::{BeeId, TaskId};
-use apiary_core::Result;
 
 /// State of a bee (idle or busy with a task).
 #[derive(Debug, Clone, PartialEq)]
