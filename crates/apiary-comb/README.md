@@ -1,10 +1,10 @@
-# apiary-storage
+# apiary-comb
 
 Storage backends and transaction ledger for the [Apiary](https://github.com/ApiaryData/apiary) distributed data processing framework.
 
 ## Overview
 
-`apiary-storage` implements the storage layer that all Apiary nodes interact with:
+`apiary-comb` implements the storage layer that all Apiary nodes interact with:
 
 - **LocalBackend** — Filesystem-based storage for single-node and development use
 - **S3Backend** — S3-compatible object storage (AWS S3, MinIO, GCS) for production and multi-node deployments
@@ -15,7 +15,7 @@ Storage backends and transaction ledger for the [Apiary](https://github.com/Apia
 ## Usage
 
 ```rust
-use apiary_storage::{LocalBackend, Ledger, CellWriter, CellReader};
+use apiary_comb::{LocalBackend, Ledger, CellWriter, CellReader};
 
 // Create a local storage backend
 let backend = LocalBackend::new("/tmp/apiary-data").await?;

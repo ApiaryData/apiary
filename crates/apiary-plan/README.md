@@ -1,10 +1,10 @@
-# apiary-query
+# apiary-plan
 
 DataFusion-based SQL query engine for the [Apiary](https://github.com/ApiaryData/apiary) distributed data processing framework.
 
 ## Overview
 
-`apiary-query` wraps [Apache DataFusion](https://datafusion.apache.org/) to provide SQL query capabilities over Apiary's Parquet-based storage:
+`apiary-plan` wraps [Apache DataFusion](https://datafusion.apache.org/) to provide SQL query capabilities over Apiary's Parquet-based storage:
 
 - **ApiaryQueryContext** — Wraps DataFusion's `SessionContext` with Apiary namespace resolution (`hive.box.frame`)
 - **Custom SQL commands** — `USE hive.box`, `SHOW HIVES`, `SHOW BOXES`, `SHOW FRAMES`, and `DESCRIBE frame`
@@ -15,7 +15,7 @@ DataFusion-based SQL query engine for the [Apiary](https://github.com/ApiaryData
 ## Usage
 
 ```rust
-use apiary_query::ApiaryQueryContext;
+use apiary_plan::ApiaryQueryContext;
 
 let ctx = ApiaryQueryContext::new(storage, registry).await?;
 

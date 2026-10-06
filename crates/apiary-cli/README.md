@@ -4,7 +4,7 @@ Command-line interface for the [Apiary](https://github.com/ApiaryData/apiary) di
 
 ## Overview
 
-`apiary-cli` provides a command-line tool for managing Apiary nodes and running queries. The CLI is currently a placeholder for v1; the primary interface is the [Python SDK](../apiary-python/README.md).
+`apiary-cli` provides a command-line tool for managing Apiary nodes and running queries. The CLI is currently a placeholder for v1; the primary interface is the [Python SDK](../apiary-py/README.md).
 
 ### Planned Commands
 
