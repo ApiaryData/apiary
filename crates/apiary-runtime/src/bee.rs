@@ -16,6 +16,7 @@ use tracing::info;
 use apiary_core::Result;
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
+use apiary_core::rng::StdSeededRng;
 use apiary_core::types::{BeeId, TaskId};
 
 /// State of a bee (idle or busy with a task).
@@ -130,6 +131,7 @@ pub struct BeePool {
     bees: Vec<Arc<Bee>>,
     queue: Arc<Mutex<VecDeque<QueuedTask>>>,
     default_timeout: Duration,
+    rng: std::sync::Mutex<StdSeededRng>,
 }
 
 /// Default task timeout: 30 seconds.
@@ -164,7 +166,14 @@ impl BeePool {
             bees,
             queue: Arc::new(Mutex::new(VecDeque::new())),
             default_timeout: DEFAULT_TASK_TIMEOUT,
+            rng: std::sync::Mutex::new(StdSeededRng::from_entropy()),
         }
+    }
+
+    /// Draw task ids from `rng` (seeded, so a simulated run replays exactly).
+    pub fn with_rng(mut self, rng: StdSeededRng) -> Self {
+        self.rng = std::sync::Mutex::new(rng);
+        self
     }
 
     /// Return the number of bees in the pool.
@@ -233,7 +242,7 @@ impl BeePool {
             + Send
             + 'static,
     {
-        let task_id = TaskId::generate();
+        let task_id = TaskId::generate_with(&mut *self.rng.lock().expect("bee pool rng poisoned"));
 
         // Temperature-based admission control: reject at Critical (> 0.95)
         let total = self.bees.len() as f64;

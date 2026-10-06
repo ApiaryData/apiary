@@ -17,7 +17,7 @@ use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
-use apiary_core::{CellSizingPolicy, FrameSchema, LedgerAction, Result, WriteResult};
+use apiary_core::{CellSizingPolicy, Env, FrameSchema, LedgerAction, Result, WriteResult};
 use apiary_query::ApiaryQueryContext;
 use apiary_storage::cell_reader::CellReader;
 use apiary_storage::cell_writer::CellWriter;
@@ -73,14 +73,25 @@ pub struct ApiaryNode {
 
     /// Cancellation channel to stop background tasks on shutdown.
     cancel_tx: tokio::sync::watch::Sender<bool>,
+
+    /// Clock and seed this node runs under (the system clock in production,
+    /// a virtual one in the observation hive).
+    pub env: Env,
 }
 
 impl ApiaryNode {
     /// Start a new Apiary node with the given configuration.
     ///
     /// Initialises the appropriate storage backend based on `config.storage_uri`
-    /// and logs the node's capacity.
+    /// and logs the node's capacity. Runs on the system clock; see
+    /// [`start_with_env`](Self::start_with_env) to supply another.
     pub async fn start(config: NodeConfig) -> Result<Self> {
+        Self::start_with_env(config, Env::system()).await
+    }
+
+    /// Start a node under the given [`Env`]: every time read, sleep and seeded
+    /// random choice goes through it.
+    pub async fn start_with_env(config: NodeConfig, env: Env) -> Result<Self> {
         let storage: Arc<dyn StorageBackend> = if config.storage_uri.starts_with("s3://") {
             Arc::new(S3Backend::new(&config.storage_uri)?)
         } else {
@@ -134,7 +145,7 @@ impl ApiaryNode {
                         );
                         last_err = Some(e);
                         if attempt < max_retries {
-                            tokio::time::sleep(delay).await;
+                            env.clock().sleep(delay).await;
                             delay = (delay * 2).min(Duration::from_secs(10));
                         }
                     }
@@ -154,32 +165,43 @@ impl ApiaryNode {
         )));
 
         // Initialize bee pool
-        let bee_pool = Arc::new(BeePool::new(&config));
+        let bee_pool = Arc::new(
+            BeePool::new(&config).with_rng(env.rng(config.node_id.as_str(), BEE_POOL_STREAM)),
+        );
         info!(bees = config.cores, "Bee pool initialized");
 
         // Initialize cell cache
         let cache_dir = config.cache_dir.join("cells");
-        let cell_cache =
-            Arc::new(CellCache::new(cache_dir, config.max_cache_size, Arc::clone(&storage)).await?);
+        let cell_cache = Arc::new(
+            CellCache::new(cache_dir, config.max_cache_size, Arc::clone(&storage))
+                .await?
+                .with_clock(env.clock()),
+        );
         info!(
             max_cache_mb = config.max_cache_size / (1024 * 1024),
             "Cell cache initialized"
         );
 
         // Initialize heartbeat writer
-        let heartbeat_writer = Arc::new(HeartbeatWriter::new(
-            Arc::clone(&storage),
-            &config,
-            Arc::clone(&bee_pool),
-            Arc::clone(&cell_cache),
-        ));
+        let heartbeat_writer = Arc::new(
+            HeartbeatWriter::new(
+                Arc::clone(&storage),
+                &config,
+                Arc::clone(&bee_pool),
+                Arc::clone(&cell_cache),
+            )
+            .with_clock(env.clock()),
+        );
 
         // Initialize world view builder
-        let world_view_builder = Arc::new(WorldViewBuilder::new(
-            Arc::clone(&storage),
-            config.heartbeat_interval, // poll at same rate as heartbeat
-            config.dead_threshold,
-        ));
+        let world_view_builder = Arc::new(
+            WorldViewBuilder::new(
+                Arc::clone(&storage),
+                config.heartbeat_interval, // poll at same rate as heartbeat
+                config.dead_threshold,
+            )
+            .with_clock(env.clock()),
+        );
         let world_view = world_view_builder.world_view();
 
         // Write initial heartbeat and build initial world view synchronously
@@ -224,6 +246,7 @@ impl ApiaryNode {
             world_view,
             world_view_builder,
             cancel_tx,
+            env,
         })
     }
 
@@ -238,7 +261,7 @@ impl ApiaryNode {
         let _ = self.cancel_tx.send(true);
 
         // Allow background tasks a moment to stop
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        self.env.clock().sleep(Duration::from_millis(100)).await;
 
         // Delete our heartbeat file (graceful departure)
         match self.heartbeat_writer.delete_heartbeat().await {
@@ -265,7 +288,7 @@ impl ApiaryNode {
         frame_name: &str,
         batch: &RecordBatch,
     ) -> Result<WriteResult> {
-        let start = std::time::Instant::now();
+        let start = self.env.clock().monotonic();
 
         // Resolve frame metadata
         let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
@@ -313,7 +336,7 @@ impl ApiaryNode {
             .commit(LedgerAction::AddCells { cells }, &self.config.node_id)
             .await?;
 
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = (self.env.clock().monotonic() - start).as_millis() as u64;
         let temperature = self.thermometer.measure(&self.bee_pool).await;
 
         Ok(WriteResult {
@@ -366,7 +389,7 @@ impl ApiaryNode {
         frame_name: &str,
         batch: &RecordBatch,
     ) -> Result<WriteResult> {
-        let start = std::time::Instant::now();
+        let start = self.env.clock().monotonic();
 
         let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
         let schema = FrameSchema::from_json_value(&frame.schema)?;
@@ -407,7 +430,7 @@ impl ApiaryNode {
             )
             .await?;
 
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = (self.env.clock().monotonic() - start).as_millis() as u64;
         let temperature = self.thermometer.measure(&self.bee_pool).await;
 
         Ok(WriteResult {
@@ -530,6 +553,9 @@ impl ApiaryNode {
     }
 }
 
+/// Stream index for the bee pool's random numbers, distinct from any Bee index.
+const BEE_POOL_STREAM: u64 = u64::MAX;
+
 /// Summary of the swarm as seen by this node.
 #[derive(Debug, Clone)]
 pub struct SwarmStatus {
@@ -589,6 +615,27 @@ mod tests {
         let node = ApiaryNode::start(config).await.unwrap();
         assert!(node.config.cores > 0);
         node.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_start_with_env_uses_the_injected_clock() {
+        use apiary_core::ManualClock;
+        use chrono::TimeZone;
+
+        let origin = chrono::Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap();
+        let env = Env::new(Arc::new(ManualClock::new(origin)), 7);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = NodeConfig::detect("local://test");
+        config.storage_uri = format!("local://{}", tmp.path().display());
+
+        // The manual clock never advances, so the node's heartbeat and world
+        // view carry exactly its time and not the machine's. (No shutdown:
+        // its settle delay would wait on the stopped clock.)
+        let node = ApiaryNode::start_with_env(config, env).await.unwrap();
+        let view = node.world_view().await;
+        assert_eq!(view.updated_at, origin);
+        let status = view.nodes.values().next().expect("own heartbeat");
+        assert_eq!(status.heartbeat.timestamp, origin);
     }
 
     #[tokio::test]

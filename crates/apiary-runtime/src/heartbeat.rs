@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use apiary_core::Result;
+use apiary_core::clock::{Clock, SystemClock};
 use apiary_core::error::ApiaryError;
 use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
@@ -84,6 +85,7 @@ pub struct HeartbeatWriter {
     memory_total_bytes: u64,
     memory_per_bee: u64,
     target_cell_size: u64,
+    clock: Arc<dyn Clock>,
 }
 
 impl HeartbeatWriter {
@@ -106,7 +108,14 @@ impl HeartbeatWriter {
             memory_total_bytes: config.memory_bytes,
             memory_per_bee: config.memory_per_bee,
             target_cell_size: config.target_cell_size,
+            clock: SystemClock::shared(),
         }
+    }
+
+    /// Use `clock` for timestamps and the write interval (the default is the system clock).
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Collect a heartbeat snapshot from the current node state.
@@ -138,7 +147,7 @@ impl HeartbeatWriter {
 
         Heartbeat {
             node_id: self.node_id.as_str().to_string(),
-            timestamp: Utc::now(),
+            timestamp: self.clock.now_utc(),
             version,
             capacity: HeartbeatCapacity {
                 cores: self.cores,
@@ -184,7 +193,7 @@ impl HeartbeatWriter {
 
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(self.interval) => {
+                _ = self.clock.sleep(self.interval) => {
                     if let Err(e) = self.write_once().await {
                         warn!(error = %e, "Failed to write heartbeat");
                     }
@@ -235,11 +244,16 @@ pub struct WorldView {
 }
 
 impl WorldView {
-    /// Create an empty world view.
+    /// Create an empty world view stamped with the system time.
     pub fn empty() -> Self {
+        Self::empty_at(Utc::now())
+    }
+
+    /// Create an empty world view stamped with `now`.
+    pub fn empty_at(now: DateTime<Utc>) -> Self {
         Self {
             nodes: HashMap::new(),
-            updated_at: Utc::now(),
+            updated_at: now,
         }
     }
 
@@ -278,6 +292,7 @@ pub struct WorldViewBuilder {
     poll_interval: Duration,
     dead_threshold: Duration,
     world_view: Arc<RwLock<WorldView>>,
+    clock: Arc<dyn Clock>,
 }
 
 impl WorldViewBuilder {
@@ -292,7 +307,15 @@ impl WorldViewBuilder {
             poll_interval,
             dead_threshold,
             world_view: Arc::new(RwLock::new(WorldView::empty())),
+            clock: SystemClock::shared(),
         }
+    }
+
+    /// Use `clock` for ages and the poll interval (the default is the system clock).
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.world_view = Arc::new(RwLock::new(WorldView::empty_at(clock.now_utc())));
+        self.clock = clock;
+        self
     }
 
     /// Return a shared handle to the world view.
@@ -303,7 +326,7 @@ impl WorldViewBuilder {
     /// Build the world view once by reading all heartbeat files.
     pub async fn build_once(&self) -> Result<WorldView> {
         let keys = self.storage.list("_heartbeats/").await?;
-        let now = Utc::now();
+        let now = self.clock.now_utc();
         let mut nodes = HashMap::new();
 
         for key in &keys {
@@ -378,7 +401,7 @@ impl WorldViewBuilder {
 
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(self.poll_interval) => {
+                _ = self.clock.sleep(self.poll_interval) => {
                     if let Err(e) = self.poll_once().await {
                         warn!(error = %e, "Failed to poll world view");
                     }
@@ -394,7 +417,7 @@ impl WorldViewBuilder {
     /// Clean up heartbeat files for nodes that have been dead longer than `cleanup_age`.
     pub async fn cleanup_stale(&self, cleanup_age: Duration) -> Result<usize> {
         let view = self.world_view.read().await;
-        let now = Utc::now();
+        let now = self.clock.now_utc();
         let mut cleaned = 0;
 
         for status in view.nodes.values() {

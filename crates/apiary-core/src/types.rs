@@ -24,6 +24,14 @@ macro_rules! define_id {
                 Self(Uuid::new_v4().to_string())
             }
 
+            /// Generate an identifier from a seeded generator, so a simulated
+            /// run produces the same ids every time. The result is a valid
+            /// UUID v4 string.
+            pub fn generate_with(rng: &mut impl crate::rng::SeededRng) -> Self {
+                let bytes = rng.next_bytes16();
+                Self(uuid::Builder::from_random_bytes(bytes).into_uuid().to_string())
+            }
+
             /// Return the inner string value.
             pub fn as_str(&self) -> &str {
                 &self.0
@@ -101,6 +109,17 @@ mod tests {
         let id1 = NodeId::generate();
         let id2 = NodeId::generate();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_id_generate_with_is_replayable_uuid() {
+        use crate::rng::StdSeededRng;
+        let a = TaskId::generate_with(&mut StdSeededRng::from_seed(5));
+        let b = TaskId::generate_with(&mut StdSeededRng::from_seed(5));
+        let c = TaskId::generate_with(&mut StdSeededRng::from_seed(6));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(uuid::Uuid::parse_str(a.as_str()).is_ok());
     }
 
     #[test]
