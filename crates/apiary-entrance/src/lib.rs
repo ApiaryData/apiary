@@ -7,8 +7,10 @@
 
 pub mod flight;
 pub mod guard;
+pub mod mqtt;
 pub mod set_aside;
 
 pub use flight::{FlightEntrance, RunningFlight};
 pub use guard::{Admission, Guard, Source, check_batch, check_schema, fingerprint};
+pub use mqtt::{MqttConfig, RunningMqtt, Subscription};
 pub use set_aside::{SetAside, SetAsideRecord};

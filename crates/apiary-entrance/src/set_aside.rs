@@ -100,7 +100,11 @@ impl SetAside {
         payload: &[u8],
     ) -> Result<SetAsideRecord> {
         let at_ms = chrono::Utc::now().timestamp_millis();
-        let id = format!("{at_ms:016}-{}", uuid::Uuid::new_v4().simple());
+        // Time, then a counter (two deposits can share a millisecond), then a
+        // random part (two Nodes can share a directory).
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = format!("{at_ms:016}-{seq:08}-{}", uuid::Uuid::new_v4().simple());
         let payload_name = format!("{id}.{extension}");
         let record = SetAsideRecord {
             frame: frame.to_string(),
@@ -138,7 +142,8 @@ impl SetAside {
                 records.push(record);
             }
         }
-        records.sort_by(|a, b| a.at_ms.cmp(&b.at_ms).then(a.payload.cmp(&b.payload)));
+        // The payload name starts with the time and a counter.
+        records.sort_by(|a, b| a.payload.cmp(&b.payload));
         Ok(records)
     }
 
