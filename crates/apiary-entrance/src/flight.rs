@@ -49,6 +49,9 @@ use crate::guard::{Admission, Guard, Source};
 /// How long a query's result waits for its `DoGet`.
 const RESULT_TTL: Duration = Duration::from_secs(60);
 
+/// HTTP/2 flow-control window per stream, in bytes.
+const WINDOW: u32 = 8 * 1024 * 1024;
+
 /// The most results held at once; the oldest is dropped beyond this.
 const MAX_PENDING: usize = 64;
 
@@ -640,9 +643,19 @@ pub async fn start(
     );
 
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    // Binding the listener ourselves skips tonic's own TCP_NODELAY setting. Without
+    // it, Nagle's algorithm and delayed ACKs hold back the small writes of a
+    // streamed result by tens of milliseconds each.
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener).map_ok(|socket| {
+        let _ = socket.set_nodelay(true);
+        socket
+    });
     let task = tokio::spawn(async move {
+        // HTTP/2's default flow-control window is 64 KiB, so a batch of tens of
+        // thousands of rows would stall waiting for window updates.
         let served = tonic::transport::Server::builder()
+            .initial_stream_window_size(Some(WINDOW))
+            .initial_connection_window_size(Some(WINDOW * 2))
             .add_service(intercepted)
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = stopped.await;

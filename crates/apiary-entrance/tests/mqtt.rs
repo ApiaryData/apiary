@@ -59,6 +59,15 @@ dynamic_filters = true
 }
 
 fn config(port: u16, batch_rows: usize, batch_interval: Duration) -> MqttConfig {
+    config_idle(port, batch_rows, batch_interval, Duration::ZERO)
+}
+
+fn config_idle(
+    port: u16,
+    batch_rows: usize,
+    batch_interval: Duration,
+    idle_flush: Duration,
+) -> MqttConfig {
     MqttConfig {
         host: "127.0.0.1".into(),
         port,
@@ -71,6 +80,7 @@ fn config(port: u16, batch_rows: usize, batch_interval: Duration) -> MqttConfig 
         }],
         batch_rows,
         batch_interval,
+        idle_flush,
     }
 }
 
@@ -257,4 +267,35 @@ fn a_bad_subscription_is_refused_at_start() {
         none.subscriptions.clear();
         assert!(mqtt::start(f.guard.clone(), none).is_err());
     });
+}
+
+#[tokio::test]
+async fn a_stream_of_small_messages_does_not_stall_on_the_brokers_window() {
+    // The broker keeps 100 messages in flight to us and holds the rest until we
+    // acknowledge. With one row per message and a 1000-row batch that never
+    // fills, only the idle flush keeps messages moving; the interval is an hour.
+    let f = fixture().await;
+    let port = broker();
+    let running = mqtt::start(
+        f.guard.clone(),
+        config_idle(
+            port,
+            1000,
+            Duration::from_secs(3600),
+            Duration::from_millis(20),
+        ),
+    )
+    .unwrap();
+    let client = publisher(port).await;
+    settle().await;
+
+    for id in 0..400 {
+        publish(&client, "plant/a/readings", &format!(r#"{{"id": {id}}}"#)).await;
+    }
+    eventually("all 400 single-row messages to land", || async {
+        rows(&f.node).await == 400
+    })
+    .await;
+
+    running.stop().await;
 }

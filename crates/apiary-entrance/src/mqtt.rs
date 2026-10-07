@@ -67,6 +67,14 @@ pub struct MqttConfig {
     /// ...or once its oldest message has waited this long.
     #[serde(default = "default_batch_interval", with = "duration_millis")]
     pub batch_interval: Duration,
+    /// ...or once no message has arrived for this long (0 turns this off).
+    ///
+    /// A message is acknowledged only after it is deposited, and a broker keeps
+    /// only so many messages in flight to a subscriber (Mosquitto 20 by default).
+    /// A batch counted in rows may never fill from one window of small messages,
+    /// so without this the stream would stall until `batch_interval` every time.
+    #[serde(default = "default_idle_flush", with = "duration_millis")]
+    pub idle_flush: Duration,
 }
 
 fn default_port() -> u16 {
@@ -79,6 +87,10 @@ fn default_batch_rows() -> usize {
 
 fn default_batch_interval() -> Duration {
     Duration::from_millis(500)
+}
+
+fn default_idle_flush() -> Duration {
+    Duration::from_millis(10)
 }
 
 mod duration_millis {
@@ -186,10 +198,27 @@ async fn run(
     let mut buffers: HashMap<FrameName, Buffer> = HashMap::new();
     let mut schemas: HashMap<FrameName, SchemaRef> = HashMap::new();
     let mut tick = tokio::time::interval(config.batch_interval.max(Duration::from_millis(10)) / 2);
+    // When the last message arrived, for the idle flush.
+    let mut last_message = tokio::time::Instant::now();
+    let far_future = Duration::from_secs(86_400 * 365);
 
     loop {
         tokio::select! {
             _ = &mut stopped => break,
+            _ = tokio::time::sleep_until(
+                if config.idle_flush.is_zero() || buffers.is_empty() {
+                    tokio::time::Instant::now() + far_future
+                } else {
+                    last_message + config.idle_flush
+                }
+            ) => {
+                // The stream paused: deposit what has arrived.
+                let keys: Vec<FrameName> = buffers.keys().cloned().collect();
+                for key in keys {
+                    deposit(&guard, &client, &key, &mut buffers).await;
+                }
+                last_message = tokio::time::Instant::now();
+            }
             _ = tick.tick() => {
                 let due: Vec<FrameName> = buffers
                     .iter()
@@ -210,6 +239,7 @@ async fn run(
                     }
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
+                    last_message = tokio::time::Instant::now();
                     receive(&guard, &client, &routes, &config, &mut schemas, &mut buffers, publish).await;
                 }
                 Ok(_) => {}
