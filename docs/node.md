@@ -40,6 +40,7 @@ port = 1883
 client_id = "apiary-pi-01"
 batch_rows = 1000                         # a batch is deposited at this many rows...
 batch_interval = 500                      # ...or when its oldest message is this many ms old
+idle_flush = 10                         # ...or when no message has arrived for this many ms (0 = off)
 [[mqtt.subscriptions]]
 topic = "plant/+/readings"
 frame = "factory.line1.readings"          # hive.box.frame
@@ -85,6 +86,8 @@ through the Guard. A message is acknowledged to the broker only after its batch
 has landed in the crop, so a Node that dies mid-batch is redelivered what it had
 not secured. That is at-least-once: the crop does not deduplicate, and a frame
 with a dedup key removes repeats when it ripens.
+
+A broker holds only so many unacknowledged messages in flight to a subscriber (Mosquitto 20 by default), and a message is acknowledged only after it is deposited, so `idle_flush` deposits whenever the stream pauses; without it a stream of small messages would wait out `batch_interval` on every window. Messages that carry several rows go faster still.
 
 ## Guards and set-aside
 
