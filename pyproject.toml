@@ -11,6 +11,9 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+flight = ["pyarrow>=14"]
+
 [tool.maturin]
 manifest-path = "crates/apiary-py/Cargo.toml"
 python-source = "python"
