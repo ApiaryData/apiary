@@ -63,6 +63,7 @@ pub struct Guard {
     node: Arc<ApiaryNode>,
     set_aside: SetAside,
     max_batch_bytes: usize,
+    cpu: Option<tokio::runtime::Handle>,
 }
 
 impl Guard {
@@ -72,6 +73,31 @@ impl Guard {
             node,
             set_aside,
             max_batch_bytes: DEFAULT_MAX_BATCH_BYTES,
+            cpu: None,
+        }
+    }
+
+    /// Run the Node's work (ingest, queries) on another runtime than the one
+    /// serving the connections, so a long scan never delays a network read.
+    pub fn with_cpu_runtime(mut self, handle: tokio::runtime::Handle) -> Self {
+        self.cpu = Some(handle);
+        self
+    }
+
+    /// Run `work` on the CPU runtime if there is one, else here.
+    pub async fn on_cpu<F, T>(&self, work: F) -> Result<T>
+    where
+        F: std::future::Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        match &self.cpu {
+            None => work.await,
+            Some(handle) => handle
+                .spawn(work)
+                .await
+                .map_err(|e| ApiaryError::Internal {
+                    message: format!("A task on the CPU runtime failed: {e}"),
+                })?,
         }
     }
 
@@ -107,7 +133,17 @@ impl Guard {
         if let Err(reason) = check_batch(&expected, batch, self.max_batch_bytes) {
             return self.refuse(hive, box_name, frame, batch, source, reason);
         }
-        match self.node.ingest(hive, box_name, frame, batch).await {
+        let node = Arc::clone(&self.node);
+        let (h, b, f, rows) = (
+            hive.to_string(),
+            box_name.to_string(),
+            frame.to_string(),
+            batch.clone(),
+        );
+        match self
+            .on_cpu(async move { node.ingest(&h, &b, &f, &rows).await })
+            .await
+        {
             Ok(result) => Ok(Admission::Landed(result)),
             // The values did not fit the types (a number too big, a null in a
             // required column): the same as a schema mismatch.

@@ -270,3 +270,109 @@ async fn the_registry_is_browsable_as_catalogs_and_tables() {
 
     server.stop().await;
 }
+
+async fn action(
+    addr: SocketAddr,
+    kind: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, tonic::Status> {
+    use arrow_flight::Action;
+    use arrow_flight::flight_service_client::FlightServiceClient;
+
+    let channel = Channel::from_shared(format!("http://{addr}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut client = FlightServiceClient::new(channel);
+    let mut results = client
+        .do_action(Action {
+            r#type: kind.to_string(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+        })
+        .await?
+        .into_inner();
+    let first = results.message().await?.expect("a result");
+    Ok(serde_json::from_slice(&first.body).unwrap())
+}
+
+#[tokio::test]
+async fn frames_are_created_and_used_over_flight_alone() {
+    let f = fixture().await;
+    let (server, addr) = serve(&f, None).await;
+
+    action(
+        addr,
+        "apiary.create_hive",
+        serde_json::json!({"name": "plant"}),
+    )
+    .await
+    .unwrap();
+    action(
+        addr,
+        "apiary.create_box",
+        serde_json::json!({"hive": "plant", "name": "line"}),
+    )
+    .await
+    .unwrap();
+    action(
+        addr,
+        "apiary.create_frame",
+        serde_json::json!({
+            "hive": "plant", "box": "line", "name": "temps",
+            "schema": {"id": "int64", "temp": "float64"}, "partition_by": []
+        }),
+    )
+    .await
+    .unwrap();
+    action(
+        addr,
+        "apiary.set_recipe",
+        serde_json::json!({"hive": "plant", "box": "line", "frame": "temps", "sort_by": ["id"], "dedup_by": ["id"]}),
+    )
+    .await
+    .unwrap();
+
+    let mut client = client(addr).await;
+    let command = CommandStatementIngest {
+        table: "temps".into(),
+        schema: Some("line".into()),
+        catalog: Some("plant".into()),
+        ..Default::default()
+    };
+    client
+        .execute_ingest(command, futures::stream::iter(vec![Ok(good())]))
+        .await
+        .unwrap();
+
+    let flushed = action(addr, "apiary.flush_crop", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(flushed["rows"], 2);
+
+    let (_, batches) = query(&mut client, "SELECT id FROM plant.line.temps ORDER BY id").await;
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+
+    // Creating again is harmless, and mistakes come back as errors, not crashes.
+    assert!(
+        action(
+            addr,
+            "apiary.create_hive",
+            serde_json::json!({"name": "plant"})
+        )
+        .await
+        .is_ok()
+    );
+    assert!(
+        action(addr, "apiary.create_hive", serde_json::json!({"nope": 1}))
+            .await
+            .is_err()
+    );
+    assert!(
+        action(addr, "apiary.nonsense", serde_json::json!({}))
+            .await
+            .is_err()
+    );
+
+    server.stop().await;
+}

@@ -154,10 +154,11 @@ impl FlightSqlService for FlightEntrance {
         query: CommandStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
+        let node = Arc::clone(self.guard.node());
+        let sql = query.query.clone();
         let output = self
             .guard
-            .node()
-            .sql_with_stages(&query.query)
+            .on_cpu(async move { node.sql_with_stages(&sql).await })
             .await
             .map_err(status)?;
         let rows: usize = output.batches.iter().map(RecordBatch::num_rows).sum();
@@ -395,10 +396,166 @@ impl FlightSqlService for FlightEntrance {
         Ok(Response::new(encode_stream(schema, vec![batch])))
     }
 
+    async fn list_custom_actions(
+        &self,
+    ) -> Option<Vec<std::result::Result<arrow_flight::ActionType, Status>>> {
+        let describe = |kind: &str, description: &str| {
+            Ok(arrow_flight::ActionType {
+                r#type: kind.to_string(),
+                description: description.to_string(),
+            })
+        };
+        Some(vec![
+            describe(ACTION_CREATE_HIVE, "Create a hive: {\"name\"}"),
+            describe(ACTION_CREATE_BOX, "Create a box: {\"hive\", \"name\"}"),
+            describe(
+                ACTION_CREATE_FRAME,
+                "Create a frame: {\"hive\", \"box\", \"name\", \"schema\": {column: type}, \"partition_by\": []}",
+            ),
+            describe(
+                ACTION_SET_RECIPE,
+                "Set how a frame ripens: {\"hive\", \"box\", \"frame\", \"sort_by\": [], \"dedup_by\": []}",
+            ),
+            describe(
+                ACTION_FLUSH_CROP,
+                "Deposit the node's crop into the comb now",
+            ),
+        ])
+    }
+
+    async fn do_action_fallback(
+        &self,
+        request: Request<arrow_flight::Action>,
+    ) -> std::result::Result<Response<BoxedStream<arrow_flight::Result>>, Status> {
+        let action = request.into_inner();
+        let reply = self.run_action(&action.r#type, &action.body).await?;
+        let body = serde_json::to_vec(&reply).map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Box::pin(futures::stream::iter(vec![Ok(
+            arrow_flight::Result { body: body.into() },
+        )]))))
+    }
+
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
 }
 
+/// Custom action types, for what Flight SQL has no verb for.
+pub const ACTION_CREATE_HIVE: &str = "apiary.create_hive";
+/// Create a box.
+pub const ACTION_CREATE_BOX: &str = "apiary.create_box";
+/// Create a frame.
+pub const ACTION_CREATE_FRAME: &str = "apiary.create_frame";
+/// Set a frame's ripening recipe.
+pub const ACTION_SET_RECIPE: &str = "apiary.set_recipe";
+/// Deposit the crop now.
+pub const ACTION_FLUSH_CROP: &str = "apiary.flush_crop";
+
+#[derive(serde::Deserialize)]
+struct CreateHive {
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateBox {
+    hive: String,
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateFrame {
+    hive: String,
+    #[serde(rename = "box")]
+    box_name: String,
+    name: String,
+    schema: serde_json::Value,
+    #[serde(default)]
+    partition_by: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SetRecipe {
+    hive: String,
+    #[serde(rename = "box")]
+    box_name: String,
+    frame: String,
+    #[serde(default)]
+    sort_by: Vec<String>,
+    #[serde(default)]
+    dedup_by: Vec<String>,
+}
+
+fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> std::result::Result<T, Status> {
+    serde_json::from_slice(body)
+        .map_err(|e| Status::invalid_argument(format!("The action body is not valid: {e}")))
+}
+
 impl FlightEntrance {
+    async fn run_action(
+        &self,
+        kind: &str,
+        body: &[u8],
+    ) -> std::result::Result<serde_json::Value, Status> {
+        let node = self.guard.node();
+        match kind {
+            ACTION_CREATE_HIVE => {
+                let request: CreateHive = parse(body)?;
+                node.registry
+                    .create_hive(&request.name)
+                    .await
+                    .map_err(status)?;
+                Ok(serde_json::json!({}))
+            }
+            ACTION_CREATE_BOX => {
+                let request: CreateBox = parse(body)?;
+                node.registry
+                    .create_box(&request.hive, &request.name)
+                    .await
+                    .map_err(status)?;
+                Ok(serde_json::json!({}))
+            }
+            ACTION_CREATE_FRAME => {
+                let request: CreateFrame = parse(body)?;
+                node.registry
+                    .create_frame(
+                        &request.hive,
+                        &request.box_name,
+                        &request.name,
+                        request.schema,
+                        request.partition_by,
+                    )
+                    .await
+                    .map_err(status)?;
+                node.init_frame_table(&request.hive, &request.box_name, &request.name)
+                    .await
+                    .map_err(status)?;
+                Ok(serde_json::json!({}))
+            }
+            ACTION_SET_RECIPE => {
+                let request: SetRecipe = parse(body)?;
+                node.set_recipe(
+                    &request.hive,
+                    &request.box_name,
+                    &request.frame,
+                    request.sort_by,
+                    request.dedup_by,
+                )
+                .await
+                .map_err(status)?;
+                Ok(serde_json::json!({}))
+            }
+            ACTION_FLUSH_CROP => {
+                let report = node.flush_crop().await.map_err(status)?;
+                Ok(serde_json::json!({
+                    "frames": report.frames,
+                    "segments": report.segments,
+                    "rows": report.rows,
+                }))
+            }
+            other => Err(Status::invalid_argument(format!(
+                "Unknown action '{other}'"
+            ))),
+        }
+    }
+
     async fn hives(&self) -> std::result::Result<Vec<String>, Status> {
         let mut hives = self
             .guard
