@@ -7,15 +7,18 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use tokio::sync::RwLock;
 use tracing::info;
 
 use apiary_comb::local::{LocalBackend, expand_local_path};
 use apiary_comb::s3::S3Backend;
-use apiary_comb::{CellState, Comb};
+use apiary_comb::schema::{conform_batch, delta_schema};
+use apiary_comb::{CellState, Comb, Crop};
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
@@ -26,7 +29,26 @@ use apiary_plan::{ApiaryQueryContext, QueryOptions};
 use crate::bee::{BeePool, BeeStatus};
 use crate::behavioral::{AbandonmentTracker, ColonyThermometer};
 use crate::cache::CellCache;
+use crate::deposit::{DepositReport, Depositor, open_or_create_table};
 use crate::heartbeat::{HeartbeatWriter, NodeState, WorldView, WorldViewBuilder};
+
+/// What one ingest landed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IngestResult {
+    /// Rows landed in the crop.
+    pub rows: u64,
+    /// The crop segment they were written as (`None` for an empty batch).
+    pub segment: Option<u64>,
+    /// Bytes ingested since the crop was last deposited.
+    pub crop_bytes: u64,
+}
+
+/// What ingest needs to know about a Frame, resolved once.
+struct FrameSpec {
+    /// The schema the Frame's table stores.
+    schema: SchemaRef,
+    partition_by: Vec<String>,
+}
 
 /// An Apiary compute node — the runtime for one machine in the swarm.
 ///
@@ -43,6 +65,9 @@ pub struct ApiaryNode {
 
     /// The comb: every Frame is a Delta table under this root.
     pub comb: Arc<Comb>,
+
+    /// This Node's crop: rows ingested here and not yet deposited into the comb.
+    pub crop: Arc<Crop>,
 
     /// Registry manager for DDL operations.
     pub registry: Arc<RegistryManager>,
@@ -71,6 +96,18 @@ pub struct ApiaryNode {
     /// World view builder (kept alive for on-demand cleanup).
     #[allow(dead_code)]
     world_view_builder: Arc<WorldViewBuilder>,
+
+    /// Moves the crop into the comb, on a cadence and at shutdown.
+    depositor: Arc<Depositor>,
+
+    /// Wakes the deposit loop early when the crop grows large.
+    deposit_wake: Arc<tokio::sync::Notify>,
+
+    /// Bytes ingested since the crop was last deposited.
+    crop_bytes: Arc<AtomicU64>,
+
+    /// What ingest has learned about each Frame, by Hive, Box and Frame name.
+    frame_specs: RwLock<HashMap<(String, String, String), Arc<FrameSpec>>>,
 
     /// Cancellation channel to stop background tasks on shutdown.
     cancel_tx: tokio::sync::watch::Sender<bool>,
@@ -154,14 +191,31 @@ impl ApiaryNode {
         // Every Frame is a Delta table under the comb
         let comb = Arc::new(Comb::from_storage_uri(&config.storage_uri)?);
 
+        // The crop: where ingested rows land first, on this Node's disk. It
+        // outlives restarts, so rows ingested before a crash are deposited by
+        // the next run.
+        let crop = Arc::new(Crop::open(config.crop_dir())?.with_sync(config.crop_sync));
+
         // One long-lived query session for the Node: a memory pool shared by
-        // all queries, a spill directory, and joins planned to fit a Bee.
+        // all queries, a spill directory, joins planned to fit a Bee, and
+        // Frames that include the crop.
+        let mut query_options = QueryOptions::from_node(&config);
+        query_options.crop = Some(Arc::clone(&crop));
         let query_ctx = Arc::new(ApiaryQueryContext::with_options(
             Arc::clone(&comb),
             Arc::clone(&registry),
             config.node_id.clone(),
-            QueryOptions::from_node(&config),
+            query_options,
         )?);
+
+        let depositor = Arc::new(Depositor::new(
+            Arc::clone(&comb),
+            Arc::clone(&crop),
+            Arc::clone(&registry),
+            config.target_cell_size,
+        ));
+        let deposit_wake = Arc::new(tokio::sync::Notify::new());
+        let crop_bytes = Arc::new(AtomicU64::new(0));
 
         // Initialize bee pool
         let bee_pool = Arc::new(
@@ -230,12 +284,39 @@ impl ApiaryNode {
             });
         }
 
-        info!("Heartbeat and world view background tasks started");
+        // Start the deposit loop: it first deposits whatever an earlier run
+        // left in the crop, then does so every interval, or sooner when the
+        // crop grows large.
+        {
+            let depositor = Arc::clone(&depositor);
+            let wake = Arc::clone(&deposit_wake);
+            let crop_bytes = Arc::clone(&crop_bytes);
+            let clock = env.clock();
+            let interval = config.deposit_interval;
+            let mut stop = cancel_rx.clone();
+            tokio::spawn(async move {
+                loop {
+                    crop_bytes.store(0, Ordering::Relaxed);
+                    match depositor.flush().await {
+                        Ok(report) => Depositor::log(&report),
+                        Err(e) => tracing::warn!(error = %e, "Crop deposit failed; will retry"),
+                    }
+                    tokio::select! {
+                        _ = clock.sleep(interval) => {}
+                        _ = wake.notified() => {}
+                        _ = stop.wait_for(|stopped| *stopped) => break,
+                    }
+                }
+            });
+        }
+
+        info!("Heartbeat, world view and deposit background tasks started");
 
         Ok(Self {
             config,
             storage,
             comb,
+            crop,
             registry,
             query_ctx,
             bee_pool,
@@ -245,6 +326,10 @@ impl ApiaryNode {
             heartbeat_writer,
             world_view,
             world_view_builder,
+            depositor,
+            deposit_wake,
+            crop_bytes,
+            frame_specs: RwLock::new(HashMap::new()),
             cancel_tx,
             env,
         })
@@ -262,6 +347,13 @@ impl ApiaryNode {
 
         // Allow background tasks a moment to stop
         self.env.clock().sleep(Duration::from_millis(100)).await;
+
+        // Deposit what is still in the crop, so a graceful stop leaves nothing
+        // only on this Node's disk.
+        match self.depositor.flush().await {
+            Ok(report) => Depositor::log(&report),
+            Err(e) => tracing::warn!(error = %e, "Failed to deposit the crop during shutdown"),
+        }
 
         // Delete our heartbeat file (graceful departure)
         match self.heartbeat_writer.delete_heartbeat().await {
@@ -304,7 +396,8 @@ impl ApiaryNode {
     }
 
     /// Read data from a frame, optionally filtering by partition values.
-    /// Returns all matching data as a merged RecordBatch.
+    /// Returns all matching data as a merged RecordBatch, including rows still
+    /// in the crop (without the `_stage` column).
     pub async fn read_from_frame(
         &self,
         hive: &str,
@@ -312,18 +405,86 @@ impl ApiaryNode {
         frame_name: &str,
         partition_filter: Option<&HashMap<String, String>>,
     ) -> Result<Option<RecordBatch>> {
-        match self
-            .comb
-            .open_frame_table(hive, box_name, frame_name)
-            .await?
-        {
-            Some(table) => self.comb.read(&table, partition_filter).await,
-            None => Ok(None),
+        self.query_ctx
+            .read_frame(hive, box_name, frame_name, partition_filter)
+            .await
+    }
+
+    /// Land a batch in this Node's crop: queryable at once (`_stage = 'crop'`),
+    /// deposited into the comb on the next deposit interval.
+    ///
+    /// The batch is checked against the Frame's schema here, so a bad batch is
+    /// refused at the entrance and nothing is written. The segment is on disk,
+    /// synced, before this returns. Unlike [`write_to_frame`](Self::write_to_frame),
+    /// which commits to the comb before returning, the rows exist only on this
+    /// Node until they are deposited.
+    pub async fn ingest(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+        batch: &RecordBatch,
+    ) -> Result<IngestResult> {
+        let spec = self.frame_spec(hive, box_name, frame_name).await?;
+        let conformed = conform_batch(batch, &spec.schema, &spec.partition_by)?;
+        let rows = conformed.num_rows() as u64;
+
+        let log = self.crop.frame(hive, box_name, frame_name)?;
+        let segment = tokio::task::spawn_blocking(move || log.append(&conformed))
+            .await
+            .map_err(|e| ApiaryError::Internal {
+                message: format!("Ingest task failed: {e}"),
+            })??;
+
+        let bytes = segment.as_ref().map_or(0, |s| s.bytes);
+        let pending = self.crop_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        if pending >= self.config.crop_max_bytes {
+            self.deposit_wake.notify_one();
         }
+        Ok(IngestResult {
+            rows,
+            segment: segment.map(|s| s.seq),
+            crop_bytes: pending,
+        })
+    }
+
+    /// Deposit everything in the crop into the comb now, rather than waiting
+    /// for the interval.
+    pub async fn flush_crop(&self) -> Result<DepositReport> {
+        self.depositor.flush().await
+    }
+
+    /// What ingest needs to know about a Frame, from the registry the first
+    /// time and from memory after.
+    async fn frame_spec(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+    ) -> Result<Arc<FrameSpec>> {
+        let key = (
+            hive.to_string(),
+            box_name.to_string(),
+            frame_name.to_string(),
+        );
+        if let Some(spec) = self.frame_specs.read().await.get(&key) {
+            return Ok(Arc::clone(spec));
+        }
+        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
+        let spec = Arc::new(FrameSpec {
+            schema: delta_schema(&FrameSchema::from_json_value(&frame.schema)?),
+            partition_by: frame.partition_by.clone(),
+        });
+        self.frame_specs
+            .write()
+            .await
+            .insert(key, Arc::clone(&spec));
+        Ok(spec)
     }
 
     /// Overwrite all data in a frame with new data, in one Delta commit that
-    /// removes every existing cell and adds the new ones.
+    /// removes every existing cell and adds the new ones. Rows still in the
+    /// crop are discarded too: the same commit records them as superseded.
     pub async fn overwrite_frame(
         &self,
         hive: &str,
@@ -333,16 +494,45 @@ impl ApiaryNode {
     ) -> Result<WriteResult> {
         let start = self.env.clock().monotonic();
 
+        // No deposit may run between choosing what to supersede and committing.
+        let _paused = self.depositor.pause().await;
         let table = self.frame_table(hive, box_name, frame_name).await?;
+
+        let log = self.crop.frame_if_exists(hive, box_name, frame_name)?;
+        let superseded = match &log {
+            Some(log) => {
+                let log = Arc::clone(log);
+                tokio::task::spawn_blocking(move || log.pending())
+                    .await
+                    .map_err(|e| ApiaryError::Internal {
+                        message: format!("Crop task failed: {e}"),
+                    })??
+                    .last()
+                    .map(|s| s.seq)
+            }
+            None => None,
+        };
+        let app_id = self.crop.app_id();
+
         let committed = self
             .comb
-            .overwrite(
+            .overwrite_superseding(
                 &table,
                 batch,
                 self.config.target_cell_size,
                 CellState::Nectar,
+                superseded.map(|seq| (app_id.as_str(), seq)),
             )
             .await?;
+
+        // The commit is confirmed: the crop may let go of what it superseded.
+        if let (Some(log), Some(seq)) = (log, superseded) {
+            tokio::task::spawn_blocking(move || log.release(seq))
+                .await
+                .map_err(|e| ApiaryError::Internal {
+                    message: format!("Crop task failed: {e}"),
+                })??;
+        }
 
         Ok(self.write_result(committed, start).await)
     }
@@ -367,18 +557,7 @@ impl ApiaryNode {
         box_name: &str,
         frame_name: &str,
     ) -> Result<apiary_comb::DeltaTable> {
-        if let Some(table) = self
-            .comb
-            .open_frame_table(hive, box_name, frame_name)
-            .await?
-        {
-            return Ok(table);
-        }
-        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
-        let schema = FrameSchema::from_json_value(&frame.schema)?;
-        self.comb
-            .create_frame_table(hive, box_name, frame_name, &schema, &frame.partition_by)
-            .await
+        open_or_create_table(&self.comb, &self.registry, hive, box_name, frame_name).await
     }
 
     async fn write_result(

@@ -17,20 +17,19 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider, TableProvider};
-use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::execution::SessionState;
 use tracing::info;
 
-use apiary_comb::Comb;
-use apiary_comb::schema::delta_schema;
+use apiary_comb::{Comb, Crop};
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::{ApiaryError, FrameSchema};
+
+use crate::staged;
 
 /// Default catalogue name when no Hive has been selected with `USE HIVE`.
 pub(crate) const NO_HIVE: &str = "_no_hive_selected";
@@ -79,6 +78,16 @@ fn add_io(select: impl Fn(&TableIo) -> &Cell<Duration>, elapsed: Duration) {
     });
 }
 
+/// Record time spent reading a table's log and the crop.
+pub(crate) fn add_file_discovery(elapsed: Duration) {
+    add_io(|io| &io.file_discovery, elapsed);
+}
+
+/// Record time spent building a table's scan.
+pub(crate) fn add_metadata_read(elapsed: Duration) {
+    add_io(|io| &io.metadata_read, elapsed);
+}
+
 /// Wrap an Apiary error so it can travel through DataFusion and be recovered
 /// by [`into_apiary_error`].
 pub(crate) fn external(e: ApiaryError) -> DataFusionError {
@@ -107,6 +116,8 @@ pub(crate) fn into_apiary_error(e: DataFusionError, context: &str) -> ApiaryErro
 pub(crate) struct CatalogShared {
     pub registry: Arc<RegistryManager>,
     pub comb: Arc<Comb>,
+    /// This Node's crop, if it has one. Frames then include its rows.
+    pub crop: Option<Arc<Crop>>,
     /// A session state with the node's runtime and settings, used to build
     /// table scans and to register table object stores with the runtime.
     pub scan_state: SessionState,
@@ -266,39 +277,12 @@ impl SchemaProvider for BoxSchema {
         })?;
         let frame = &box_.frames[frame_name];
 
-        // Open the table: read its Delta log.
-        let opened_at = Instant::now();
-        let table = self
-            .shared
-            .comb
-            .open_frame_table(hive_name, box_name, frame_name)
+        // Load the Frame: its Delta table and its crop, as one view.
+        let declared = FrameSchema::from_json_value(&frame.schema).map_err(external)?;
+        let provider = staged::load_frame(&self.shared, hive_name, box_name, frame_name, &declared)
             .await
             .map_err(external)?;
-        add_io(|io| &io.file_discovery, opened_at.elapsed());
-
-        // Build the scan: file index and statistics.
-        let scan_at = Instant::now();
-        let provider: Arc<dyn TableProvider> = match table {
-            Some(table) => {
-                let provider = self
-                    .shared
-                    .comb
-                    .table_provider(&self.shared.scan_state, &table)
-                    .await
-                    .map_err(external)?;
-                info!(frame = %reference, version = ?table.version(), "Frame table resolved");
-                provider
-            }
-            None => {
-                // A registered frame that has never been written is empty,
-                // with the schema it was created with.
-                let schema =
-                    delta_schema(&FrameSchema::from_json_value(&frame.schema).map_err(external)?);
-                let empty = RecordBatch::new_empty(schema);
-                Arc::new(MemTable::try_new(empty.schema(), vec![vec![empty]])?)
-            }
-        };
-        add_io(|io| &io.metadata_read, scan_at.elapsed());
+        info!(frame = %reference, "Frame resolved");
 
         Ok(Some(provider))
     }

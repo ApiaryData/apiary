@@ -115,9 +115,10 @@ def test_1_select_all():
         check(result is not None, "SQL result is not None")
         table = ipc_deserialize(result)
         check(table.num_rows == 5, f"SELECT * returns all 5 rows (got {table.num_rows})")
+        # The 3 declared columns, plus the virtual _stage column every frame has.
         check(
-            table.num_columns == 3,
-            f"SELECT * returns 3 columns (got {table.num_columns})",
+            table.num_columns == 4 and table.column_names[-1] == "_stage",
+            f"SELECT * returns 3 columns plus _stage (got {table.column_names})",
         )
     finally:
         ap.shutdown()

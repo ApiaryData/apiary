@@ -8,6 +8,7 @@
 pub mod bee;
 pub mod behavioral;
 pub mod cache;
+pub mod deposit;
 pub mod heartbeat;
 pub mod node;
 
@@ -17,7 +18,8 @@ pub use behavioral::{
     AbandonmentDecision, AbandonmentTracker, ColonyThermometer, TemperatureRegulation,
 };
 pub use cache::{CacheEntry, CellCache};
+pub use deposit::{DepositReport, Depositor};
 pub use heartbeat::{
     Heartbeat, HeartbeatWriter, NodeState, NodeStatus, WorldView, WorldViewBuilder,
 };
-pub use node::{ApiaryNode, ColonyStatus, SwarmNodeInfo, SwarmStatus};
+pub use node::{ApiaryNode, ColonyStatus, IngestResult, SwarmNodeInfo, SwarmStatus};

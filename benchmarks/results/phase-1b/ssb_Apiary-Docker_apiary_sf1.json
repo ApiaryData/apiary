@@ -1,0 +1,231 @@
+{
+  "suite": "ssb",
+  "scale_factor": 1,
+  "data_format": "apiary",
+  "engine": "Apiary-Docker",
+  "engine_version": "apiary-1b:bench",
+  "hardware": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 189 Stepping 1, GenuineIntel",
+    "architecture": "AMD64",
+    "python_version": "3.13.16",
+    "hostname": "AA-SB-69XK1K4",
+    "ram_total_gb": 31.57,
+    "ram_available_gb": 3.22,
+    "cpu_count_physical": 8,
+    "cpu_count_logical": 8
+  },
+  "queries": [
+    {
+      "query_id": "Q1.1",
+      "runs": 3,
+      "median_ms": 3636.8,
+      "mean_ms": 3664.12,
+      "best_ms": 3588.41,
+      "worst_ms": 3767.15,
+      "rows_returned": 1,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3588.41,
+        3636.8,
+        3767.15
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q1.2",
+      "runs": 3,
+      "median_ms": 3597.18,
+      "mean_ms": 3595.97,
+      "best_ms": 3591.49,
+      "worst_ms": 3599.24,
+      "rows_returned": 1,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3597.18,
+        3599.24,
+        3591.49
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q1.3",
+      "runs": 3,
+      "median_ms": 3585.37,
+      "mean_ms": 3607.59,
+      "best_ms": 3515.96,
+      "worst_ms": 3721.44,
+      "rows_returned": 1,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3515.96,
+        3721.44,
+        3585.37
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q2.1",
+      "runs": 3,
+      "median_ms": 3977.13,
+      "mean_ms": 4060.72,
+      "best_ms": 3965.44,
+      "worst_ms": 4239.58,
+      "rows_returned": 280,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        4239.58,
+        3965.44,
+        3977.13
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q2.2",
+      "runs": 3,
+      "median_ms": 3751.93,
+      "mean_ms": 3747.18,
+      "best_ms": 3704.38,
+      "worst_ms": 3785.22,
+      "rows_returned": 56,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3704.38,
+        3785.22,
+        3751.93
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q2.3",
+      "runs": 3,
+      "median_ms": 3700.42,
+      "mean_ms": 3701.47,
+      "best_ms": 3693.75,
+      "worst_ms": 3710.23,
+      "rows_returned": 7,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3710.23,
+        3693.75,
+        3700.42
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q3.1",
+      "runs": 3,
+      "median_ms": 3869.5,
+      "mean_ms": 3865.17,
+      "best_ms": 3816.51,
+      "worst_ms": 3909.5,
+      "rows_returned": 150,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3869.5,
+        3816.51,
+        3909.5
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q3.2",
+      "runs": 3,
+      "median_ms": 3710.32,
+      "mean_ms": 3704.71,
+      "best_ms": 3688.9,
+      "worst_ms": 3714.92,
+      "rows_returned": 600,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3714.92,
+        3688.9,
+        3710.32
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q3.3",
+      "runs": 3,
+      "median_ms": 3701.64,
+      "mean_ms": 3705.65,
+      "best_ms": 3677.5,
+      "worst_ms": 3737.82,
+      "rows_returned": 24,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3677.5,
+        3701.64,
+        3737.82
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q3.4",
+      "runs": 3,
+      "median_ms": 3587.57,
+      "mean_ms": 3602.3,
+      "best_ms": 3572.4,
+      "worst_ms": 3646.92,
+      "rows_returned": 1,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3572.4,
+        3646.92,
+        3587.57
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q4.1",
+      "runs": 3,
+      "median_ms": 4242.86,
+      "mean_ms": 4234.87,
+      "best_ms": 4204.95,
+      "worst_ms": 4256.81,
+      "rows_returned": 35,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        4204.95,
+        4256.81,
+        4242.86
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q4.2",
+      "runs": 3,
+      "median_ms": 4003.04,
+      "mean_ms": 4066.99,
+      "best_ms": 3911.92,
+      "worst_ms": 4286.02,
+      "rows_returned": 100,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        4003.04,
+        3911.92,
+        4286.02
+      ],
+      "median_phase_ms": {}
+    },
+    {
+      "query_id": "Q4.3",
+      "runs": 3,
+      "median_ms": 3919.11,
+      "mean_ms": 3935.29,
+      "best_ms": 3908.67,
+      "worst_ms": 3978.08,
+      "rows_returned": 412,
+      "peak_memory_mb": 0.0,
+      "all_times_ms": [
+        3978.08,
+        3908.67,
+        3919.11
+      ],
+      "median_phase_ms": {}
+    }
+  ],
+  "total_time_ms": 200139.94,
+  "timestamp": "2026-10-06T14:56:15Z",
+  "config": {}
+}

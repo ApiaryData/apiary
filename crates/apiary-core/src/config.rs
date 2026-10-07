@@ -49,6 +49,34 @@ pub struct NodeConfig {
 
     /// Duration after which a node with no heartbeat is considered dead.
     pub dead_threshold: Duration,
+
+    /// How often the Node deposits its crop into the comb. Data ingested
+    /// between deposits is queryable at once but exists only on this Node's
+    /// disk, so this is also the loss window if the Node's disk dies.
+    #[serde(default = "default_deposit_interval")]
+    pub deposit_interval: Duration,
+
+    /// Crop size in bytes that triggers a deposit before the interval is up.
+    #[serde(default = "default_crop_max_bytes")]
+    pub crop_max_bytes: u64,
+
+    /// Whether each ingest is synced to disk before it returns (the default).
+    /// Turning this off is faster but a power cut can lose the most recent
+    /// ingests; it is meant for benchmarks and for a crop on a RAM disk.
+    #[serde(default = "default_crop_sync")]
+    pub crop_sync: bool,
+}
+
+fn default_crop_sync() -> bool {
+    true
+}
+
+fn default_deposit_interval() -> Duration {
+    DEFAULT_DEPOSIT_INTERVAL
+}
+
+fn default_crop_max_bytes() -> u64 {
+    DEFAULT_CROP_MAX_BYTES
 }
 
 /// Minimum cell size floor: 16 MB.
@@ -63,7 +91,25 @@ const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Default dead threshold: 30 seconds (6 missed heartbeats).
 const DEFAULT_DEAD_THRESHOLD: Duration = Duration::from_secs(30);
 
+/// Default deposit interval: 10 seconds.
+const DEFAULT_DEPOSIT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Default crop size that forces a deposit: 64 MB.
+const DEFAULT_CROP_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 impl NodeConfig {
+    /// The directory that holds this Node's crop: data landed here and not yet
+    /// deposited into the comb. It sits under the cache directory, which on a
+    /// Raspberry Pi should be on an SSD.
+    ///
+    /// A crop belongs to one comb: it records how far it has deposited into that
+    /// comb's tables. So the directory is named for the storage URI, and Nodes
+    /// that share a cache directory but not a comb never share a crop.
+    pub fn crop_dir(&self) -> PathBuf {
+        let comb = format!("{:016x}", crate::rng::hash_str(&self.storage_uri));
+        self.cache_dir.join("crop").join(comb)
+    }
+
     /// Create a new `NodeConfig` by auto-detecting system resources.
     ///
     /// # Arguments
@@ -111,6 +157,9 @@ impl NodeConfig {
             max_cache_size: DEFAULT_MAX_CACHE_SIZE,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             dead_threshold: DEFAULT_DEAD_THRESHOLD,
+            deposit_interval: DEFAULT_DEPOSIT_INTERVAL,
+            crop_max_bytes: DEFAULT_CROP_MAX_BYTES,
+            crop_sync: true,
         }
     }
 }
@@ -355,5 +404,22 @@ mod tests {
     fn test_detect_memory_nonzero() {
         let mem = detect_memory();
         assert!(mem > 0, "detected memory must be > 0, got {mem}");
+    }
+
+    #[test]
+    fn test_crop_dir_is_scoped_to_the_comb() {
+        let mut a = NodeConfig::detect("local://one");
+        a.cache_dir = PathBuf::from("/cache");
+        let mut b = a.clone();
+        b.storage_uri = "local://two".into();
+        let same = a.clone();
+
+        assert_eq!(
+            a.crop_dir(),
+            same.crop_dir(),
+            "the same comb finds its crop again"
+        );
+        assert_ne!(a.crop_dir(), b.crop_dir(), "another comb gets its own crop");
+        assert!(a.crop_dir().starts_with("/cache/crop"));
     }
 }

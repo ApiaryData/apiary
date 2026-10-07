@@ -337,6 +337,82 @@ impl Apiary {
         })
     }
 
+    /// Land data in this node's crop: queryable at once (`_stage = 'crop'`) and
+    /// deposited into the frame's Delta table on the node's deposit interval.
+    ///
+    /// Unlike `write_to_frame`, which commits before returning, ingested rows
+    /// exist only on this node until they are deposited (or `flush_crop()` is
+    /// called). The batch is checked against the frame's schema first; a bad
+    /// batch is refused and nothing is written.
+    ///
+    /// Args:
+    ///     hive: The hive name.
+    ///     box_name: The box name.
+    ///     frame_name: The frame name.
+    ///     ipc_data: Arrow IPC stream bytes from PyArrow.
+    ///
+    /// Returns:
+    ///     dict: rows, segment (the crop segment number, or None for an empty
+    ///     batch) and crop_bytes (bytes ingested since the last deposit).
+    fn ingest(
+        &self,
+        hive: String,
+        box_name: String,
+        frame_name: String,
+        ipc_data: &Bound<'_, PyBytes>,
+    ) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
+
+        let batch = ipc_bytes_to_batch(ipc_data.as_bytes())?;
+
+        let result = self
+            .runtime
+            .block_on(async { node.ingest(&hive, &box_name, &frame_name, &batch).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to ingest: {e}")))?;
+
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("rows", result.rows)?;
+            dict.set_item("segment", result.segment)?;
+            dict.set_item("crop_bytes", result.crop_bytes)?;
+            Ok(dict.into())
+        })
+    }
+
+    /// Deposit everything in this node's crop into the comb now, instead of
+    /// waiting for the deposit interval.
+    ///
+    /// Returns:
+    ///     dict: frames, segments and rows deposited.
+    fn flush_crop(&self) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
+
+        let report = self
+            .runtime
+            .block_on(async { node.flush_crop().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to deposit the crop: {e}")))?;
+
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("frames", report.frames)?;
+            dict.set_item("segments", report.segments)?;
+            dict.set_item("rows", report.rows)?;
+            Ok(dict.into())
+        })
+    }
+
     /// Write data to a frame.
     ///
     /// Data is passed as Arrow IPC stream bytes (serialized PyArrow table).

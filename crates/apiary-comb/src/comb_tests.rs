@@ -471,3 +471,191 @@ async fn frame_stats_and_registered_tables_see_the_data() {
         .value(0);
     assert_eq!(n, 2);
 }
+
+#[tokio::test]
+async fn a_deposit_records_the_crop_version_in_the_same_commit() {
+    let (_dir, comb) = comb();
+    let table = comb
+        .create_frame_table("h", "b", "f", &sensor_schema(), &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        comb.deposited_version(&table, "apiary.crop/a")
+            .await
+            .unwrap(),
+        0
+    );
+
+    let committed = comb
+        .deposit(
+            &table,
+            &sensor_batch("n", vec![1, 2, 3]),
+            CELL,
+            "apiary.crop/a",
+            7,
+        )
+        .await
+        .unwrap();
+    assert_eq!(committed.rows, 3);
+
+    // The record is in the same commit as the data: a fresh view of the table
+    // sees both or neither.
+    let table = comb.open_frame_table("h", "b", "f").await.unwrap().unwrap();
+    assert_eq!(
+        comb.deposited_version(&table, "apiary.crop/a")
+            .await
+            .unwrap(),
+        7
+    );
+    assert_eq!(
+        comb.read(&table, None).await.unwrap().unwrap().num_rows(),
+        3
+    );
+
+    // Another crop's deposits are tracked separately.
+    assert_eq!(
+        comb.deposited_version(&table, "apiary.crop/b")
+            .await
+            .unwrap(),
+        0
+    );
+    comb.deposit(
+        &table,
+        &sensor_batch("n", vec![4]),
+        CELL,
+        "apiary.crop/b",
+        2,
+    )
+    .await
+    .unwrap();
+    let table = comb.open_frame_table("h", "b", "f").await.unwrap().unwrap();
+    assert_eq!(
+        comb.deposited_version(&table, "apiary.crop/a")
+            .await
+            .unwrap(),
+        7
+    );
+    assert_eq!(
+        comb.deposited_version(&table, "apiary.crop/b")
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn deposit_versions_only_move_forward() {
+    let (_dir, comb) = comb();
+    let table = comb
+        .create_frame_table("h", "b", "f", &sensor_schema(), &[])
+        .await
+        .unwrap();
+    comb.deposit(
+        &table,
+        &sensor_batch("n", vec![1]),
+        CELL,
+        "apiary.crop/a",
+        3,
+    )
+    .await
+    .unwrap();
+    let table = comb.open_frame_table("h", "b", "f").await.unwrap().unwrap();
+    comb.deposit(
+        &table,
+        &sensor_batch("n", vec![2]),
+        CELL,
+        "apiary.crop/a",
+        9,
+    )
+    .await
+    .unwrap();
+    let table = comb.open_frame_table("h", "b", "f").await.unwrap().unwrap();
+    assert_eq!(
+        comb.deposited_version(&table, "apiary.crop/a")
+            .await
+            .unwrap(),
+        9
+    );
+}
+
+#[tokio::test]
+async fn the_stage_column_name_is_reserved() {
+    let (_dir, comb) = comb();
+    for name in ["_stage", "_STAGE"] {
+        let schema = FrameSchema {
+            fields: vec![field("region", "string", true), field(name, "string", true)],
+        };
+        let err = comb
+            .create_frame_table("h", "b", "f", &schema, &[])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("reserved"), "{err}");
+    }
+}
+
+#[tokio::test]
+async fn an_overwrite_can_supersede_a_crop_in_the_same_commit() {
+    let (_dir, comb) = comb();
+    let table = comb
+        .create_frame_table("h", "b", "f", &sensor_schema(), &[])
+        .await
+        .unwrap();
+    comb.deposit(
+        &table,
+        &sensor_batch("n", vec![1, 2]),
+        CELL,
+        "apiary.crop/a",
+        3,
+    )
+    .await
+    .unwrap();
+
+    let table = comb.open_frame_table("h", "b", "f").await.unwrap().unwrap();
+    comb.overwrite_superseding(
+        &table,
+        &sensor_batch("n", vec![9]),
+        CELL,
+        CellState::Nectar,
+        Some(("apiary.crop/a", 8)),
+    )
+    .await
+    .unwrap();
+
+    let table = comb.open_frame_table("h", "b", "f").await.unwrap().unwrap();
+    assert_eq!(
+        comb.read(&table, None).await.unwrap().unwrap().num_rows(),
+        1
+    );
+    assert_eq!(
+        comb.deposited_version(&table, "apiary.crop/a")
+            .await
+            .unwrap(),
+        8
+    );
+}
+
+#[tokio::test]
+async fn an_empty_overwrite_still_records_what_it_supersedes() {
+    let (_dir, comb) = comb();
+    let table = comb
+        .create_frame_table("h", "b", "f", &sensor_schema(), &[])
+        .await
+        .unwrap();
+    // Nothing in the table and nothing to write, but a crop to discard.
+    comb.overwrite_superseding(
+        &table,
+        &sensor_batch("n", vec![]),
+        CELL,
+        CellState::Nectar,
+        Some(("apiary.crop/a", 5)),
+    )
+    .await
+    .unwrap();
+    let table = comb.open_frame_table("h", "b", "f").await.unwrap().unwrap();
+    assert_eq!(
+        comb.deposited_version(&table, "apiary.crop/a")
+            .await
+            .unwrap(),
+        5
+    );
+}
