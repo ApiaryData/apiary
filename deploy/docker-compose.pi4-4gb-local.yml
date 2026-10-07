@@ -1,0 +1,23 @@
+# pi4-4gb profile without MinIO: same CPU/memory limits as deploy/docker-compose.pi4-4gb.yml,
+# with the Apiary store on a disk-backed named volume (local filesystem backend).
+services:
+  apiary-node:
+    image: ${APIARY_IMAGE:-apiary:latest}
+    command: ["python3", "-c", "import time; time.sleep(86400)"]
+    environment:
+      APIARY_STORAGE_URL: local:///home/apiary/data/bench
+      APIARY_NAME: pi4-4gb-local-benchmark
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - apiary-data-pi4-4gb-local:/home/apiary/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+volumes:
+  apiary-data-pi4-4gb-local:

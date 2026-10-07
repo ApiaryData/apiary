@@ -190,6 +190,22 @@ def test_stage_is_a_reserved_column_name():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def test_a_query_with_no_rows_keeps_its_columns():
+    tmpdir = tempfile.mkdtemp()
+    try:
+        ap = new_node(tmpdir)
+        ap.ingest("farm", "field", "readings", serialize_table(readings("north", 0, 3)))
+
+        empty = deserialize_table(ap.sql("SELECT region, n FROM farm.field.readings WHERE n > 1000"))
+        check(empty.num_rows == 0, "a query that matches nothing returns no rows")
+        check(empty.column_names == ["region", "n"], "but still has its columns")
+        meta = empty.schema.metadata or {}
+        check(meta.get(b"apiary.rows.crop") is not None, "and still reports the rows read per stage")
+        ap.shutdown()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     run_test("Test 1: Ingest is queryable at once", test_ingest_is_queryable_at_once)
     run_test("Test 2: Flush moves the crop into the comb", test_flush_moves_the_crop_into_the_comb)
@@ -197,6 +213,7 @@ if __name__ == "__main__":
     run_test("Test 4: read_from_frame includes the crop", test_read_from_frame_includes_the_crop)
     run_test("Test 5: A bad batch is refused", test_a_bad_batch_is_refused)
     run_test("Test 6: _stage is reserved", test_stage_is_a_reserved_column_name)
+    run_test("Test 7: A query with no rows keeps its columns", test_a_query_with_no_rows_keeps_its_columns)
 
     print(f"\nResults: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
