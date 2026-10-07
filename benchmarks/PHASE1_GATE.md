@@ -18,7 +18,7 @@ the gate and commit the results.
 |---|---|---|
 | SSB SF1, V1 baseline | Done, laptop under Docker with Pi 4 limits (2 CPUs, 2 GB) | `results/v1-baseline` |
 | SSB SF1, each phase | Done, same setup, no regression | `results/phase-1b`, `phase-1c-ssb`, `phase-1d-ssb`, `phase-1e-ssb` |
-| TPC-H-derived, V1 baseline and phase 1e | Done, same setup | `results/v1-baseline-tpch`, `results/phase-1e-tpch` |
+| TPC-H-derived, V1 baseline and phase 1e | Done, same setup (V1 failed 6 of 22 queries; 1e runs all) | `results/v1-baseline-tpch`, `results/phase-1e-tpch` |
 | Sensor-ingest benchmark | Done, same setup | `results/phase-1c` (embedded), `results/phase-1e` (Flight and MQTT) |
 | Kill mid-ingest | Done by test: SIGKILL five times mid-stream, nothing acknowledged lost, nothing duplicated | `crates/apiary-cli/tests/binary.rs`, `a_node_killed_mid_ingest_loses_nothing_it_acknowledged` |
 | Another engine reads Apiary's tables | Done with `deltalake` (a separate Delta reader) | `tests/test_step14_acceptance.py` |
