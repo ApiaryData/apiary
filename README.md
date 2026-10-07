@@ -160,6 +160,7 @@ Apiary is in active development. See [BUILD_STATUS.md](docs/BUILD_STATUS.md) for
 - ✅ Parquet cells (Snappy), tagged `apiary.state` = nectar or capped in the Delta log
 - ✅ File statistics and partitioning, with pruning and file skipping on read
 - ✅ Ingest lands in a durable per-node crop, queryable at once as `_stage = 'crop'`, and is deposited into the Delta table on a cadence (idempotent across crashes)
+- ✅ Ripening on deposit, capping of nectar into sealed standard-size cells, harvest of capped cells to a second store (refused unless it supports conditional writes), and clearing of unneeded files
 - ✅ Leafcutter cell sizing
 - ✅ Schema validation (declared schema enforced; null partition rejection)
 - ✅ Frame overwrite (atomic cell replacement)

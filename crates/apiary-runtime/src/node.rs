@@ -18,7 +18,7 @@ use tracing::info;
 use apiary_comb::local::{LocalBackend, expand_local_path};
 use apiary_comb::s3::S3Backend;
 use apiary_comb::schema::{conform_batch, delta_schema};
-use apiary_comb::{CellState, Comb, Crop};
+use apiary_comb::{CapReport, CellState, Comb, Crop, HarvestReport, Recipe};
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
@@ -31,6 +31,7 @@ use crate::behavioral::{AbandonmentTracker, ColonyThermometer};
 use crate::cache::CellCache;
 use crate::deposit::{DepositReport, Depositor, open_or_create_table};
 use crate::heartbeat::{HeartbeatWriter, NodeState, WorldView, WorldViewBuilder};
+use crate::upkeep::{ClearReport, Upkeep, UpkeepSettings};
 
 /// What one ingest landed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +100,9 @@ pub struct ApiaryNode {
 
     /// Moves the crop into the comb, on a cadence and at shutdown.
     depositor: Arc<Depositor>,
+
+    /// Caps, harvests and clears the comb.
+    upkeep: Arc<Upkeep>,
 
     /// Wakes the deposit loop early when the crop grows large.
     deposit_wake: Arc<tokio::sync::Notify>,
@@ -310,7 +314,75 @@ impl ApiaryNode {
             });
         }
 
-        info!("Heartbeat, world view and deposit background tasks started");
+        // Upkeep of the comb: capping, harvest (if the site has a harvest
+        // store) and clearing, each on its own cadence.
+        let harvest = match &config.harvest_uri {
+            Some(uri) => Some(Arc::new(Comb::from_storage_uri(uri)?)),
+            None => None,
+        };
+        let upkeep = Arc::new(Upkeep::new(
+            Arc::clone(&comb),
+            harvest,
+            Arc::clone(&registry),
+            UpkeepSettings {
+                target_cell_size: config.target_cell_size,
+                cap_max_age: config.cap_max_age,
+                harvest_batch_bytes: config.harvest_batch_bytes,
+                retention: config.retention,
+                clear_grace: config.clear_grace,
+            },
+            env.clock(),
+        ));
+        {
+            let upkeep = Arc::clone(&upkeep);
+            spawn_periodic(
+                env.clock(),
+                config.cap_interval,
+                cancel_rx.clone(),
+                move || {
+                    let upkeep = Arc::clone(&upkeep);
+                    async move {
+                        if let Err(e) = upkeep.cap_all().await {
+                            tracing::warn!(error = %e, "Capping pass failed");
+                        }
+                    }
+                },
+            );
+        }
+        if upkeep.harvests() {
+            let upkeep = Arc::clone(&upkeep);
+            spawn_periodic(
+                env.clock(),
+                config.harvest_interval,
+                cancel_rx.clone(),
+                move || {
+                    let upkeep = Arc::clone(&upkeep);
+                    async move {
+                        if let Err(e) = upkeep.harvest_all().await {
+                            tracing::warn!(error = %e, "Harvest pass failed");
+                        }
+                    }
+                },
+            );
+        }
+        {
+            let upkeep = Arc::clone(&upkeep);
+            spawn_periodic(
+                env.clock(),
+                config.clear_interval,
+                cancel_rx.clone(),
+                move || {
+                    let upkeep = Arc::clone(&upkeep);
+                    async move {
+                        if let Err(e) = upkeep.clear_all().await {
+                            tracing::warn!(error = %e, "Clearing pass failed");
+                        }
+                    }
+                },
+            );
+        }
+
+        info!("Heartbeat, world view, deposit and upkeep background tasks started");
 
         Ok(Self {
             config,
@@ -327,6 +399,7 @@ impl ApiaryNode {
             world_view,
             world_view_builder,
             depositor,
+            upkeep,
             deposit_wake,
             crop_bytes,
             frame_specs: RwLock::new(HashMap::new()),
@@ -452,6 +525,46 @@ impl ApiaryNode {
     /// for the interval.
     pub async fn flush_crop(&self) -> Result<DepositReport> {
         self.depositor.flush().await
+    }
+
+    /// Cap all the nectar in every Frame now, however small or young, rather
+    /// than waiting for the interval: merge it to the standard Cell size, ripen
+    /// it with the Frame's recipe and seal it.
+    pub async fn cap_frames(&self) -> Result<CapReport> {
+        self.upkeep.cap_all_now().await
+    }
+
+    /// Harvest capped Cells to the harvest store now (one paced pass per Frame).
+    /// Fails if the node has no `harvest_uri`.
+    pub async fn harvest(&self) -> Result<HarvestReport> {
+        self.upkeep.harvest_all().await
+    }
+
+    /// Clear now: retire harvested Cells past retention, then delete the files
+    /// no table version needs.
+    pub async fn clear_comb(&self) -> Result<ClearReport> {
+        self.upkeep.clear_all().await
+    }
+
+    /// Set how a Frame ripens: the columns its Cells are sorted by, and the
+    /// columns that identify a duplicate (the latest row wins). Stored in the
+    /// Frame's table properties.
+    pub async fn set_recipe(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+        sort_by: Vec<String>,
+        dedup_by: Vec<String>,
+    ) -> Result<()> {
+        self.upkeep
+            .set_recipe(hive, box_name, frame_name, &Recipe { sort_by, dedup_by })
+            .await
+    }
+
+    /// A Frame's ripening recipe.
+    pub async fn recipe(&self, hive: &str, box_name: &str, frame_name: &str) -> Result<Recipe> {
+        self.upkeep.recipe(hive, box_name, frame_name).await
     }
 
     /// What ingest needs to know about a Frame, from the registry the first
@@ -657,6 +770,28 @@ impl ApiaryNode {
             setpoint: self.thermometer.setpoint(),
         }
     }
+}
+
+/// Run `work` every `interval` until the node stops. The first run is one
+/// interval after the start.
+fn spawn_periodic<F, Fut>(
+    clock: Arc<dyn apiary_core::Clock>,
+    interval: Duration,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    mut work: F,
+) where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = clock.sleep(interval) => {}
+                _ = stop.wait_for(|stopped| *stopped) => break,
+            }
+            work().await;
+        }
+    });
 }
 
 /// Stream index for the bee pool's random numbers, distinct from any Bee index.

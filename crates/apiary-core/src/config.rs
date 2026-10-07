@@ -65,6 +65,72 @@ pub struct NodeConfig {
     /// ingests; it is meant for benchmarks and for a crop on a RAM disk.
     #[serde(default = "default_crop_sync")]
     pub crop_sync: bool,
+
+    /// Where capped Cells are harvested to: a storage URI for the harvest
+    /// tables, normally a cloud bucket (`s3://...`) that supports conditional
+    /// writes. `None` means nothing is harvested.
+    #[serde(default)]
+    pub harvest_uri: Option<String>,
+
+    /// How often the Node caps nectar in the comb.
+    #[serde(default = "default_cap_interval")]
+    pub cap_interval: Duration,
+
+    /// Nectar that has not filled half a standard Cell is capped anyway once
+    /// its oldest Cell is this old, so no data stays nectar for ever.
+    #[serde(default = "default_cap_max_age")]
+    pub cap_max_age: Duration,
+
+    /// How often the Node harvests capped Cells, when `harvest_uri` is set.
+    #[serde(default = "default_harvest_interval")]
+    pub harvest_interval: Duration,
+
+    /// The most bytes one harvest pass copies per Frame, which paces the
+    /// uplink so a backlog does not swamp it.
+    #[serde(default = "default_harvest_batch_bytes")]
+    pub harvest_batch_bytes: u64,
+
+    /// How long a harvested Cell stays on the site's drive before it is retired
+    /// from the site table. `None` keeps everything on the drive. A retired
+    /// Cell lives on only in the harvest, and queries do not read the harvest
+    /// yet, so leave this unset unless a refinery reads it.
+    #[serde(default)]
+    pub retention: Option<Duration>,
+
+    /// How often the Node clears files the comb no longer needs.
+    #[serde(default = "default_clear_interval")]
+    pub clear_interval: Duration,
+
+    /// How old an unneeded file must be before it is cleared, which keeps a
+    /// query on an earlier table version, and a write in flight, safe. It must
+    /// be longer than any single write takes: a file written but not yet
+    /// committed looks unneeded.
+    #[serde(default = "default_clear_grace")]
+    pub clear_grace: Duration,
+}
+
+fn default_cap_interval() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_cap_max_age() -> Duration {
+    Duration::from_secs(600)
+}
+
+fn default_harvest_interval() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_harvest_batch_bytes() -> u64 {
+    1024 * 1024 * 1024
+}
+
+fn default_clear_interval() -> Duration {
+    Duration::from_secs(600)
+}
+
+fn default_clear_grace() -> Duration {
+    Duration::from_secs(3600)
 }
 
 fn default_crop_sync() -> bool {
@@ -160,6 +226,14 @@ impl NodeConfig {
             deposit_interval: DEFAULT_DEPOSIT_INTERVAL,
             crop_max_bytes: DEFAULT_CROP_MAX_BYTES,
             crop_sync: true,
+            harvest_uri: None,
+            cap_interval: default_cap_interval(),
+            cap_max_age: default_cap_max_age(),
+            harvest_interval: default_harvest_interval(),
+            harvest_batch_bytes: default_harvest_batch_bytes(),
+            retention: None,
+            clear_interval: default_clear_interval(),
+            clear_grace: default_clear_grace(),
         }
     }
 }
