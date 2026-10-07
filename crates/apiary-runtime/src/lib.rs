@@ -11,6 +11,7 @@ pub mod cache;
 pub mod deposit;
 pub mod heartbeat;
 pub mod node;
+pub mod upkeep;
 
 pub use apiary_plan::ApiaryQueryContext;
 pub use bee::{BeePool, BeeState, BeeStatus, MasonChamber};
@@ -23,3 +24,4 @@ pub use heartbeat::{
     Heartbeat, HeartbeatWriter, NodeState, NodeStatus, WorldView, WorldViewBuilder,
 };
 pub use node::{ApiaryNode, ColonyStatus, IngestResult, SwarmNodeInfo, SwarmStatus};
+pub use upkeep::{ClearReport, Upkeep, UpkeepSettings};

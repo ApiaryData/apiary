@@ -6,17 +6,23 @@
 //!
 //! Schemas, and conforming incoming batches to them, are in [`schema`].
 
+pub mod cell;
 pub mod comb;
 pub mod crop;
 pub mod local;
 pub mod s3;
 pub mod schema;
+pub mod upkeep;
 
+pub use cell::{Capped, Cell, Nectar, Recipe, Ripe, RipenessChecks};
 pub use comb::{CellState, Comb, Committed, FrameStats, STAGE_COLUMN, STATE_TAG, query_session};
 pub use crop::{Crop, FrameCrop, FrameKey, Segment};
 pub use deltalake::DeltaTable;
 pub use local::LocalBackend;
 pub use s3::S3Backend;
+pub use upkeep::{CapOptions, CapReport, HarvestReport};
 
 #[cfg(test)]
 mod comb_tests;
+#[cfg(test)]
+mod upkeep_tests;

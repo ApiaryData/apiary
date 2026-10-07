@@ -35,6 +35,8 @@ use apiary_runtime::ApiaryNode;
 struct Apiary {
     name: String,
     storage_uri: String,
+    harvest_uri: Option<String>,
+    retention: Option<std::time::Duration>,
     node: Mutex<Option<ApiaryNode>>,
     runtime: tokio::runtime::Runtime,
 }
@@ -46,9 +48,18 @@ impl Apiary {
     /// Args:
     ///     name: The apiary name (used for logging and identification).
     ///     storage: Optional storage URI. Defaults to local filesystem at `~/.apiary/data/<name>`.
+    ///     harvest: Optional storage URI for harvest tables (normally an `s3://` bucket
+    ///         that supports conditional writes). Capped cells are copied there.
+    ///     retention_seconds: How long harvested cells stay on the local store before
+    ///         they are retired from it. Unset keeps them for ever.
     #[new]
-    #[pyo3(signature = (name, storage=None))]
-    fn new(name: String, storage: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (name, storage=None, harvest=None, retention_seconds=None))]
+    fn new(
+        name: String,
+        storage: Option<String>,
+        harvest: Option<String>,
+        retention_seconds: Option<u64>,
+    ) -> PyResult<Self> {
         let storage_uri = storage.unwrap_or_else(|| format!("local://~/.apiary/data/{name}"));
 
         let runtime = tokio::runtime::Runtime::new()
@@ -57,6 +68,8 @@ impl Apiary {
         Ok(Self {
             name,
             storage_uri,
+            harvest_uri: harvest,
+            retention: retention_seconds.map(std::time::Duration::from_secs),
             node: Mutex::new(None),
             runtime,
         })
@@ -75,7 +88,9 @@ impl Apiary {
             )
             .try_init();
 
-        let config = NodeConfig::detect(&self.storage_uri);
+        let mut config = NodeConfig::detect(&self.storage_uri);
+        config.harvest_uri = self.harvest_uri.clone();
+        config.retention = self.retention;
         let node = self
             .runtime
             .block_on(async { ApiaryNode::start(config).await })
@@ -409,6 +424,156 @@ impl Apiary {
             dict.set_item("frames", report.frames)?;
             dict.set_item("segments", report.segments)?;
             dict.set_item("rows", report.rows)?;
+            Ok(dict.into())
+        })
+    }
+
+    /// Cap the nectar in every frame now: merge it to the standard cell size,
+    /// ripen it with the frame's recipe (sort and deduplicate) and seal it.
+    ///
+    /// Returns:
+    ///     dict: nectar_cells replaced, capped_cells written, rows, and aborted
+    ///     (groups abandoned because a user write got in the way).
+    fn cap(&self) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
+
+        let report = self
+            .runtime
+            .block_on(async { node.cap_frames().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to cap: {e}")))?;
+
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("nectar_cells", report.nectar_cells)?;
+            dict.set_item("capped_cells", report.capped_cells)?;
+            dict.set_item("rows", report.rows)?;
+            dict.set_item("aborted", report.aborted)?;
+            Ok(dict.into())
+        })
+    }
+
+    /// Harvest capped cells to the harvest store now: one pass per frame, up to
+    /// the node's byte budget, oldest first. Needs `harvest=` on the constructor.
+    ///
+    /// Returns:
+    ///     dict: cells and bytes copied, and remaining (capped cells still waiting).
+    fn harvest(&self) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
+
+        let report = self
+            .runtime
+            .block_on(async { node.harvest().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to harvest: {e}")))?;
+
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("cells", report.cells)?;
+            dict.set_item("bytes", report.bytes)?;
+            dict.set_item("remaining", report.remaining)?;
+            Ok(dict.into())
+        })
+    }
+
+    /// Clear the comb now: retire harvested cells that are past retention, then
+    /// delete the files no table version needs.
+    ///
+    /// Returns:
+    ///     dict: retired (cells removed from the site table) and deleted (files).
+    fn clear(&self) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
+
+        let report = self
+            .runtime
+            .block_on(async { node.clear_comb().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to clear: {e}")))?;
+
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("retired", report.retired)?;
+            dict.set_item("deleted", report.deleted)?;
+            Ok(dict.into())
+        })
+    }
+
+    /// Set how a frame ripens.
+    ///
+    /// Args:
+    ///     hive: The hive name.
+    ///     box_name: The box name.
+    ///     frame_name: The frame name.
+    ///     sort_by: Columns the frame's cells are sorted by (ascending).
+    ///     dedup_by: Columns that identify a duplicate row; the latest row wins.
+    #[pyo3(signature = (hive, box_name, frame_name, sort_by=None, dedup_by=None))]
+    fn set_recipe(
+        &self,
+        hive: String,
+        box_name: String,
+        frame_name: String,
+        sort_by: Option<Vec<String>>,
+        dedup_by: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
+
+        self.runtime
+            .block_on(async {
+                node.set_recipe(
+                    &hive,
+                    &box_name,
+                    &frame_name,
+                    sort_by.unwrap_or_default(),
+                    dedup_by.unwrap_or_default(),
+                )
+                .await
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to set the recipe: {e}")))
+    }
+
+    /// A frame's ripening recipe.
+    ///
+    /// Returns:
+    ///     dict: sort_by and dedup_by, each a list of column names.
+    fn recipe(&self, hive: String, box_name: String, frame_name: String) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .node
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Lock poisoned: {e}")))?;
+        let node = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
+
+        let recipe = self
+            .runtime
+            .block_on(async { node.recipe(&hive, &box_name, &frame_name).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to read the recipe: {e}")))?;
+
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("sort_by", recipe.sort_by)?;
+            dict.set_item("dedup_by", recipe.dedup_by)?;
             Ok(dict.into())
         })
     }

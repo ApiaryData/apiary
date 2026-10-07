@@ -12,13 +12,16 @@ maturin develop
 ### Constructor
 
 ```python
-Apiary(name: str, storage: str | None = None)
+Apiary(name: str, storage: str | None = None, harvest: str | None = None,
+       retention_seconds: int | None = None)
 ```
 
 Create an Apiary instance.
 
 - **name** — Logical name for this apiary (used as root namespace).
 - **storage** — Storage URI. Defaults to local filesystem. Use `"s3://bucket/path"` for S3-compatible storage.
+- **harvest** — Storage URI for harvest tables, normally an `s3://` bucket. Capped cells are copied there. The store must support conditional writes (AWS S3, Cloudflare R2 and MinIO do); a store that does not is refused. Unset means nothing is harvested.
+- **retention_seconds** — How long a harvested cell stays on the local store before it is retired from it. Unset keeps everything. A retired cell lives on only in the harvest, and queries do not read the harvest yet, so leave this unset unless a downstream system reads the harvest.
 
 ```python
 from apiary import Apiary
@@ -195,6 +198,61 @@ Atomically replace all data in a frame. Old cells are removed, new cells are wri
 ```python
 result = ap.overwrite_frame("warehouse", "sales", "orders", sink.getvalue().to_pybytes())
 ```
+
+---
+
+## Ripening, Capping and Harvest
+
+Data matures in stages. A deposit writes **nectar** cells (small, as they arrive). **Capping** merges a frame's nectar into standard-size **capped** cells and seals them: a capped cell never changes. **Harvest** copies capped cells to the harvest store. **Clearing** deletes the files capping replaced.
+
+The node does all of this in the background, on the intervals in its config (`cap_interval`, `harvest_interval`, `clear_interval`). The calls below do one pass now.
+
+### Recipe
+
+```python
+set_recipe(hive, box_name, frame_name, sort_by=None, dedup_by=None) -> None
+recipe(hive, box_name, frame_name) -> dict
+```
+
+A frame's recipe says how it ripens, and is stored in the frame's Delta table properties (`apiary.ripen.sort_by`, `apiary.ripen.dedup_by`).
+
+- **sort_by** — columns the rows are sorted by, ascending, nulls last.
+- **dedup_by** — columns that identify a duplicate. Of rows sharing these values, the latest one to arrive wins.
+
+The recipe is applied when the crop is deposited and again when cells are capped. Deduplication covers the rows merged together in one pass, not the whole table, so a duplicate that arrives long after its original is removed only if both are still nectar.
+
+```python
+ap.set_recipe("farm", "field", "readings", sort_by=["id"], dedup_by=["id"])
+```
+
+### Cap
+
+```python
+cap() -> dict
+# {"nectar_cells": 2, "capped_cells": 1, "rows": 5, "aborted": 0}
+```
+
+Merges all nectar, grouped by partition, up to the standard cell size, ripens it with the recipe and seals it, in commits that change no data. The background pass is gentler: it waits for a group to fill half a standard cell, or for its oldest cell to be `cap_max_age` old (10 minutes by default).
+
+Ripening yields to users. If a delete or overwrite touches the same cells, that group is abandoned (`aborted`) and the user's write stands.
+
+### Harvest
+
+```python
+harvest() -> dict
+# {"cells": 1, "bytes": 2048, "remaining": 0}
+```
+
+Copies capped cells, oldest first, into a Delta table of the same name on the harvest store. Only capped cells are harvested, so a refinery downstream never sees small unsorted files. A cell already harvested is skipped, so a pass that died halfway is simply repeated. Each pass copies at most `harvest_batch_bytes` per frame (1 GiB by default), which paces the uplink; `remaining` counts what is left. Raises an error if the node has no `harvest`.
+
+### Clear
+
+```python
+clear() -> dict
+# {"retired": 0, "deleted": 2}
+```
+
+Deletes the files no table version needs, once they are older than `clear_grace` (1 hour by default, so a query on an earlier version and a write in flight stay safe). If `retention_seconds` is set, first retires harvested cells that are past it. A cell that is not in the harvest is never retired, however old.
 
 ---
 

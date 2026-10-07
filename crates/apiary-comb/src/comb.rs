@@ -372,8 +372,10 @@ impl Comb {
         app_id: &str,
         version: u64,
     ) -> Result<Committed> {
+        // Ripen before depositing, so the comb receives fewer, better files.
+        let ripened = self.recipe(table)?.apply(batch)?;
         let adds = self
-            .write_cells(table, batch, target_cell_size, CellState::Nectar)
+            .write_cells(table, &ripened, target_cell_size, CellState::Nectar)
             .await?;
         let transaction = Transaction::new(app_id, version as i64);
         self.commit(
@@ -381,7 +383,7 @@ impl Comb {
             adds,
             Vec::new(),
             SaveMode::Append,
-            batch.num_rows(),
+            ripened.num_rows(),
             Some(transaction),
         )
         .await
@@ -447,7 +449,7 @@ impl Comb {
     }
 
     /// Write the batch to data files and tag them. Nothing is committed yet.
-    async fn write_cells(
+    pub(crate) async fn write_cells(
         &self,
         table: &DeltaTable,
         batch: &RecordBatch,
@@ -648,7 +650,7 @@ fn register_s3_handlers() {
     REGISTER.call_once(|| deltalake::aws::register_handlers(None));
 }
 
-fn delta_err(context: impl Into<String>, e: DeltaTableError) -> ApiaryError {
+pub(crate) fn delta_err(context: impl Into<String>, e: DeltaTableError) -> ApiaryError {
     ApiaryError::storage(context, e)
 }
 
