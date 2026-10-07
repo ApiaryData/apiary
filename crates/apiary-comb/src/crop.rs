@@ -41,6 +41,10 @@ use apiary_core::{ApiaryError, Result};
 const SEGMENT_EXT: &str = "arrow";
 const DONE_EXT: &str = "done";
 const TMP_EXT: &str = "tmp";
+
+/// How old a temporary file must be before opening a Frame's log removes it.
+/// A younger one may belong to a writer that is mid-append in this directory.
+const STALE_TMP: std::time::Duration = std::time::Duration::from_secs(60);
 const CROP_ID_FILE: &str = "CROP_ID";
 
 /// Names a Frame in the crop.
@@ -193,12 +197,21 @@ impl FrameCrop {
             .map_err(|e| io_err(format!("Failed to create crop directory {dir:?}"), e))?;
 
         // A crash mid-write leaves a temporary file; it was never a segment.
+        // Only old ones go: a young one may be another writer's, mid-append.
         let mut highest = 0;
         for entry in read_dir(&dir)? {
             let path = entry.path();
             match path.extension().and_then(|e| e.to_str()) {
                 Some(TMP_EXT) => {
-                    let _ = fs::remove_file(&path);
+                    let stale = entry
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age >= STALE_TMP);
+                    if stale {
+                        let _ = fs::remove_file(&path);
+                    }
                 }
                 Some(SEGMENT_EXT | DONE_EXT) => {
                     if let Some(seq) = seq_of(&path) {
@@ -599,12 +612,16 @@ mod tests {
             frame.append(&batch(&[1])).unwrap();
             dir.path().join("crop/h/b/f")
         };
-        // A temporary file, as left by a crash before the rename.
-        fs::write(
-            frame_dir.join("00000000000000000002.tmp"),
-            b"half a segment",
-        )
-        .unwrap();
+        // A temporary file, as left by a crash before the rename (long ago).
+        let leftover = frame_dir.join("00000000000000000002.tmp");
+        fs::write(&leftover, b"half a segment").unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        fs::File::options()
+            .write(true)
+            .open(&leftover)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
 
         let frame = open(&dir).frame("h", "b", "f").unwrap();
         assert_eq!(frame.pending().unwrap().len(), 1);
