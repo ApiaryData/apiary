@@ -1,0 +1,64 @@
+{
+  "cores": 2,
+  "flight_ingest": [
+    {
+      "batch_rows": 10,
+      "calls": 300,
+      "direct_median_ms": 2.560198,
+      "flight_median_ms": 2.6749120000000004,
+      "overhead_ms": 0.1147140000000002,
+      "flight_rows_per_sec": 3607.279510252455
+    },
+    {
+      "batch_rows": 100,
+      "calls": 300,
+      "direct_median_ms": 2.1789880000000004,
+      "flight_median_ms": 2.571923,
+      "overhead_ms": 0.3929349999999996,
+      "flight_rows_per_sec": 36577.88045806582
+    },
+    {
+      "batch_rows": 1000,
+      "calls": 200,
+      "direct_median_ms": 2.293812,
+      "flight_median_ms": 2.6952529999999997,
+      "overhead_ms": 0.4014409999999997,
+      "flight_rows_per_sec": 358473.0347110641
+    },
+    {
+      "batch_rows": 10000,
+      "calls": 50,
+      "direct_median_ms": 3.391696,
+      "flight_median_ms": 4.0268049999999995,
+      "overhead_ms": 0.6351089999999995,
+      "flight_rows_per_sec": 2262812.195390122
+    }
+  ],
+  "flight_query": {
+    "rows": 100000,
+    "aggregate_crop_ms": 7.167419000000001,
+    "aggregate_comb_ms": 6.0525839999999995,
+    "filter_crop_ms": 4.956328,
+    "filter_comb_ms": 6.225232,
+    "direct_aggregate_crop_ms": 4.8070200000000005,
+    "direct_aggregate_comb_ms": 6.136262
+  },
+  "mqtt_ingest": [
+    {
+      "rows_per_message": 1,
+      "messages": 20000,
+      "rows_landed": 20000,
+      "seconds": 3.1869235,
+      "rows_per_sec": 6275.644834273556,
+      "messages_per_sec": 6275.644834273556
+    },
+    {
+      "rows_per_message": 20,
+      "messages": 1000,
+      "rows_landed": 20000,
+      "seconds": 0.116737993,
+      "rows_per_sec": 171323.82942372496,
+      "messages_per_sec": 8566.191471186248
+    }
+  ]
+}
