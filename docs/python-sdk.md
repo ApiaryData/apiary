@@ -201,6 +201,32 @@ result = ap.overwrite_frame("warehouse", "sales", "orders", sink.getvalue().to_p
 
 ---
 
+## Connecting to a running node
+
+`Apiary` runs a node inside your process. To use a node started with
+`apiary node run` (see [the node guide](node.md)), connect to its Flight SQL
+entrance instead. This needs `pyarrow` (`pip install apiary-data[flight]`).
+
+```python
+import apiary
+
+ap = apiary.connect("grpc://pi-01:50051")              # token="..." if the node requires one
+ap.create_hive("factory")
+ap.create_box("factory", "line1")
+ap.create_frame("factory", "line1", "readings", {"id": "int64", "temp": "float64"})
+
+ap.ingest("factory", "line1", "readings", table)       # a pyarrow Table; returns rows landed
+result = ap.sql("SELECT avg(temp) FROM factory.line1.readings")   # a pyarrow Table
+result.schema.metadata[b"apiary.rows.crop"]            # rows read from the crop
+```
+
+`ingest` goes through the node's Guard: a batch that does not fit its frame is
+refused with the reason (an `apiary.client.ApiaryError`) and nothing lands.
+`set_recipe` and `flush_crop` work as on the embedded class. `apiary.embedded` is
+the embedded class under another name.
+
+---
+
 ## Ripening, Capping and Harvest
 
 Data matures in stages. A deposit writes **nectar** cells (small, as they arrive). **Capping** merges a frame's nectar into standard-size **capped** cells and seals them: a capped cell never changes. **Harvest** copies capped cells to the harvest store. **Clearing** deletes the files capping replaced.

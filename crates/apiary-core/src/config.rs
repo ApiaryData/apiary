@@ -176,6 +176,15 @@ impl NodeConfig {
         self.cache_dir.join("crop").join(comb)
     }
 
+    /// Where this Node sets aside what its entrance would not admit.
+    ///
+    /// Scoped to the storage URI like the crop, so a Node never mixes the
+    /// rejected data of one comb with another's.
+    pub fn set_aside_dir(&self) -> PathBuf {
+        let comb = format!("{:016x}", crate::rng::hash_str(&self.storage_uri));
+        self.cache_dir.join("set_aside").join(comb)
+    }
+
     /// Create a new `NodeConfig` by auto-detecting system resources.
     ///
     /// # Arguments

@@ -527,6 +527,19 @@ impl ApiaryNode {
         self.depositor.flush().await
     }
 
+    /// The schema a Frame's table stores (what an incoming batch is checked
+    /// against), from the registry the first time and from memory after.
+    pub async fn frame_schema(
+        &self,
+        hive: &str,
+        box_name: &str,
+        frame_name: &str,
+    ) -> Result<SchemaRef> {
+        Ok(Arc::clone(
+            &self.frame_spec(hive, box_name, frame_name).await?.schema,
+        ))
+    }
+
     /// Cap all the nectar in every Frame now, however small or young, rather
     /// than waiting for the interval: merge it to the standard Cell size, ripen
     /// it with the Frame's recipe and seal it.
@@ -714,6 +727,45 @@ impl ApiaryNode {
         handle.await.map_err(|e| ApiaryError::Internal {
             message: format!("Task join error: {e}"),
         })?
+    }
+
+    /// Execute a SQL query like [`sql`](Self::sql), keeping the result's schema
+    /// and the rows each stage gave it (which is how a query with no rows still
+    /// has columns).
+    pub async fn sql_with_stages(&self, query: &str) -> Result<apiary_plan::QueryOutput> {
+        let query_ctx = Arc::clone(&self.query_ctx);
+        let query_owned = query.to_string();
+        let rt_handle = tokio::runtime::Handle::current();
+
+        // The bee pool runs closures that return batches; the schema and stage
+        // counts travel back beside them.
+        let extras = Arc::new(std::sync::Mutex::new(None));
+        let slot = Arc::clone(&extras);
+        let handle = self
+            .bee_pool
+            .submit(move || {
+                let output =
+                    rt_handle.block_on(async { query_ctx.sql_with_stages(&query_owned).await })?;
+                *slot.lock().expect("query slot poisoned") = Some((output.schema, output.stages));
+                Ok(output.batches)
+            })
+            .await;
+
+        let batches = handle.await.map_err(|e| ApiaryError::Internal {
+            message: format!("Task join error: {e}"),
+        })??;
+        let (schema, stages) = extras
+            .lock()
+            .expect("query slot poisoned")
+            .take()
+            .ok_or_else(|| ApiaryError::Internal {
+                message: "A query finished without a result schema".into(),
+            })?;
+        Ok(apiary_plan::QueryOutput {
+            batches,
+            stages,
+            schema,
+        })
     }
 
     /// Return the status of each bee in the pool.

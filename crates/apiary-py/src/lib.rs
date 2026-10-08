@@ -736,7 +736,8 @@ impl Apiary {
     ///     query: SQL query string.
     ///
     /// Returns:
-    ///     bytes: Arrow IPC stream bytes (deserialize with PyArrow), or None if empty result.
+    ///     bytes: Arrow IPC stream bytes (deserialize with PyArrow). A query with no
+    ///     rows returns a stream with its columns and no rows, never None.
     fn sql(&self, query: String) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
@@ -746,14 +747,19 @@ impl Apiary {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Node not started. Call start() first."))?;
 
-        let batches = self
+        let output = self
             .runtime
-            .block_on(async { node.sql(&query).await })
+            .block_on(async { node.sql_with_stages(&query).await })
             .map_err(|e| PyRuntimeError::new_err(format!("SQL error: {e}")))?;
+        let batches = output.batches;
 
         Python::attach(|py| {
             if batches.is_empty() {
-                return Ok(py.None());
+                // No rows: still send the columns, so the caller can read the
+                // result like any other.
+                let empty = RecordBatch::new_empty(output.schema);
+                let ipc_data = batch_to_ipc_bytes(&empty)?;
+                return Ok(PyBytes::new(py, &ipc_data).into());
             }
 
             // Concatenate all batches into one

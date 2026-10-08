@@ -292,6 +292,17 @@ fn visit(plan: &Arc<dyn ExecutionPlan>, rows: &mut StageRows) {
     }
 }
 
+/// A result schema with the stage row counts attached, as each batch's is.
+pub(crate) fn schema_with_stage_metadata(
+    schema: arrow::datatypes::SchemaRef,
+    stages: StageRows,
+) -> arrow::datatypes::SchemaRef {
+    let mut metadata = schema.metadata().clone();
+    metadata.insert(ROWS_FROM_CROP.to_string(), stages.crop.to_string());
+    metadata.insert(ROWS_FROM_COMB.to_string(), stages.comb.to_string());
+    Arc::new(schema.as_ref().clone().with_metadata(metadata))
+}
+
 /// Attach a query's stage row counts to the schema of each result batch, so
 /// they reach whoever reads the results (Python, Arrow IPC, Flight).
 pub(crate) fn with_stage_metadata(

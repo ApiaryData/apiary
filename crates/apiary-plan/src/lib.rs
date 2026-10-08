@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use arrow::array::StringArray;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{Column, TableReference};
 use datafusion::logical_expr::{Expr, cast, lit};
@@ -45,6 +45,8 @@ pub struct QueryOutput {
     pub batches: Vec<RecordBatch>,
     /// Rows the query read from the crop and from the comb.
     pub stages: StageRows,
+    /// The result's schema, which is known even when there are no batches.
+    pub schema: SchemaRef,
 }
 
 /// The hive and box chosen with `USE HIVE` and `USE BOX`.
@@ -144,9 +146,14 @@ impl ApiaryQueryContext {
 
         // Handle custom commands
         if let Some(batches) = self.handle_custom_command(trimmed).await? {
+            let schema = batches
+                .first()
+                .map(RecordBatch::schema)
+                .unwrap_or_else(|| Arc::new(arrow::datatypes::Schema::empty()));
             return Ok(QueryOutput {
                 batches,
                 stages: StageRows::default(),
+                schema,
             });
         }
 
@@ -398,9 +405,11 @@ impl ApiaryQueryContext {
             t.finish();
         }
 
+        let schema = staged::schema_with_stage_metadata(physical.schema(), stages);
         Ok(QueryOutput {
             batches: staged::with_stage_metadata(results, stages),
             stages,
+            schema,
         })
     }
 
