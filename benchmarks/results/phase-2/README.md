@@ -37,6 +37,33 @@ pi-late     direct      direct     relayed      direct      direct      direct  
 - **The drive:** two Pis deposited through the host; all three Pis read all 200 rows; the
   Parquet files were on the host's disk and none on the clients.
 
+## What the drive costs
+
+`drive_bench` (`crates/apiary-net/examples/drive_bench.rs`, raw numbers in [`drive.json`](drive.json)):
+a client Node reaching the host's drive over real QUIC on loopback, in a container limited to
+2 CPUs and 2 GB, against the same work on a local directory.
+
+| | Local | Through the drive |
+|---|---:|---:|
+| head, 1 KiB (median of 300) | 0.03 ms | 0.25 ms |
+| get, 1 KiB | 0.05 ms | 0.47 ms |
+| put, 1 KiB | 0.13 ms | 0.37 ms |
+| create-if-absent, 1 KiB (what a Delta commit rests on) | 0.09 ms | 0.24 ms |
+| put 64 MiB | 86 ms (781 MB/s) | 144 ms (465 MB/s) |
+| get 64 MiB | 47 ms (1,433 MB/s) | 387 ms (173 MB/s) |
+| Delta commit of 1,000 rows | 12.5 ms | 15.7 ms |
+| scan and aggregate, 2.04 million rows (10 MB) | 16 ms | 38 ms |
+
+Reaching the drive through its host adds about a quarter to half a millisecond to each small
+operation and about 3 ms to a commit. Bulk reads are the slowest part, at 173 MB/s: more than a
+gigabit link can carry (about 110 MB/s), so on a Pi's LAN the wire is the limit, not this. A scan
+costs about twice a local one at this size, because each Parquet read crosses the colony.
+
+Loopback has no network latency and a laptop CPU, so these are a floor: a real LAN adds its
+round trips to every operation, and a Pi 4 will do the QUIC encryption more slowly. Reads are not
+streamed into the query engine in parallel ranges yet, so a wide scan over many files pays the
+per-request cost serially.
+
 ## Cross-compiling for the Pi
 
 The full `apiary` binary (iroh, the relay server, Delta, DataFusion) cross-compiles for

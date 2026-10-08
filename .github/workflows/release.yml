@@ -244,6 +244,14 @@ jobs:
       - name: Wait for crates.io index update
         run: sleep 30
 
+      - name: Publish apiary-net
+        run: cargo publish -p apiary-net
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index update
+        run: sleep 30
+
       - name: Publish apiary-cli
         run: cargo publish -p apiary-cli
         env:
