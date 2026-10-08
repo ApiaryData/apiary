@@ -395,7 +395,7 @@ async fn every_node_commits_to_one_delta_table_through_the_host() {
     let log = std::fs::read_dir(dir.path().join("h/b/readings/_delta_log"))
         .unwrap()
         .count();
-    assert!(log >= (4 * BATCHES) as usize + 1);
+    assert!(log > (4 * BATCHES) as usize);
 
     for (authority, _) in &nodes {
         unregister_store(authority);
