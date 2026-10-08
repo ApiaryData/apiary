@@ -148,12 +148,17 @@ pub struct PeerInfo {
     pub protocols: Vec<Protocol>,
 }
 
+/// Live connections by peer and protocol.
+type ConnTable = HashMap<(NodeId, Protocol), Vec<Arc<Admitted>>>;
+
 struct Inner {
     transport: Arc<dyn Transport>,
     cfg: MeshConfig,
     revocations: Arc<RevocationStore>,
     handlers: Mutex<HashMap<Protocol, Arc<dyn Handler>>>,
-    conns: Mutex<HashMap<(NodeId, Protocol), Arc<Admitted>>>,
+    /// Live connections by peer and protocol. A pair can briefly have two, when
+    /// both ends dial at once; all of them are kept so revocation reaches each.
+    conns: Mutex<ConnTable>,
 }
 
 /// A Node's connections to its peers.
@@ -252,7 +257,10 @@ impl Mesh {
     pub fn peers(&self) -> Vec<PeerInfo> {
         let conns = self.inner.conns.lock().expect("conns poisoned");
         let mut by_peer: HashMap<NodeId, PeerInfo> = HashMap::new();
-        for ((peer, protocol), admitted) in conns.iter() {
+        for ((peer, protocol), admitted) in conns
+            .iter()
+            .flat_map(|(key, list)| list.iter().map(move |c| (key, c)))
+        {
             if admitted.is_closed() {
                 continue;
             }
@@ -285,16 +293,16 @@ impl Mesh {
         self.adopt(list, None)
     }
 
+    /// A live admitted connection to a peer for a protocol, if there is one.
+    pub fn peer_conn(&self, peer: NodeId, protocol: Protocol) -> Option<Arc<Admitted>> {
+        self.live(peer, protocol)
+    }
+
     fn live(&self, peer: NodeId, protocol: Protocol) -> Option<Arc<Admitted>> {
         let mut conns = self.inner.conns.lock().expect("conns poisoned");
-        match conns.get(&(peer, protocol)) {
-            Some(c) if !c.is_closed() => Some(Arc::clone(c)),
-            Some(_) => {
-                conns.remove(&(peer, protocol));
-                None
-            }
-            None => None,
-        }
+        let list = conns.get_mut(&(peer, protocol))?;
+        list.retain(|c| !c.is_closed());
+        list.first().cloned()
     }
 
     fn now(&self) -> i64 {
@@ -347,15 +355,18 @@ impl Mesh {
     fn enforce(&self) {
         let current = self.inner.revocations.current();
         let mut conns = self.inner.conns.lock().expect("conns poisoned");
-        conns.retain(|(peer, _), admitted| {
-            let revoked =
-                current.revokes_node(peer) || current.revokes_token(&admitted.membership.token_id);
-            if revoked {
-                info!(peer = %peer.fmt_short(), "Closing the connection: the peer was revoked");
-                admitted.close("revoked");
-            }
-            !revoked
-        });
+        for ((peer, _), list) in conns.iter_mut() {
+            list.retain(|admitted| {
+                let revoked = current.revokes_node(peer)
+                    || current.revokes_token(&admitted.membership.token_id);
+                if revoked {
+                    info!(peer = %peer.fmt_short(), "Closing the connection: the peer was revoked");
+                    admitted.close("revoked");
+                }
+                !revoked
+            });
+        }
+        conns.retain(|_, list| !list.is_empty());
     }
 
     /// Send the current list to every peer but `except`.
@@ -366,6 +377,7 @@ impl Mesh {
             let mut seen = std::collections::HashSet::new();
             conns
                 .iter()
+                .flat_map(|(key, list)| list.iter().map(move |c| (key, c)))
                 .filter(|((peer, _), c)| {
                     Some(*peer) != except && !c.is_closed() && seen.insert(*peer)
                 })
@@ -488,11 +500,12 @@ impl Mesh {
             conn: Arc::clone(&conn),
             incoming: AsyncMutex::new(rx),
         });
-        self.inner
-            .conns
-            .lock()
-            .expect("conns poisoned")
-            .insert((admitted.peer, conn.protocol()), Arc::clone(&admitted));
+        {
+            let mut conns = self.inner.conns.lock().expect("conns poisoned");
+            let list = conns.entry((admitted.peer, conn.protocol())).or_default();
+            list.retain(|c| !c.is_closed());
+            list.push(Arc::clone(&admitted));
+        }
 
         let mesh = self.clone();
         let peer = admitted.peer;

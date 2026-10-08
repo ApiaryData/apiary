@@ -8,10 +8,12 @@ license.workspace = true
 [dependencies]
 apiary-core.workspace = true
 async-trait.workspace = true
+bytes.workspace = true
 data-encoding = "2"
 iroh = "1.3"
 iroh-base = { version = "1.3", features = ["key"] }
 iroh-relay = { version = "1.3", features = ["server"] }
+mdns-sd = "0.21"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
