@@ -236,6 +236,23 @@ fn net_to_store(e: NetError) -> object_store::Error {
     generic(Box::new(e))
 }
 
+/// How long the host may take to answer before the request is given up. A host
+/// that has gone away without closing the connection must not hang a Node.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn read_reply<T: serde::de::DeserializeOwned>(
+    bi: &mut Bi,
+) -> object_store::Result<DriveReply<T>> {
+    tokio::time::timeout(REPLY_TIMEOUT, read_frame(&mut bi.recv))
+        .await
+        .map_err(|_| {
+            generic(Box::new(std::io::Error::other(
+                "the drive did not answer in time",
+            )))
+        })?
+        .map_err(net_to_store)
+}
+
 // ---------------------------------------------------------------------------
 // The host: serving the drive
 // ---------------------------------------------------------------------------
@@ -553,7 +570,7 @@ impl DriveStore {
     ) -> object_store::Result<T> {
         let mut bi = self.open(&request).await?;
         let _ = bi.send.shutdown().await;
-        let reply: DriveReply<T> = read_frame(&mut bi.recv).await.map_err(net_to_store)?;
+        let reply: DriveReply<T> = read_reply(&mut bi).await?;
         match reply {
             DriveReply::Ok(value) => Ok(value),
             DriveReply::Err(e) => Err(from_wire_error(path, e)),
@@ -583,8 +600,7 @@ impl DriveStore {
                 .shutdown()
                 .await
                 .map_err(|e| net_to_store(e.into()))?;
-            let reply: DriveReply<PutWire> =
-                read_frame(&mut bi.recv).await.map_err(net_to_store)?;
+            let reply: DriveReply<PutWire> = read_reply(&mut bi).await?;
             match reply {
                 DriveReply::Ok(put) => Ok(PutResult {
                     e_tag: put.e_tag,
@@ -661,7 +677,7 @@ impl ObjectStore for DriveStore {
         };
         let mut bi = self.open(&request).await?;
         let _ = bi.send.shutdown().await;
-        let reply: DriveReply<GetHead> = read_frame(&mut bi.recv).await.map_err(net_to_store)?;
+        let reply: DriveReply<GetHead> = read_reply(&mut bi).await?;
         let head_reply = match reply {
             DriveReply::Ok(h) => h,
             DriveReply::Err(e) => return Err(from_wire_error(location.as_ref(), e)),

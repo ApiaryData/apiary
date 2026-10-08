@@ -1,0 +1,118 @@
+# The phase 2 gate topology.
+#
+#   home (10.10.0.0/24, behind nat-home: a typical home router)
+#       pi-host   the comb host: the drive is plugged into this Pi
+#       pi-1      a Pi that reaches the drive through pi-host
+#       pi-2      another
+#       pi-late   a Pi that booted with no network time (its clock reads 1970)
+#
+#   lab  (10.30.0.0/24, behind nat-lab: a symmetric NAT, no direct paths through it)
+#       k8s-pod   stands in for a Kubernetes pod dialling out of its pod network
+#
+#   wan  (10.20.0.0/24, the open network)
+#       cloud     a cloud VM: runs the relay
+#       dockerhost  a Docker host with a published UDP port
+#
+# Run it with run_gate.py, which makes the keys, tokens and configs first.
+
+name: apiary-gate2
+
+# The home and lab networks are ordinary bridges, not `internal: true`: Docker drops
+# bridged packets whose destination is outside an internal network's subnet, even
+# ones addressed to a router container on it. Each node's default route points at
+# its router instead (GATEWAY), so nothing leaves through the host.
+networks:
+  home:
+    ipam:
+      config: [{ subnet: 10.10.0.0/24 }]
+  lab:
+    ipam:
+      config: [{ subnet: 10.30.0.0/24 }]
+  wan:
+    ipam:
+      config: [{ subnet: 10.20.0.0/24 }]
+
+x-node: &node
+  image: apiary-gate:latest
+  user: root
+  cap_add: [NET_ADMIN]
+  entrypoint: ["/usr/local/bin/entry.sh"]
+  restart: "no"
+
+services:
+  nat-home:
+    image: apiary-gate:latest
+    user: root
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    entrypoint: ["/usr/local/bin/nat.sh", "MASQ"]
+    volumes: ["./nat.sh:/usr/local/bin/nat.sh:ro"]
+    networks:
+      home: { ipv4_address: 10.10.0.254 }
+      wan: { ipv4_address: 10.20.0.10 }
+
+  nat-lab:
+    image: apiary-gate:latest
+    user: root
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    entrypoint: ["/usr/local/bin/nat.sh", "RANDOM"]
+    volumes: ["./nat.sh:/usr/local/bin/nat.sh:ro"]
+    networks:
+      lab: { ipv4_address: 10.30.0.254 }
+      wan: { ipv4_address: 10.20.0.11 }
+
+  cloud:
+    <<: *node
+    volumes: ["./work/cloud:/etc/apiary:ro", "./work/cloud/data:/data", "./entry.sh:/usr/local/bin/entry.sh:ro"]
+    networks:
+      wan: { ipv4_address: 10.20.0.20 }
+
+  dockerhost:
+    <<: *node
+    volumes: ["./work/dockerhost:/etc/apiary:ro", "./work/dockerhost/data:/data", "./entry.sh:/usr/local/bin/entry.sh:ro"]
+    networks:
+      wan: { ipv4_address: 10.20.0.30 }
+
+  pi-host:
+    <<: *node
+    environment: { GATEWAY: 10.10.0.254 }
+    volumes: ["./work/pi-host:/etc/apiary:ro", "./work/pi-host/data:/data", "./entry.sh:/usr/local/bin/entry.sh:ro"]
+    depends_on: [nat-home]
+    networks:
+      home: { ipv4_address: 10.10.0.11 }
+
+  pi-1:
+    <<: *node
+    environment: { GATEWAY: 10.10.0.254 }
+    volumes: ["./work/pi-1:/etc/apiary:ro", "./work/pi-1/data:/data", "./entry.sh:/usr/local/bin/entry.sh:ro"]
+    depends_on: [nat-home]
+    networks:
+      home: { ipv4_address: 10.10.0.12 }
+
+  pi-2:
+    <<: *node
+    environment: { GATEWAY: 10.10.0.254 }
+    volumes: ["./work/pi-2:/etc/apiary:ro", "./work/pi-2/data:/data", "./entry.sh:/usr/local/bin/entry.sh:ro"]
+    depends_on: [nat-home]
+    networks:
+      home: { ipv4_address: 10.10.0.13 }
+
+  pi-late:
+    <<: *node
+    environment:
+      GATEWAY: 10.10.0.254
+      # Set by run_gate.py: the clock this Pi boots with (empty: the real one).
+      FAKETIME: "${PI_LATE_FAKETIME:-}"
+    volumes: ["./work/pi-late:/etc/apiary:ro", "./work/pi-late/data:/data", "./entry.sh:/usr/local/bin/entry.sh:ro"]
+    depends_on: [nat-home]
+    networks:
+      home: { ipv4_address: 10.10.0.14 }
+
+  k8s-pod:
+    <<: *node
+    environment: { GATEWAY: 10.30.0.254 }
+    volumes: ["./work/k8s-pod:/etc/apiary:ro", "./work/k8s-pod/data:/data", "./entry.sh:/usr/local/bin/entry.sh:ro"]
+    depends_on: [nat-lab]
+    networks:
+      lab: { ipv4_address: 10.30.0.11 }

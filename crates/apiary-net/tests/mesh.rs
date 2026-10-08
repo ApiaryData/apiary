@@ -438,3 +438,38 @@ async fn an_unregistered_protocol_gets_no_handler_but_a_refused_peer_never_reach
     let gossip = a.mesh.connect(&addr(&b), Protocol::Gossip).await.unwrap();
     assert_eq!(gossip.protocol(), Protocol::Gossip);
 }
+
+#[tokio::test]
+async fn a_node_serves_streams_on_a_connection_it_dialled() {
+    // Two nodes find each other at once, and the connection the host dialled is
+    // the one the client ends up using to reach the host. The host must serve
+    // requests that arrive on a connection it opened, not only ones it accepted.
+    let site = Site::new();
+    let (host, client) = (site.node("line1"), site.node("line1"));
+    host.mesh.register(Protocol::Control, Arc::new(Echo));
+    client.mesh.register(Protocol::Control, Arc::new(Echo));
+
+    host.mesh
+        .connect(&addr(&client), Protocol::Control)
+        .await
+        .unwrap();
+    eventually("the client to hold the connection", || {
+        client
+            .mesh
+            .peer_conn(host.id(), Protocol::Control)
+            .is_some()
+    })
+    .await;
+
+    // The client never dialled: it uses the connection it was given.
+    let conn = client.mesh.peer_conn(host.id(), Protocol::Control).unwrap();
+    let mut bi = conn.open_bi().await.unwrap();
+    bi.send.write_all(b"served").await.unwrap();
+    bi.send.shutdown().await.unwrap();
+    let mut echoed = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), bi.recv.read_to_end(&mut echoed))
+        .await
+        .expect("the host answered a stream on a connection it dialled")
+        .unwrap();
+    assert_eq!(echoed, b"served");
+}

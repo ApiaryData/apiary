@@ -290,6 +290,8 @@ impl NetNode {
             relays.push(format!("http://127.0.0.1:{}", addr.port()));
         }
 
+        // Peers named only by id are dialled through the relay everyone shares.
+        let default_relay = relays.first().cloned();
         let mut iroh = IrohConfig::new(key.clone());
         iroh.udp_port = cfg.udp_port;
         iroh.relays = relays;
@@ -332,7 +334,11 @@ impl NetNode {
         // mDNS, and the comb.
         let mut bootstrap: Vec<PeerAddr> = Vec::new();
         for hint in token.claims().bootstrap.iter().chain(&cfg.bootstrap) {
-            bootstrap.push(peer_hint(hint)?);
+            let mut addr = peer_hint(hint)?;
+            if addr.id != key.id() {
+                addr.relay = default_relay.clone();
+                bootstrap.push(addr);
+            }
         }
         let mut sources: Vec<Arc<dyn Discovery>> = Vec::new();
         if !bootstrap.is_empty() {

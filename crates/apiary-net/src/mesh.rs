@@ -465,7 +465,27 @@ impl Mesh {
                 return Err(NetError::Refused(format!("the peer's token: {reason}")));
             }
         };
-        Ok(self.register_conn(conn, membership, welcome.site))
+        let admitted = self.register_conn(conn, membership, welcome.site);
+        // The peer may open streams to us on this connection too (it may find it
+        // is the one it uses to reach us), so whoever serves the protocol here
+        // serves it on a connection we dialled as well.
+        self.serve(&admitted);
+        Ok(admitted)
+    }
+
+    /// Start the registered handler for a connection's protocol, if there is one.
+    fn serve(&self, admitted: &Arc<Admitted>) {
+        let handler = self
+            .inner
+            .handlers
+            .lock()
+            .expect("handlers poisoned")
+            .get(&admitted.protocol())
+            .cloned();
+        if let Some(handler) = handler {
+            let admitted = Arc::clone(admitted);
+            tokio::spawn(async move { handler.handle(admitted).await });
+        }
     }
 
     async fn admit_incoming(&self, conn: Arc<dyn Conn>) {
