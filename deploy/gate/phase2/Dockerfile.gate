@@ -1,0 +1,10 @@
+# The Apiary image plus what the phase 2 gate topology needs: routing and NAT
+# tools, a fake clock, and a few network utilities.
+ARG BASE=apiary:latest
+FROM ${BASE}
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iproute2 iptables faketime procps netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+COPY nat.sh entry.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/nat.sh /usr/local/bin/entry.sh

@@ -68,14 +68,21 @@ struct Pending {
 pub struct FlightEntrance {
     guard: Guard,
     pending: Mutex<HashMap<Vec<u8>, Pending>>,
+    extras: FlightExtras,
 }
 
 impl FlightEntrance {
     /// A service admitting through `guard`.
     pub fn new(guard: Guard) -> Self {
+        Self::with_extras(guard, FlightExtras::default())
+    }
+
+    /// A service that also answers the network actions.
+    pub fn with_extras(guard: Guard, extras: FlightExtras) -> Self {
         Self {
             guard,
             pending: Mutex::new(HashMap::new()),
+            extras,
         }
     }
 
@@ -423,6 +430,14 @@ impl FlightSqlService for FlightEntrance {
                 ACTION_FLUSH_CROP,
                 "Deposit the node's crop into the comb now",
             ),
+            describe(
+                ACTION_NET_STATUS,
+                "What this node sees of its network: peers, paths, sites",
+            ),
+            describe(
+                ACTION_NET_REVOKE,
+                "Hand the node a signed revocation list from the Beekeeper",
+            ),
         ])
     }
 
@@ -451,6 +466,10 @@ pub const ACTION_CREATE_FRAME: &str = "apiary.create_frame";
 pub const ACTION_SET_RECIPE: &str = "apiary.set_recipe";
 /// Deposit the crop now.
 pub const ACTION_FLUSH_CROP: &str = "apiary.flush_crop";
+/// Report the node's network.
+pub const ACTION_NET_STATUS: &str = "apiary.net_status";
+/// Hand the node a signed revocation list.
+pub const ACTION_NET_REVOKE: &str = "apiary.net_revoke";
 
 #[derive(serde::Deserialize)]
 struct CreateHive {
@@ -553,6 +572,22 @@ impl FlightEntrance {
                     "rows": report.rows,
                 }))
             }
+            ACTION_NET_STATUS => match &self.extras.net_status {
+                Some(status) => Ok(status()),
+                None => Err(Status::failed_precondition(
+                    "This node has no network configured ([net] in its config)",
+                )),
+            },
+            ACTION_NET_REVOKE => {
+                let Some(revoke) = &self.extras.revoke else {
+                    return Err(Status::failed_precondition(
+                        "This node has no network configured ([net] in its config)",
+                    ));
+                };
+                let body: serde_json::Value = parse(body)?;
+                let adopted = revoke(body).map_err(Status::invalid_argument)?;
+                Ok(serde_json::json!({ "adopted": adopted }))
+            }
             other => Err(Status::invalid_argument(format!(
                 "Unknown action '{other}'"
             ))),
@@ -593,6 +628,23 @@ impl FlightEntrance {
     }
 }
 
+/// Reports what a Node sees of its network, as JSON.
+pub type NetStatusFn = Arc<dyn Fn() -> serde_json::Value + Send + Sync>;
+
+/// Hands a revocation list (as JSON) to the Node's network. `Ok(true)` if it was
+/// new.
+pub type RevokeFn =
+    Arc<dyn Fn(serde_json::Value) -> std::result::Result<bool, String> + Send + Sync>;
+
+/// What the network layer lends the entrance, when there is one.
+#[derive(Clone, Default)]
+pub struct FlightExtras {
+    /// Answers `apiary.net_status`.
+    pub net_status: Option<NetStatusFn>,
+    /// Answers `apiary.net_revoke`.
+    pub revoke: Option<RevokeFn>,
+}
+
 /// A running Flight SQL server.
 pub struct RunningFlight {
     addr: SocketAddr,
@@ -620,6 +672,16 @@ pub async fn start(
     listen: SocketAddr,
     token: Option<String>,
 ) -> Result<RunningFlight> {
+    start_with(guard, listen, token, FlightExtras::default()).await
+}
+
+/// Like [`start`], with the network actions answered by `extras`.
+pub async fn start_with(
+    guard: Guard,
+    listen: SocketAddr,
+    token: Option<String>,
+    extras: FlightExtras,
+) -> Result<RunningFlight> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|e| ApiaryError::storage(format!("Failed to listen on {listen}"), e))?;
@@ -627,7 +689,7 @@ pub async fn start(
         .local_addr()
         .map_err(|e| ApiaryError::storage("Failed to read the listening address", e))?;
 
-    let service = FlightServiceServer::new(FlightEntrance::new(guard));
+    let service = FlightServiceServer::new(FlightEntrance::with_extras(guard, extras));
     let expected = token.map(|t| format!("Bearer {t}"));
     let intercepted = tonic::service::interceptor::InterceptedService::new(
         service,

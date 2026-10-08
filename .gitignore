@@ -38,3 +38,7 @@ dist/
 # Generated benchmark results
 benchmark_results.json
 multinode_benchmark_results.json
+
+# Phase 2 gate scratch (keys, tokens, node data, results)
+deploy/gate/phase2/work/
+deploy/gate/phase2/gate-results.json

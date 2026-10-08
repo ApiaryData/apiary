@@ -1,0 +1,3 @@
+# Scripts and Dockerfiles run in Linux containers: keep LF line endings on Windows checkouts.
+*.sh text eol=lf
+Dockerfile* text eol=lf

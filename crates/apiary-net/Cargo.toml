@@ -2,6 +2,31 @@
 name = "apiary-net"
 version.workspace = true
 edition.workspace = true
-description = "Apiary networking: iroh transport, membership certificates, discovery, WAN budgets"
+description = "Apiary networking: node identity, join tokens and revocation, the transport, discovery and the comb host's drive service"
 license.workspace = true
-publish = false # empty until phase 2 of the redesign
+
+[dependencies]
+apiary-core.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+futures.workspace = true
+data-encoding = "2"
+iroh = "1.3"
+iroh-base = { version = "1.3", features = ["key"] }
+iroh-relay = { version = "1.3", features = ["server"] }
+mdns-sd = "0.21"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+object_store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+apiary-comb.workspace = true
+arrow.workspace = true
+tempfile = "3"

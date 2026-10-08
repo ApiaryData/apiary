@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use apiary_comb::{CapOptions, CapReport, Comb, HarvestReport, Recipe};
 use apiary_core::registry_manager::RegistryManager;
-use apiary_core::{ApiaryError, Clock, FrameSchema, Result};
+use apiary_core::{ApiaryError, Clock, CommitGate, FrameSchema, Result};
 
 /// What a clearing pass did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -53,6 +53,7 @@ pub struct Upkeep {
     registry: Arc<RegistryManager>,
     settings: UpkeepSettings,
     clock: Arc<dyn Clock>,
+    gate: Option<CommitGate>,
 }
 
 impl Upkeep {
@@ -71,6 +72,20 @@ impl Upkeep {
             registry,
             settings,
             clock,
+            gate: None,
+        }
+    }
+
+    /// Ask `gate` before any pass that commits.
+    pub fn with_gate(mut self, gate: CommitGate) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
+    fn check_gate(&self) -> Result<()> {
+        match &self.gate {
+            Some(gate) => gate(),
+            None => Ok(()),
         }
     }
 
@@ -117,6 +132,7 @@ impl Upkeep {
     }
 
     async fn cap_with(&self, max_age: Duration) -> Result<CapReport> {
+        self.check_gate()?;
         let options = CapOptions {
             target_cell_size: self.settings.target_cell_size,
             max_age,
@@ -150,6 +166,7 @@ impl Upkeep {
     /// Harvest the capped Cells of every Frame: one pass each, up to the
     /// configured byte budget.
     pub async fn harvest_all(&self) -> Result<HarvestReport> {
+        self.check_gate()?;
         let harvest = self.harvest.as_ref().ok_or_else(|| ApiaryError::Config {
             message: "This node has no harvest store; set harvest_uri".into(),
         })?;
@@ -198,6 +215,7 @@ impl Upkeep {
     /// Retire harvested Cells past retention (if configured) and delete the
     /// files no table version needs.
     pub async fn clear_all(&self) -> Result<ClearReport> {
+        self.check_gate()?;
         let mut total = ClearReport::default();
         let mut first_error = None;
         for f in self.frames().await? {

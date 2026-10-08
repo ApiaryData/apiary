@@ -13,3 +13,4 @@ dist/
 tests/
 docs/development/
 benchmark_results.json
+deploy/gate/phase2/work

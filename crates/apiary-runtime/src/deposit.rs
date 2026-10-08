@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 
 use apiary_comb::{Comb, Crop, FrameCrop, FrameKey, Segment};
 use apiary_core::registry_manager::RegistryManager;
-use apiary_core::{ApiaryError, FrameSchema, Result};
+use apiary_core::{ApiaryError, CommitGate, FrameSchema, Result};
 
 /// What a deposit moved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -49,6 +49,9 @@ pub struct Depositor {
     max_deposit_bytes: u64,
     /// Held while depositing, so deposits never overlap.
     busy: Mutex<()>,
+    /// Asked before every commit: a Node with no trustworthy clock must not
+    /// stamp the Delta log. Ingest is unaffected; the crop needs no wall time.
+    gate: Option<CommitGate>,
 }
 
 impl Depositor {
@@ -67,7 +70,14 @@ impl Depositor {
             target_cell_size,
             max_deposit_bytes: target_cell_size.saturating_mul(4).max(1),
             busy: Mutex::new(()),
+            gate: None,
         }
+    }
+
+    /// Ask `gate` before every commit.
+    pub fn with_gate(mut self, gate: CommitGate) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// Wait until no deposit is running, and hold off the next one.
@@ -148,6 +158,9 @@ impl Depositor {
             return Ok(DepositReport::default());
         }
 
+        if let Some(gate) = &self.gate {
+            gate()?;
+        }
         let table = self
             .open_table(&key.hive, &key.box_name, &key.frame)
             .await?;

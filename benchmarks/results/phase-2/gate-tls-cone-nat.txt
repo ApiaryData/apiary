@@ -1,0 +1,55 @@
+Preparing keys, tokens and configs...
+  Apiary public key 542f20d606ad538e...
+  relay certificate made; the relay runs with TLS and address discovery
+Starting the topology...
+  every node is up
+
+Colonies and paths
+  PASS  every node joins every other node, with no software beyond the one binary   (2s)
+      (pi-late and k8s-pod cannot meet: with a 1970 clock pi-late cannot verify the relay's certificate)
+  PASS  cloud is in colony 'cloud'
+  PASS  dockerhost is in colony 'lab'
+  PASS  k8s-pod is in colony 'lab'
+  PASS  pi-host is in colony 'edge'
+  PASS  pi-1 is in colony 'edge'
+  PASS  pi-2 is in colony 'edge'
+  PASS  pi-late is in colony 'edge'
+
+      path matrix (row's view of column):
+             cloud  dockerhost     k8s-pod     pi-host        pi-1        pi-2     pi-late
+      cloud                -      direct      direct      direct      direct      direct      direct
+      dockerhost      direct           -      direct      direct      direct      direct      direct
+      k8s-pod         direct      direct           -      direct      direct      direct           -
+      pi-host         direct      direct      direct           -      direct      direct      direct
+      pi-1            direct      direct      direct      direct           -      direct      direct
+      pi-2            direct      direct      direct      direct      direct           -      direct
+      pi-late         direct      direct           -      direct      direct      direct           -
+  PASS  every pair within the Pi site connects directly
+  PASS  every cross-site pair connects directly or through the relay
+  PASS  two sites behind ordinary NATs punch through to a direct path   ({'direct'})
+  PASS  Pis behind their router reach the public nodes directly
+  PASS  a Pi counts exactly the other Pis as its site
+  PASS  no site label is contradicted by the measured links   ([])
+
+The drive
+  PASS  two Pis commit through the host and every Pi reads all the rows   ({'pi-host': '200', 'pi-1': '200', 'pi-2': '200'})
+  PASS  the data is on the host's drive and not on the client Pi   (host 2 files, pi-1 0 files)
+
+A Pi booted without network time
+  PASS  a Pi booted at 1970 joined the colony
+  PASS  it noticed its clock was behind its peers' tokens and flagged them   (5 of 5 peers flagged)
+  PASS  the other nodes admit it (their clocks are right)
+  PASS  with no network time it still takes deposits into its crop   (landed 10
+refused: Flight returned internal error, with message: Clock not synchronised: this node's clock reads 1970-01)
+  PASS  but it refuses to commit until its clock is right   (ock not synchronised: this node's clock reads 1970-01-01 00:00:43 UTC, which cannot be right; commits wait until it is synchronised (crops keep taking deposits))
+  PASS  once the clock is right it ships what it held   ({'frames': 0, 'segments': 0, 'rows': 0})
+  PASS  and those rows reach the comb on the host   (10)
+
+Revocation
+  PASS  a revoked key is cut off from every node, from one push to one node
+  PASS  and it stays out: its dials are refused
+  PASS  the revoked node is told why   (membership refused: the peer refused us: revoked: node 7b259eca3a)
+  PASS  every other node holds the revocation list   ({'cloud': 1, 'k8s-pod': 1, 'pi-host': 1, 'pi-1': 1, 'pi-2': 1, 'pi-late': 1})
+  PASS  everyone else is still connected to each other
+
+28 of 28 checks passed

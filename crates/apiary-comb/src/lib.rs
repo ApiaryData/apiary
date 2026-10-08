@@ -9,6 +9,7 @@
 pub mod cell;
 pub mod comb;
 pub mod crop;
+pub mod custom_store;
 pub mod local;
 pub mod s3;
 pub mod schema;

@@ -139,6 +139,9 @@ impl Comb {
         if uri.starts_with("s3://") {
             return Self::from_s3_uri(uri);
         }
+        if uri.starts_with("apiary-drive://") {
+            return Self::from_drive_uri(uri);
+        }
 
         let path = uri.strip_prefix("local://").unwrap_or(uri);
         let expanded = expand_local_path(path)?;
@@ -155,6 +158,33 @@ impl Comb {
         })?;
         let root = Url::from_directory_path(&absolute).map_err(|()| ApiaryError::Config {
             message: format!("Comb directory is not a valid path: {absolute:?}"),
+        })?;
+        Ok(Self {
+            root,
+            storage_options: HashMap::new(),
+        })
+    }
+
+    /// A comb reached through a store registered with
+    /// [`custom_store::register_store`](crate::custom_store::register_store): the
+    /// comb host's drive, served over the colony's connections.
+    fn from_drive_uri(uri: &str) -> Result<Self> {
+        let authority =
+            crate::custom_store::drive_authority(uri).ok_or_else(|| ApiaryError::Config {
+                message: format!("A drive URI needs an authority: apiary-drive://<node>/ ({uri})"),
+            })?;
+        let mut location = format!("apiary-drive://{authority}/");
+        let prefix = uri
+            .strip_prefix("apiary-drive://")
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(_, path)| path.trim_matches('/'))
+            .unwrap_or_default();
+        if !prefix.is_empty() {
+            location.push_str(prefix);
+            location.push('/');
+        }
+        let root = Url::parse(&location).map_err(|e| ApiaryError::Config {
+            message: format!("Invalid drive URI {uri}: {e}"),
         })?;
         Ok(Self {
             root,
