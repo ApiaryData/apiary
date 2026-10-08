@@ -24,7 +24,7 @@ use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
-use apiary_core::{Env, FrameSchema, Result, WriteResult};
+use apiary_core::{CommitGate, Env, FrameSchema, Result, WriteResult, check_clock};
 use apiary_plan::{ApiaryQueryContext, QueryOptions};
 
 use crate::bee::{BeePool, BeeStatus};
@@ -105,6 +105,9 @@ pub struct ApiaryNode {
     /// Caps, harvests and clears the comb.
     upkeep: Arc<Upkeep>,
 
+    /// Asked before every direct commit.
+    commit_gate: CommitGate,
+
     /// Wakes the deposit loop early when the crop grows large.
     deposit_wake: Arc<tokio::sync::Notify>,
 
@@ -135,6 +138,20 @@ impl ApiaryNode {
     /// Start a node under the given [`Env`]: every time read, sleep and seeded
     /// random choice goes through it.
     pub async fn start_with_env(config: NodeConfig, env: Env) -> Result<Self> {
+        Self::start_with_gate(config, env, None).await
+    }
+
+    /// Start a node whose commits are gated by `gate` (see [`CommitGate`]). With
+    /// none, a gate that only refuses a clock that cannot be right is used.
+    pub async fn start_with_gate(
+        config: NodeConfig,
+        env: Env,
+        gate: Option<CommitGate>,
+    ) -> Result<Self> {
+        let gate: CommitGate = gate.unwrap_or_else(|| {
+            let clock = env.clock();
+            Arc::new(move || check_clock(clock.now_utc(), None))
+        });
         let storage: Arc<dyn StorageBackend> = if config.storage_uri.starts_with("s3://") {
             Arc::new(S3Backend::new(&config.storage_uri)?)
         } else if let Some(authority) = custom_store::drive_authority(&config.storage_uri) {
@@ -224,12 +241,15 @@ impl ApiaryNode {
             query_options,
         )?);
 
-        let depositor = Arc::new(Depositor::new(
-            Arc::clone(&comb),
-            Arc::clone(&crop),
-            Arc::clone(&registry),
-            config.target_cell_size,
-        ));
+        let depositor = Arc::new(
+            Depositor::new(
+                Arc::clone(&comb),
+                Arc::clone(&crop),
+                Arc::clone(&registry),
+                config.target_cell_size,
+            )
+            .with_gate(Arc::clone(&gate)),
+        );
         let deposit_wake = Arc::new(tokio::sync::Notify::new());
         let crop_bytes = Arc::new(AtomicU64::new(0));
 
@@ -332,19 +352,22 @@ impl ApiaryNode {
             Some(uri) => Some(Arc::new(Comb::from_storage_uri(uri)?)),
             None => None,
         };
-        let upkeep = Arc::new(Upkeep::new(
-            Arc::clone(&comb),
-            harvest,
-            Arc::clone(&registry),
-            UpkeepSettings {
-                target_cell_size: config.target_cell_size,
-                cap_max_age: config.cap_max_age,
-                harvest_batch_bytes: config.harvest_batch_bytes,
-                retention: config.retention,
-                clear_grace: config.clear_grace,
-            },
-            env.clock(),
-        ));
+        let upkeep = Arc::new(
+            Upkeep::new(
+                Arc::clone(&comb),
+                harvest,
+                Arc::clone(&registry),
+                UpkeepSettings {
+                    target_cell_size: config.target_cell_size,
+                    cap_max_age: config.cap_max_age,
+                    harvest_batch_bytes: config.harvest_batch_bytes,
+                    retention: config.retention,
+                    clear_grace: config.clear_grace,
+                },
+                env.clock(),
+            )
+            .with_gate(Arc::clone(&gate)),
+        );
         {
             let upkeep = Arc::clone(&upkeep);
             spawn_periodic(
@@ -412,6 +435,7 @@ impl ApiaryNode {
             world_view_builder,
             depositor,
             upkeep,
+            commit_gate: gate,
             deposit_wake,
             crop_bytes,
             frame_specs: RwLock::new(HashMap::new()),
@@ -464,6 +488,7 @@ impl ApiaryNode {
         frame_name: &str,
         batch: &RecordBatch,
     ) -> Result<WriteResult> {
+        (self.commit_gate)()?;
         let start = self.env.clock().monotonic();
 
         let table = self.frame_table(hive, box_name, frame_name).await?;
@@ -630,6 +655,7 @@ impl ApiaryNode {
         frame_name: &str,
         batch: &RecordBatch,
     ) -> Result<WriteResult> {
+        (self.commit_gate)()?;
         let start = self.env.clock().monotonic();
 
         // No deposit may run between choosing what to supersede and committing.

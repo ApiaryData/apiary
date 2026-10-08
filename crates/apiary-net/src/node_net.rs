@@ -212,6 +212,8 @@ pub struct NetNode {
     relay: Option<RelayServer>,
     serves_comb: bool,
     revocations: Arc<RevocationStore>,
+    /// When this Node's join token was issued: a time that has certainly passed.
+    token_issued_at: i64,
 }
 
 fn config_err(message: impl Into<String>) -> ApiaryError {
@@ -394,12 +396,22 @@ impl NetNode {
             relay,
             serves_comb,
             revocations,
+            token_issued_at: token.claims().issued_at,
         })
     }
 
     /// This Node's id.
     pub fn id(&self) -> NodeId {
         self.mesh.id()
+    }
+
+    /// The gate that stops this Node committing while its clock is wrong: the
+    /// clock must be past 2025 and not behind the time this Node's own join token
+    /// was issued (allowing ten minutes of skew). Crops need no wall time, so
+    /// ingest carries on; commits wait until the clock is right.
+    pub fn commit_gate(&self) -> apiary_core::CommitGate {
+        let floor = chrono::DateTime::from_timestamp(self.token_issued_at - 600, 0);
+        Arc::new(move || apiary_core::check_clock(chrono::Utc::now(), floor))
     }
 
     /// The mesh, for the services that run over it.

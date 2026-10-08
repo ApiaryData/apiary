@@ -405,8 +405,10 @@ fn run_node(file: FileConfig) -> Result<(), String> {
             None => None,
         };
 
+        // A Node with no trustworthy clock keeps ingesting but will not commit.
+        let gate = net.as_ref().map(|n| n.commit_gate());
         let node = Arc::new(
-            ApiaryNode::start(node_config)
+            ApiaryNode::start_with_gate(node_config, apiary_core::Env::system(), gate)
                 .await
                 .map_err(|e| format!("Cannot start the node: {e}"))?,
         );

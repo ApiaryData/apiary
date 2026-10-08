@@ -6,6 +6,7 @@
 //! and the unified error type.
 
 pub mod clock;
+pub mod clock_gate;
 pub mod config;
 pub mod env;
 pub mod error;
@@ -17,6 +18,7 @@ pub mod storage;
 pub mod types;
 
 pub use clock::{Clock, ManualClock, Millis, SystemClock};
+pub use clock_gate::{CommitGate, EARLIEST_PLAUSIBLE_SECS, check_clock};
 pub use config::NodeConfig;
 pub use env::Env;
 pub use error::ApiaryError;

@@ -124,6 +124,13 @@ pub enum ApiaryError {
     /// Serialization or deserialization error.
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// The Node's wall clock cannot be trusted, so it will not commit.
+    #[error("Clock not synchronised: {message}")]
+    Clock {
+        /// Why the clock is not trusted.
+        message: String,
+    },
 }
 
 impl ApiaryError {
