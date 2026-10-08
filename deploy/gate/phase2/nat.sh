@@ -31,5 +31,12 @@ else
 fi
 iptables -A FORWARD -i "$wan_if" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A FORWARD -i "$wan_if" -j DROP
+# Packets aimed at the router's own WAN address (which is where a peer sends when it
+# punches towards this site's mapped address) are input, not forwarded. Drop the
+# unsolicited ones before they are tracked: a tracked-but-unanswered entry makes
+# the router rewrite its own source port when it later sends to that peer, which
+# is a router bug a home router does not have, and it defeats hole punching.
+iptables -A INPUT -i "$wan_if" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i "$wan_if" -j DROP
 echo "NAT ($mode) up on $wan_if"
 exec sleep infinity

@@ -34,9 +34,9 @@ pub use mem::{MemNetwork, MemTransport};
 pub use mesh::{Admitted, Handler, Mesh, MeshConfig, PeerInfo};
 pub use node_net::{
     DiscoveredStatus, DnsPeerConfig, NetConfig, NetContext, NetNode, NetStatus, PeerStatus,
-    default_state_dir,
+    RelayTlsConfig, default_state_dir,
 };
-pub use relay::RelayServer;
+pub use relay::{RelayServer, RelayTlsFiles, generate_cert, load_certs};
 pub use revocation::{RevocationStore, Revocations};
 pub use site::{
     Measurement, PROBE_SERVICE, PeerSite, ProbeService, SiteMonitor, SiteRules, Verdict, judge,

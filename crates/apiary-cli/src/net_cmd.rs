@@ -4,7 +4,7 @@ use arrow_flight::Action;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use tonic::transport::Channel;
 
-use apiary_net::{RelayServer, Revocations};
+use apiary_net::{RelayServer, RelayTlsFiles, Revocations, generate_cert};
 
 async fn client(url: &str) -> Result<FlightServiceClient<Channel>, String> {
     let channel = Channel::from_shared(url.to_string())
@@ -134,17 +134,72 @@ pub async fn push_revocations(
 }
 
 /// `apiary relay run`: a relay with no Node attached, for a cloud VM.
-pub async fn relay(listen: &str) -> Result<(), String> {
+pub async fn relay(
+    listen: &str,
+    tls: Option<(String, String, std::path::PathBuf, std::path::PathBuf)>,
+) -> Result<(), String> {
     let addr = listen
         .parse()
         .map_err(|e| format!("'{listen}' is not an address: {e}"))?;
-    let server = RelayServer::spawn(addr).await.map_err(|e| e.to_string())?;
-    println!(
-        "Relay serving plain HTTP on {}. Nodes use it as http://<this host>:{}; put TLS in front for the open internet.",
-        server.addr().map_or(listen.to_string(), |a| a.to_string()),
-        server.addr().map_or(0, |a| a.port())
-    );
+    let server = match tls {
+        None => {
+            let server = RelayServer::spawn(addr).await.map_err(|e| e.to_string())?;
+            println!(
+                "Relay serving plain HTTP on {}. Nodes use it as http://<this host>:{}. It forwards traffic but cannot help Nodes behind NATs find direct paths: use --cert and --key for that.",
+                server.addr().map_or(listen.to_string(), |a| a.to_string()),
+                server.addr().map_or(0, |a| a.port())
+            );
+            server
+        }
+        Some((https, quic, cert, key)) => {
+            let parse = |what: &str, text: &str| -> Result<std::net::SocketAddr, String> {
+                text.parse()
+                    .map_err(|e| format!("{what} '{text}' is not an address: {e}"))
+            };
+            let server = RelayServer::spawn_tls(
+                addr,
+                &RelayTlsFiles {
+                    https: parse("--https", &https)?,
+                    quic: parse("--quic", &quic)?,
+                    cert,
+                    key,
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            println!(
+                "Relay serving HTTPS on {} and QUIC address discovery on UDP {}. Nodes use it as https://<this host>:{} and trust its certificate (relay_ca).",
+                server.https_addr().map_or(https.clone(), |a| a.to_string()),
+                server.quic_addr().map_or(quic.clone(), |a| a.to_string()),
+                server.https_addr().map_or(0, |a| a.port())
+            );
+            server
+        }
+    };
     tokio::signal::ctrl_c().await.map_err(|e| e.to_string())?;
     server.shutdown().await;
+    Ok(())
+}
+
+/// `apiary relay cert`: a self-signed certificate for a relay.
+pub fn relay_cert(out: &std::path::Path, names: &[String]) -> Result<(), String> {
+    let (cert, key) = generate_cert(names).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(out).map_err(|e| format!("Cannot create {}: {e}", out.display()))?;
+    let cert_path = out.join("relay.pem");
+    let key_path = out.join("relay.key");
+    std::fs::write(&cert_path, cert)
+        .map_err(|e| format!("Cannot write {}: {e}", cert_path.display()))?;
+    std::fs::write(&key_path, key)
+        .map_err(|e| format!("Cannot write {}: {e}", key_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+    }
+    println!(
+        "Wrote {} and {}.\nRun the relay with --cert/--key, and give every Node the certificate as `relay_ca` in [net].",
+        cert_path.display(),
+        key_path.display()
+    );
     Ok(())
 }

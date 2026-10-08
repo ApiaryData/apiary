@@ -19,7 +19,13 @@ Run it:
 python deploy/gate/phase2/run_gate.py              # builds the image, runs, tears down
 python deploy/gate/phase2/run_gate.py --skip-build --keep
 LAB_NAT=MASQ python deploy/gate/phase2/run_gate.py --skip-build
+RELAY_TLS=1 LAB_NAT=MASQ python deploy/gate/phase2/run_gate.py --skip-build   # TLS relay: NAT-to-NAT hole punching
 ```
+
+`RELAY_TLS=1` runs the relay with TLS and QUIC address discovery (the gate makes the
+certificate and every Node trusts it). With `LAB_NAT=MASQ` the pod and the Pis then reach
+each other directly; with the default symmetric NAT they stay relayed. `pi-late` (1970
+clock) cannot verify the relay's certificate, so it and the pod do not meet in this mode.
 
 It needs Docker with permission to give containers `NET_ADMIN`. It makes the Apiary key,
 Node keys, tokens and configs with the `apiary` CLI, as a Beekeeper would, starts every

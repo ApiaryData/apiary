@@ -36,7 +36,12 @@ WORK = HERE / "work"
 COMPOSE = HERE / "docker-compose.yml"
 IMAGE = "apiary-gate:latest"
 BASE_IMAGE = "apiary-gate-base:latest"
-RELAY = "http://10.20.0.20:3340"
+# RELAY_TLS=1 runs the relay with TLS and QUIC address discovery, which lets two
+# Nodes behind ordinary NATs punch through to a direct path. LAB_NAT=MASQ makes the
+# pod's NAT an ordinary (cone) one; the default, RANDOM, is a symmetric NAT.
+TLS = os.environ.get("RELAY_TLS") == "1"
+LAB_NAT = os.environ.get("LAB_NAT", "RANDOM")
+RELAY = "https://10.20.0.20:3341" if TLS else "http://10.20.0.20:3340"
 PUBLIC_KEY_FILE = WORK / "apiary.key"
 
 # name -> (site, colony, ip, UDP address others may dial directly, serves the comb)
@@ -152,6 +157,12 @@ def prepare():
     )
     public = key_out.splitlines()[-1].strip()
     print(f"  Apiary public key {public[:16]}...")
+    if TLS:
+        apiary_oneshot(
+            "relay", "cert", "--out", "/work/relay", "--name", "10.20.0.20", "--name", "localhost",
+            extra_mounts=[(WORK, "/work")],
+        )
+        print("  relay certificate made; the relay runs with TLS and address discovery")
 
     def config(name, token=False):
         n = NODES[name]
@@ -168,7 +179,7 @@ def prepare():
             'apiary = "gate"',
             f'apiary_public_key = "{public}"',
             f'site = "{n["site"]}"',
-            "udp_port = 7000",
+            f"udp_port = {7000 if n['public'] else 7001 + list(NODES).index(name)}",
             f'relays = ["{RELAY}"]',
             "mdns = true",
             "discovery_interval_secs = 2",
@@ -178,9 +189,26 @@ def prepare():
             lines.append('token_file = "/etc/apiary/token"')
         if n.get("comb_host"):
             lines.append("serve_comb = true")
-        if name == "cloud":
+        if TLS:
+            lines.append('relay_ca = "/etc/apiary/relay.pem"')
+        if name == "cloud" and not TLS:
             lines.append('serve_relay = "0.0.0.0:3340"')
+        if name == "cloud" and TLS:
+            lines += [
+                "",
+                "[net.serve_relay_tls]",
+                'https = "0.0.0.0:3341"',
+                'quic = "0.0.0.0:7842"',
+                'cert = "/etc/apiary/relay.pem"',
+                'key = "/etc/apiary/relay.key"',
+            ]
         (WORK / name / "apiary.toml").write_text("\n".join(lines) + "\n")
+        if TLS:
+            import shutil as _shutil
+
+            _shutil.copy(WORK / "relay" / "relay.pem", WORK / name / "relay.pem")
+            if name == "cloud":
+                _shutil.copy(WORK / "relay" / "relay.key", WORK / name / "relay.key")
 
     # Node ids come from the keys, which come before the tokens that name them.
     for name in NODES:
@@ -228,6 +256,12 @@ def peers_of(name):
     return {p["id"]: p for p in s["peers"]} if s else {}
 
 
+# With a TLS relay, a Node whose clock reads 1970 cannot check the relay's certificate
+# (it is "not yet valid"), so it cannot use the relay, and the one NATed Node that can
+# only be reached through the relay is out of its reach. Everything else still works.
+UNREACHABLE = {frozenset(("pi-late", "k8s-pod"))} if TLS else set()
+
+
 def check_mesh():
     ids = {n: v["id"] for n, v in NODES.items()}
     started = time.time()
@@ -235,7 +269,7 @@ def check_mesh():
     def full():
         for name in NODES:
             have = peers_of(name)
-            want = {i for n, i in ids.items() if n != name}
+            want = {i for n, i in ids.items() if n != name and frozenset((n, name)) not in UNREACHABLE}
             if not want <= set(have):
                 return False
         return True
@@ -246,10 +280,13 @@ def check_mesh():
                f"{time.time() - started:.0f}s")
     except TimeoutError:
         for name in NODES:
-            missing = [n for n, i in ids.items() if n != name and i not in peers_of(name)]
+            missing = [n for n, i in ids.items() if n != name and i not in peers_of(name) and frozenset((n, name)) not in UNREACHABLE]
             print(f"      {name} is missing {missing}")
         record("every node joins every other node", False, "see above")
         return
+
+    if UNREACHABLE:
+        print("      (pi-late and k8s-pod cannot meet: with a 1970 clock pi-late cannot verify the relay's certificate)")
 
     # The colonies each node reports are the ones its token named.
     for name, n in NODES.items():
@@ -275,7 +312,12 @@ def check_mesh():
     record("every cross-site pair connects directly or through the relay", not far, str(far) if far else "")
 
     pi_pod = {matrix.get((a, "k8s-pod")) for a in PI_SITE if a != "pi-late"}
-    record("a pod behind a symmetric NAT reaches the Pis through the relay", pi_pod == {"relayed"}, str(pi_pod))
+    if TLS and LAB_NAT == "MASQ":
+        record("two sites behind ordinary NATs punch through to a direct path", pi_pod == {"direct"}, str(pi_pod))
+    elif TLS:
+        record("a pod behind a symmetric NAT still reaches the Pis, through the relay", pi_pod == {"relayed"}, str(pi_pod))
+    else:
+        record("a pod behind a symmetric NAT reaches the Pis through the relay", pi_pod == {"relayed"}, str(pi_pod))
     direct_public = all(matrix.get((a, p)) == "direct" for a in PI_SITE for p in ("cloud", "dockerhost"))
     record("Pis behind their router reach the public nodes directly", direct_public)
 
@@ -322,7 +364,7 @@ def check_drive():
 
 def check_clock():
     pl = peers_of("pi-late")
-    record("a Pi booted at 1970 joined the colony", len(pl) >= 6)
+    record("a Pi booted at 1970 joined the colony", len(pl) >= (5 if TLS else 6))
     suspect = [p for p in pl.values() if p["clock_suspect"]]
     record("it noticed its clock was behind its peers' tokens and flagged them", len(suspect) >= 1,
            f"{len(suspect)} of {len(pl)} peers flagged")

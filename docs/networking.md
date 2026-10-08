@@ -97,17 +97,51 @@ serve_relay = "0.0.0.0:3340"          # in a Node on a cloud VM
 relays = ["http://relay.example.com:3340"]   # in every Node that should use it
 ```
 
-or `apiary relay run --listen 0.0.0.0:3340` for a relay with no Node attached. The relay
-speaks plain HTTP: that is safe for the traffic it carries, for the reason above, but put TLS
-in front of one on the open internet and give Nodes its `https://` URL.
+or `apiary relay run --listen 0.0.0.0:3340` for a relay with no Node attached. That relay
+speaks plain HTTP: safe for the traffic it carries, for the reason above, and enough for
+Nodes to reach each other, but it forwards only. Nodes behind NATs stay on it.
 
-**What to expect.** With this relay, Nodes behind NATs reach everything they can dial
-directly (any node with a public address, and each other on the same LAN) directly, and
-reach each other through the relay. Direct paths *between two NATed sites* need the relay to
-tell each Node what address the NAT gave it (QUIC address discovery, which needs TLS on the
-relay); this relay does not do that yet, so two NATed sites stay on the relay. That is
-slower but correct. Keep relayed paths out of anything that moves a lot of data; the site
-rule below does.
+**A relay with TLS and address discovery** lets two Nodes behind ordinary NATs find a direct
+path. Each Node asks the relay (over QUIC, on UDP 7842) what address its NAT gave it, the
+two exchange those addresses through the relay, and both send at once so each NAT lets the
+other in. QUIC needs TLS, so this relay needs a certificate and every Node must trust it:
+
+```bash
+apiary relay cert --out ./relay --name relay.example.com --name 203.0.113.7   # self-signed
+apiary relay run --cert ./relay/relay.pem --key ./relay/relay.key             # or in a Node, below
+```
+
+```toml
+[net]
+relays = ["https://relay.example.com:3341"]   # in every Node
+relay_ca = "/etc/apiary/relay.pem"            # trust a private relay's certificate
+# relay_quic_port = 7842                      # where address discovery answers
+
+[net.serve_relay_tls]                          # in the Node that runs the relay
+https = "0.0.0.0:3341"
+quic = "0.0.0.0:7842"
+cert = "/etc/apiary/relay.pem"
+key = "/etc/apiary/relay.key"
+```
+
+A certificate from a public CA needs no `relay_ca`. Open TCP 3341 and UDP 7842 to the relay.
+
+**What to expect.** Nodes behind NATs reach everything they can dial (any node with a public
+address, and each other on the same LAN) directly. Between two NATed sites:
+
+- plain relay: through the relay;
+- TLS relay, ordinary (cone) NATs: a direct path, found within seconds (the gate checks it);
+- TLS relay, a symmetric NAT on either side: through the relay, as before. A symmetric NAT
+  gives a new port per destination, so the address the Node learned is not the one its peer
+  would reach.
+
+Two things to know. A Node whose clock is badly wrong cannot verify the relay's certificate,
+so it cannot use a TLS relay (it still reaches Nodes it can dial, and the clock gate already
+stops it committing). And several Nodes behind one NAT should bind different `udp_port`s:
+on the same port the router remaps one of them per destination, which looks like a symmetric
+NAT and defeats punching.
+
+Keep relayed paths out of anything that moves a lot of data; the site rule below does.
 
 ## Discovery
 
@@ -195,7 +229,7 @@ All under `[net]`; a Node with no `[net]` section runs alone, as before.
 | `key_file` | Where the Node's key lives (default `<cache_dir>/net/node.key`) |
 | `site` | This Node's site label |
 | `udp_port` | The UDP port for QUIC (0 picks one; pin it behind a firewall or port mapping) |
-| `relays`, `serve_relay` | Relay servers to use; run one here |
+| `relays`, `serve_relay`, `serve_relay_tls`, `relay_ca`, `relay_quic_port` | Relay servers to use; run one here (plain, or with TLS and address discovery); trust a private relay's certificate |
 | `external_addrs` | Addresses to advertise besides those found (a published port) |
 | `mdns`, `rendezvous` | Discovery sources (both default on) |
 | `bootstrap`, `dns_peers` | Peers to dial first; peers found by hostname |
@@ -218,11 +252,12 @@ All under `[net]`; a Node with no `[net]` section runs alone, as before.
 `deploy/gate/phase2` builds a topology of containers with real NAT (a home router that drops
 unsolicited inbound traffic, a symmetric NAT, a relay on the open network, WAN latency, a Pi
 booted at 1970) and checks the phase 2 gate: the colonies form, pairs within a site connect
-directly, every cross-site pair connects directly or through the relay, a revoked key is
+directly, every cross-site pair connects directly or through the relay (directly, by hole punching,
+across two ordinary NATs when the relay has TLS), a revoked key is
 refused everywhere from one push to one Node, a Pi booted without network time joins and
 ingests but will not commit until its clock is right, and every Node in a site commits to the
 drive through its host.
 
 Not checked: real Pis behind a real home router, a real Kubernetes cluster (the manifest is
 validated for structure and its config is parsed by the real parser, but not run), a cloud
-VM, and direct paths between two NATed sites (see Relays).
+VM, and NATs from real routers (the gate's are Linux's; some consumer routers are stricter).

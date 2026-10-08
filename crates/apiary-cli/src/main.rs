@@ -212,11 +212,34 @@ enum TokenCommand {
 
 #[derive(Subcommand)]
 enum RelayCommand {
-    /// Serve a relay (plain HTTP; put TLS in front for the open internet).
+    /// Serve a relay. Plain HTTP by default; with --cert and --key, TLS with QUIC
+    /// address discovery, which lets Nodes behind NATs find direct paths.
     Run {
-        /// Where to listen.
+        /// Where to listen for plain HTTP (with TLS: a probe port).
         #[arg(long, default_value = "0.0.0.0:3340")]
         listen: String,
+        /// Where to listen for HTTPS (needs --cert and --key).
+        #[arg(long, default_value = "0.0.0.0:3341")]
+        https: String,
+        /// Where to listen for QUIC address discovery (UDP).
+        #[arg(long, default_value = "0.0.0.0:7842")]
+        quic: String,
+        /// The relay's certificate chain, as PEM.
+        #[arg(long, requires = "key")]
+        cert: Option<PathBuf>,
+        /// The relay's private key, as PEM.
+        #[arg(long, requires = "cert")]
+        key: Option<PathBuf>,
+    },
+    /// Make a self-signed certificate for a relay. Give the certificate to Nodes
+    /// as `relay_ca` so they trust it.
+    Cert {
+        /// A directory for relay.pem and relay.key.
+        #[arg(long)]
+        out: PathBuf,
+        /// A DNS name or IP address the relay is reached at (repeatable).
+        #[arg(long = "name", required = true)]
+        names: Vec<String>,
     },
 }
 
@@ -322,8 +345,21 @@ fn dispatch(command: Command) -> Result<(), String> {
             }
         }
         Command::Relay {
-            command: RelayCommand::Run { listen },
-        } => block_on(net_cmd::relay(&listen)),
+            command:
+                RelayCommand::Run {
+                    listen,
+                    https,
+                    quic,
+                    cert,
+                    key,
+                },
+        } => block_on(net_cmd::relay(
+            &listen,
+            cert.zip(key).map(|(cert, key)| (https, quic, cert, key)),
+        )),
+        Command::Relay {
+            command: RelayCommand::Cert { out, names },
+        } => net_cmd::relay_cert(&out, &names),
     }
 }
 

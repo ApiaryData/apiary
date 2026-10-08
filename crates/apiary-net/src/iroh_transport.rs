@@ -38,6 +38,13 @@ pub struct IrohConfig {
     pub external_addrs: Vec<SocketAddr>,
     /// Use only the relay: bind no IP sockets. For tests of relayed paths.
     pub relay_only: bool,
+    /// Certificates to trust for `https://` relays (a private relay's own
+    /// certificate or its CA). Empty trusts the built-in public roots.
+    pub relay_ca: Vec<rustls_pki_types::CertificateDer<'static>>,
+    /// The UDP port TLS relays answer QUIC address discovery on (default 7842).
+    /// Address discovery is how two Nodes behind NATs learn their mapped
+    /// addresses, which direct paths between them need.
+    pub relay_quic_port: Option<u16>,
 }
 
 impl IrohConfig {
@@ -49,6 +56,8 @@ impl IrohConfig {
             relays: Vec::new(),
             external_addrs: Vec::new(),
             relay_only: false,
+            relay_ca: Vec::new(),
+            relay_quic_port: None,
         }
     }
 }
@@ -72,7 +81,20 @@ impl IrohTransport {
                         .map_err(|e| NetError::Unreachable(format!("bad relay URL '{u}': {e}")))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            RelayMode::custom(urls)
+            // An https relay is a TLS relay, which answers QUIC address discovery;
+            // a plain-HTTP one cannot.
+            let quic_port = cfg
+                .relay_quic_port
+                .unwrap_or(iroh_relay::defaults::DEFAULT_RELAY_QUIC_PORT);
+            RelayMode::Custom(
+                urls.into_iter()
+                    .map(|url| {
+                        let quic = (url.scheme() == "https")
+                            .then(|| iroh_relay::RelayQuicConfig::new(quic_port));
+                        iroh_relay::RelayConfig::new(url, quic)
+                    })
+                    .collect(),
+            )
         };
 
         let mut builder = Endpoint::builder(presets::Minimal)
@@ -87,6 +109,11 @@ impl IrohTransport {
             builder = builder
                 .bind_addr(any)
                 .map_err(|e| NetError::Unreachable(format!("cannot bind {any}: {e}")))?;
+        }
+        if !cfg.relay_ca.is_empty() {
+            builder = builder.ca_tls_config(iroh_relay::tls::CaTlsConfig::custom_roots(
+                cfg.relay_ca.clone(),
+            ));
         }
         for addr in &cfg.external_addrs {
             builder = builder.external_addr(*addr);

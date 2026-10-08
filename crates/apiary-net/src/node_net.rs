@@ -25,7 +25,7 @@ use crate::drive::{DRIVE_SERVICE, DriveService, DriveStore};
 use crate::identity::{NodeId, NodeKey, parse_public};
 use crate::iroh_transport::{IrohConfig, IrohTransport};
 use crate::mesh::{Mesh, MeshConfig};
-use crate::relay::RelayServer;
+use crate::relay::{RelayServer, RelayTlsFiles};
 use crate::revocation::RevocationStore;
 use crate::site::{PROBE_SERVICE, ProbeService, SiteMonitor, SiteRules, Verdict};
 use crate::token::{PeerHint, Token, Trust};
@@ -40,6 +40,23 @@ pub struct DnsPeerConfig {
     pub host: String,
     /// The UDP port it listens on.
     pub port: u16,
+}
+
+/// A relay with TLS and QUIC address discovery, run in this Node.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RelayTlsConfig {
+    /// The HTTPS port Nodes connect to.
+    pub https: SocketAddr,
+    /// The UDP port that answers QUIC address discovery.
+    pub quic: SocketAddr,
+    /// A plain-HTTP probe port (default: a loopback port nobody needs).
+    #[serde(default)]
+    pub http: Option<SocketAddr>,
+    /// The certificate chain, as PEM.
+    pub cert: PathBuf,
+    /// The private key, as PEM.
+    pub key: PathBuf,
 }
 
 /// The `[net]` configuration.
@@ -76,9 +93,21 @@ pub struct NetConfig {
     /// Addresses to advertise besides the ones found, for a published port.
     #[serde(default)]
     pub external_addrs: Vec<SocketAddr>,
-    /// Run a relay in this Node, listening here (plain HTTP).
+    /// Run a relay in this Node, listening here (plain HTTP: it forwards traffic
+    /// but cannot help Nodes behind NATs find direct paths).
     #[serde(default)]
     pub serve_relay: Option<SocketAddr>,
+    /// Run a relay with TLS and address discovery in this Node, which lets Nodes
+    /// behind ordinary NATs punch through to direct paths.
+    #[serde(default)]
+    pub serve_relay_tls: Option<RelayTlsConfig>,
+    /// A PEM file of certificates to trust for `https://` relays: a private
+    /// relay's own certificate, or its CA.
+    #[serde(default)]
+    pub relay_ca: Option<PathBuf>,
+    /// The UDP port TLS relays answer address discovery on (default 7842).
+    #[serde(default)]
+    pub relay_quic_port: Option<u16>,
     /// Announce and find peers with multicast DNS.
     #[serde(default = "yes")]
     pub mdns: bool,
@@ -273,9 +302,22 @@ impl NetNode {
         ));
 
         // A relay of our own, if asked for; and the relays everyone is told about.
-        let relay = match cfg.serve_relay {
-            Some(bind) => Some(RelayServer::spawn(bind).await?),
-            None => None,
+        let relay = match (&cfg.serve_relay_tls, cfg.serve_relay) {
+            (Some(tls), _) => Some(
+                RelayServer::spawn_tls(
+                    tls.http
+                        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0))),
+                    &RelayTlsFiles {
+                        https: tls.https,
+                        quic: tls.quic,
+                        cert: tls.cert.clone(),
+                        key: tls.key.clone(),
+                    },
+                )
+                .await?,
+            ),
+            (None, Some(bind)) => Some(RelayServer::spawn(bind).await?),
+            (None, None) => None,
         };
         let mut relays = cfg.relays.clone();
         if let Some(url) = &token.claims().relay
@@ -284,6 +326,7 @@ impl NetNode {
             relays.push(url.clone());
         }
         if relays.is_empty()
+            && cfg.serve_relay_tls.is_none()
             && let Some(addr) = relay.as_ref().and_then(RelayServer::addr)
         {
             // The relay host uses its own relay when nobody gave another.
@@ -296,6 +339,10 @@ impl NetNode {
         iroh.udp_port = cfg.udp_port;
         iroh.relays = relays;
         iroh.external_addrs = cfg.external_addrs.clone();
+        iroh.relay_quic_port = cfg.relay_quic_port;
+        if let Some(ca) = &cfg.relay_ca {
+            iroh.relay_ca = crate::relay::load_certs(ca)?;
+        }
         let transport: Arc<dyn Transport> = Arc::new(IrohTransport::bind(iroh).await?);
 
         let mesh = Mesh::new(

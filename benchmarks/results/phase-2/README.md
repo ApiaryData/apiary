@@ -9,6 +9,18 @@ containers with real NAT, a relay, WAN latency and a Pi booted at 1970 (see
 | symmetric | `MASQUERADE --random`, so direct paths cannot cross it | [`gate-symmetric-nat.txt`](gate-symmetric-nat.txt) |
 | cone | ordinary `MASQUERADE` | [`gate-cone-nat.txt`](gate-cone-nat.txt), [`gate-cone-nat.json`](gate-cone-nat.json) |
 
+With a TLS relay (`RELAY_TLS=1`, QUIC address discovery) the same gate passes **28 of 28**
+again, in two runs:
+
+| Run | Pod's NAT | Transcript |
+|---|---|---|
+| TLS relay, cone | ordinary `MASQUERADE` | [`gate-tls-cone-nat.txt`](gate-tls-cone-nat.txt) |
+| TLS relay, symmetric | `MASQUERADE --random` | [`gate-tls-symmetric-nat.txt`](gate-tls-symmetric-nat.txt) |
+
+**With the TLS relay and a cone NAT, the pod reaches every Pi directly**: the two NATed sites
+punch through. With a symmetric NAT they stay on the relay, as they should. (The runs above
+this table used a plain-HTTP relay.)
+
 Paths as each Node saw them (the same in both runs):
 
 ```
@@ -24,10 +36,9 @@ pi-late     direct      direct     relayed      direct      direct      direct  
 
 - **Within the Pi site every pair is direct**, and each Pi counts exactly the other Pis as its site.
 - **Pis behind their router reach the public nodes directly** (they dial out).
-- **The pod behind a NAT reaches the Pis through the relay**, in both runs. With a plain-HTTP
-  relay two NATed sites cannot learn each other's mapped addresses, so even a cone NAT stays
-  relayed: direct NAT-to-NAT paths need the relay's QUIC address discovery, which needs TLS.
-  That is not done. Everything connects; two NATed sites are just slower.
+- **With the plain-HTTP relay, the pod behind a NAT reaches the Pis through the relay**, in
+  both runs: two NATed sites cannot learn each other's mapped addresses, so even a cone NAT
+  stays relayed. The TLS relay above fixes that for cone NATs.
 - **Revocation:** one push to one Node (the cloud VM) cut the revoked key off from all six
   others within seconds, and the revoked Node was told why.
 - **The Pi booted at 1970** joined all six peers (QUIC authentication does not look at
