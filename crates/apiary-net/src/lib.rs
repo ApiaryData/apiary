@@ -7,6 +7,7 @@
 
 pub mod control;
 pub mod discovery;
+pub mod drive;
 pub mod error;
 pub mod identity;
 pub mod iroh_transport;
@@ -24,6 +25,7 @@ pub use discovery::{
     Announcement, Discoverer, Discovery, DiscoveryHandle, Dns, DnsPeer, Found, Known, Mdns, Static,
     StoreRendezvous,
 };
+pub use drive::{DRIVE_SERVICE, DriveService, DriveStore};
 pub use error::NetError;
 pub use identity::{ApiaryKey, ApiaryPublicKey, NodeId, NodeKey, parse_public};
 pub use iroh_transport::{IrohConfig, IrohTransport};
