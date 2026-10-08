@@ -1,0 +1,142 @@
+[
+  {
+    "check": "every node joins every other node, with no software beyond the one binary",
+    "ok": true,
+    "detail": "1s"
+  },
+  {
+    "check": "cloud is in colony 'cloud'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "dockerhost is in colony 'lab'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "k8s-pod is in colony 'lab'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "pi-host is in colony 'edge'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "pi-1 is in colony 'edge'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "pi-2 is in colony 'edge'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "pi-late is in colony 'edge'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "every pair within the Pi site connects directly",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "every cross-site pair connects directly or through the relay",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "a pod behind a symmetric NAT reaches the Pis through the relay",
+    "ok": true,
+    "detail": "{'relayed'}"
+  },
+  {
+    "check": "Pis behind their router reach the public nodes directly",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "a Pi counts exactly the other Pis as its site",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "no site label is contradicted by the measured links",
+    "ok": true,
+    "detail": "[]"
+  },
+  {
+    "check": "two Pis commit through the host and every Pi reads all the rows",
+    "ok": true,
+    "detail": "{'pi-host': '200', 'pi-1': '200', 'pi-2': '200'}"
+  },
+  {
+    "check": "the data is on the host's drive and not on the client Pi",
+    "ok": true,
+    "detail": "host 2 files, pi-1 0 files"
+  },
+  {
+    "check": "a Pi booted at 1970 joined the colony",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "it noticed its clock was behind its peers' tokens and flagged them",
+    "ok": true,
+    "detail": "6 of 6 peers flagged"
+  },
+  {
+    "check": "the other nodes admit it (their clocks are right)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "with no network time it still takes deposits into its crop",
+    "ok": true,
+    "detail": "landed 10\nrefused: Flight returned internal error, with message: Clock not synchronised: this node's clock reads 1970-01"
+  },
+  {
+    "check": "but it refuses to commit until its clock is right",
+    "ok": true,
+    "detail": "ock not synchronised: this node's clock reads 1970-01-01 00:00:17 UTC, which cannot be right; commits wait until it is synchronised (crops keep taking deposits)"
+  },
+  {
+    "check": "once the clock is right it ships what it held",
+    "ok": true,
+    "detail": "{'frames': 0, 'segments': 0, 'rows': 0}"
+  },
+  {
+    "check": "and those rows reach the comb on the host",
+    "ok": true,
+    "detail": "10"
+  },
+  {
+    "check": "a revoked key is cut off from every node, from one push to one node",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "and it stays out: its dials are refused",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "the revoked node is told why",
+    "ok": true,
+    "detail": "membership refused: the peer refused us: revoked: node fc9429b08e"
+  },
+  {
+    "check": "every other node holds the revocation list",
+    "ok": true,
+    "detail": "{'cloud': 1, 'k8s-pod': 1, 'pi-host': 1, 'pi-1': 1, 'pi-2': 1, 'pi-late': 1}"
+  },
+  {
+    "check": "everyone else is still connected to each other",
+    "ok": true,
+    "detail": ""
+  }
+]

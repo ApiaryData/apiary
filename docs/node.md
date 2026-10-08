@@ -1,5 +1,7 @@
 # Running a node: the `apiary` binary and its entrances
 
+To run several Nodes as one colony (membership, discovery, relays, the shared drive), see [Networking](networking.md).
+
 `apiary node run --config apiary.toml` runs one Node as a process: the comb, the
 crop, ripening and harvest, and the entrances that let other programs reach it.
 The embedded Python class (`Apiary`) runs the same Node inside your process.
