@@ -15,6 +15,7 @@ use arrow::record_batch::RecordBatch;
 use tokio::sync::RwLock;
 use tracing::info;
 
+use apiary_comb::custom_store::{self, ObjectStoreBackend};
 use apiary_comb::local::{LocalBackend, expand_local_path};
 use apiary_comb::s3::S3Backend;
 use apiary_comb::schema::{conform_batch, delta_schema};
@@ -136,6 +137,17 @@ impl ApiaryNode {
     pub async fn start_with_env(config: NodeConfig, env: Env) -> Result<Self> {
         let storage: Arc<dyn StorageBackend> = if config.storage_uri.starts_with("s3://") {
             Arc::new(S3Backend::new(&config.storage_uri)?)
+        } else if let Some(authority) = custom_store::drive_authority(&config.storage_uri) {
+            // The site's drive on another Node, reached through the colony. Its
+            // store was registered when the network started.
+            let store =
+                custom_store::lookup_store(&authority).ok_or_else(|| ApiaryError::Config {
+                    message: format!(
+                        "No drive is registered for {}: start the network first",
+                        config.storage_uri
+                    ),
+                })?;
+            Arc::new(ObjectStoreBackend::new(store))
         } else {
             // Parse local URI: "local://<path>" or treat as raw path
             let path = config

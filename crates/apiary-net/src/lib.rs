@@ -13,6 +13,7 @@ pub mod identity;
 pub mod iroh_transport;
 pub mod mem;
 pub mod mesh;
+pub mod node_net;
 pub mod relay;
 pub mod revocation;
 pub mod site;
@@ -31,6 +32,10 @@ pub use identity::{ApiaryKey, ApiaryPublicKey, NodeId, NodeKey, parse_public};
 pub use iroh_transport::{IrohConfig, IrohTransport};
 pub use mem::{MemNetwork, MemTransport};
 pub use mesh::{Admitted, Handler, Mesh, MeshConfig, PeerInfo};
+pub use node_net::{
+    DiscoveredStatus, DnsPeerConfig, NetConfig, NetContext, NetNode, NetStatus, PeerStatus,
+    default_state_dir,
+};
 pub use relay::RelayServer;
 pub use revocation::{RevocationStore, Revocations};
 pub use site::{

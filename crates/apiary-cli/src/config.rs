@@ -28,6 +28,7 @@ use serde::Deserialize;
 
 use apiary_core::config::NodeConfig;
 use apiary_entrance::MqttConfig;
+use apiary_net::NetConfig;
 
 /// The whole file.
 #[derive(Debug, Deserialize)]
@@ -38,6 +39,8 @@ pub struct FileConfig {
     pub flight: Option<FlightSection>,
     #[serde(default)]
     pub mqtt: Option<MqttConfig>,
+    #[serde(default)]
+    pub net: Option<NetConfig>,
 }
 
 /// `[node]`: storage and cadences.
@@ -109,6 +112,21 @@ impl FileConfig {
             && mqtt.subscriptions.is_empty()
         {
             return Err("[mqtt] needs at least one [[mqtt.subscriptions]]".into());
+        }
+        let storage = &self.node.storage;
+        if apiary_comb::custom_store::drive_authority(storage).is_some() {
+            let net = self.net.as_ref().ok_or(
+                "[node] storage is another node's drive (apiary-drive://), which needs a [net] section",
+            )?;
+            if net.serve_comb {
+                return Err("[net] serve_comb and a remote [node] storage cannot both be set: a node either has the drive or reaches it".into());
+            }
+        }
+        if let Some(net) = &self.net
+            && net.serve_comb
+            && storage.starts_with("s3://")
+        {
+            return Err("[net] serve_comb needs [node] storage to be a local directory".into());
         }
         Ok(())
     }

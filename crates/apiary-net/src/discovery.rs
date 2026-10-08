@@ -404,7 +404,7 @@ struct Tracked {
 /// Announces this Node, finds peers through every source, and dials them.
 pub struct Discoverer {
     mesh: Mesh,
-    sources: Vec<Arc<dyn Discovery>>,
+    sources: Arc<Mutex<Vec<Arc<dyn Discovery>>>>,
     me: Announcement,
     interval: Duration,
     state: Arc<Mutex<HashMap<NodeId, Tracked>>>,
@@ -415,9 +415,20 @@ pub struct DiscoveryHandle {
     stop: watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
     state: Arc<Mutex<HashMap<NodeId, Tracked>>>,
+    sources: Arc<Mutex<Vec<Arc<dyn Discovery>>>>,
 }
 
 impl DiscoveryHandle {
+    /// Start using another source from the next round. A Node that reaches its
+    /// comb through the drive can only use the comb as a rendezvous once the
+    /// drive is up.
+    pub fn add_source(&self, source: Arc<dyn Discovery>) {
+        self.sources
+            .lock()
+            .expect("discovery poisoned")
+            .push(source);
+    }
+
     /// The peers found so far.
     pub fn known(&self) -> Vec<Known> {
         let mut known: Vec<Known> = self
@@ -448,7 +459,7 @@ impl Discoverer {
     ) -> Self {
         Self {
             mesh,
-            sources,
+            sources: Arc::new(Mutex::new(sources)),
             me,
             interval,
             state: Arc::default(),
@@ -459,6 +470,7 @@ impl Discoverer {
     pub fn spawn(self) -> DiscoveryHandle {
         let (stop, mut stopped) = watch::channel(false);
         let state = Arc::clone(&self.state);
+        let sources = Arc::clone(&self.sources);
         let task = tokio::spawn(async move {
             loop {
                 self.round().await;
@@ -467,11 +479,17 @@ impl Discoverer {
                     _ = stopped.wait_for(|s| *s) => break,
                 }
             }
-            for source in &self.sources {
+            let sources: Vec<_> = self.sources.lock().expect("discovery poisoned").clone();
+            for source in &sources {
                 let _ = source.withdraw(&self.me).await;
             }
         });
-        DiscoveryHandle { stop, task, state }
+        DiscoveryHandle {
+            stop,
+            task,
+            state,
+            sources,
+        }
     }
 
     /// One pass: announce, find, dial.
@@ -479,14 +497,16 @@ impl Discoverer {
         // Our own addresses change (relay connected, port mapped): announce afresh.
         let mut me = self.me.clone();
         me.addr = self.mesh.addr();
-        for source in &self.sources {
+        let sources: Vec<Arc<dyn Discovery>> =
+            self.sources.lock().expect("discovery poisoned").clone();
+        for source in &sources {
             if let Err(e) = source.announce(&me).await {
                 debug!(source = source.name(), error = %e, "Announcing failed");
             }
         }
 
         let own = self.mesh.id();
-        for source in &self.sources {
+        for source in &sources {
             let found = match source.find().await {
                 Ok(found) => found,
                 Err(e) => {
@@ -496,6 +516,7 @@ impl Discoverer {
             };
             let mut state = self.state.lock().expect("discovery poisoned");
             for f in found.into_iter().filter(|f| f.addr.id != own) {
+                self.mesh.remember(&f.addr);
                 let entry = state.entry(f.addr.id).or_insert_with(|| Tracked {
                     known: Known {
                         addr: f.addr.clone(),

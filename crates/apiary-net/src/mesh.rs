@@ -159,6 +159,9 @@ struct Inner {
     /// Live connections by peer and protocol. A pair can briefly have two, when
     /// both ends dial at once; all of them are kept so revocation reaches each.
     conns: Mutex<ConnTable>,
+    /// Where each peer was last known to be reachable: discovery fills it, and
+    /// `connect` uses it when asked for a peer by id alone.
+    book: Mutex<HashMap<NodeId, PeerAddr>>,
 }
 
 /// A Node's connections to its peers.
@@ -181,6 +184,7 @@ impl Mesh {
                 revocations,
                 handlers: Mutex::new(HashMap::new()),
                 conns: Mutex::new(HashMap::new()),
+                book: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -234,7 +238,42 @@ impl Mesh {
         })
     }
 
+    /// Remember where a peer can be reached, merging with what is known.
+    pub fn remember(&self, addr: &PeerAddr) {
+        if addr.direct.is_empty() && addr.relay.is_none() {
+            return;
+        }
+        let mut book = self.inner.book.lock().expect("address book poisoned");
+        let entry = book
+            .entry(addr.id)
+            .or_insert_with(|| PeerAddr::id_only(addr.id));
+        // The newest report of direct addresses replaces the old: addresses go
+        // stale (a pod rescheduled, a DHCP lease changed).
+        if !addr.direct.is_empty() {
+            entry.direct = addr.direct.clone();
+        }
+        if addr.relay.is_some() {
+            entry.relay = addr.relay.clone();
+        }
+    }
+
+    /// What is known about reaching a peer: the hint given, filled in from the book.
+    pub fn resolve(&self, hint: &PeerAddr) -> PeerAddr {
+        let book = self.inner.book.lock().expect("address book poisoned");
+        let mut addr = hint.clone();
+        if let Some(known) = book.get(&hint.id) {
+            if addr.direct.is_empty() {
+                addr.direct = known.direct.clone();
+            }
+            if addr.relay.is_none() {
+                addr.relay = known.relay.clone();
+            }
+        }
+        addr
+    }
+
     /// Connect to a peer for a protocol, reusing a live connection if there is one.
+    /// A peer given by id alone is looked up in the address book.
     pub async fn connect(
         &self,
         peer: &PeerAddr,
@@ -243,6 +282,7 @@ impl Mesh {
         if let Some(existing) = self.live(peer.id, protocol) {
             return Ok(existing);
         }
+        let peer = &self.resolve(peer);
         let conn = self.inner.transport.dial(peer, protocol).await?;
         let admitted = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.admit_outgoing(conn.clone()))
             .await
