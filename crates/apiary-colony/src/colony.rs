@@ -144,7 +144,7 @@ impl ColonyConfig {
             pool,
             params: BeeParams::default(),
             queue_limit: (bees * 2).max(2),
-            engaged_poll: Duration::from_millis(10),
+            engaged_poll: Duration::from_millis(2),
             idle_poll: Duration::from_millis(250),
             thermal: Arc::new(NoThermal),
         }

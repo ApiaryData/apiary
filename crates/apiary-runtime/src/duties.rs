@@ -31,6 +31,9 @@ use apiary_core::{ApiaryError, Clock, Result, StorageBackend};
 use crate::deposit::Depositor;
 use crate::upkeep::Upkeep;
 
+/// How much louder a waiting query calls each second it is unanswered.
+const FORAGE_URGENCY_PER_SECOND: f64 = 40.0;
+
 /// A query waiting for a Forager, given the pool it must run under.
 pub type QueryPatch = Box<dyn FnOnce(Arc<dyn MemoryPool>) -> BoxFuture<'static, ()> + Send>;
 
@@ -87,7 +90,8 @@ pub struct NodeDuties {
     depositor: Arc<Depositor>,
     upkeep: Arc<Upkeep>,
     crop_bytes: Arc<AtomicU64>,
-    queries: Mutex<VecDeque<QueryPatch>>,
+    /// Waiting queries, each with the time it joined the queue.
+    queries: Mutex<VecDeque<(Duration, QueryPatch)>>,
     board: Mutex<Board>,
 }
 
@@ -147,13 +151,25 @@ impl NodeDuties {
                 ),
             });
         }
-        queue.push_back(patch);
+        queue.push_back((self.clock.monotonic(), patch));
         Ok(())
     }
 
     /// How many queries wait for a Forager.
     pub fn queries_waiting(&self) -> usize {
         self.queries.lock().expect("query queue").len()
+    }
+
+    /// The forager stimulus: queries waiting, rising the longer the oldest has
+    /// waited. A call nobody answers grows louder, so no query waits long on Bees
+    /// whose forager thresholds have drifted high.
+    fn forage_stimulus(&self) -> f64 {
+        let queue = self.queries.lock().expect("query queue");
+        let Some((since, _)) = queue.front() else {
+            return 0.0;
+        };
+        let waited = self.clock.monotonic().saturating_sub(*since).as_secs_f64();
+        queue.len() as f64 + FORAGE_URGENCY_PER_SECOND * waited
     }
 
     fn urgencies(&self) -> (f64, f64, f64) {
@@ -339,7 +355,7 @@ impl Duties for NodeDuties {
             (scout, undertaker)
         };
         Stimuli::none()
-            .with(Role::Forager, self.queries_waiting() as f64)
+            .with(Role::Forager, self.forage_stimulus())
             .with(Role::Ripener, ripener)
             .with(Role::Scout, scout)
             .with(Role::Undertaker, undertaker)
@@ -355,7 +371,7 @@ impl Duties for NodeDuties {
         match role {
             Role::Forager => {
                 let patch = self.queries.lock().expect("query queue").pop_front();
-                match patch {
+                match patch.map(|(_, patch)| patch) {
                     Some(patch) => {
                         patch(bee.pool()).await;
                         true
