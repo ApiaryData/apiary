@@ -9,6 +9,7 @@ publish = false # a test harness; nothing depends on it at run time
 [dependencies]
 apiary-core.workspace = true
 apiary-comb.workspace = true
+apiary-net.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 chrono.workspace = true

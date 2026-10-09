@@ -7,11 +7,12 @@ use std::thread::ThreadId;
 use std::time::Duration;
 
 use apiary_core::config::NodeConfig;
-use apiary_core::rng::StdSeededRng;
+use apiary_core::rng::{SeededRng, StdSeededRng};
 use apiary_core::{Clock, Env, NodeId};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 
+use crate::net::SimNetwork;
 use crate::store::SimStore;
 use crate::trace::Trace;
 
@@ -174,6 +175,34 @@ impl Sim {
         );
         store.register();
         store
+    }
+
+    /// A simulated network for the colony's transport.
+    pub fn network(&self) -> SimNetwork {
+        SimNetwork::new(
+            Arc::clone(&self.clock),
+            self.trace.clone(),
+            self.rng("network", 0),
+        )
+    }
+
+    /// The Apiary key for this run: the same seed always gives the same key.
+    pub fn apiary_key(&self) -> apiary_net::ApiaryKey {
+        apiary_net::ApiaryKey::from_bytes(&self.key_bytes("apiary", 0))
+    }
+
+    /// The key of the Node called `name`: fixed by the seed, so its id is too.
+    pub fn node_key(&self, name: &str) -> apiary_net::NodeKey {
+        apiary_net::NodeKey::from_bytes(&self.key_bytes(name, 1))
+    }
+
+    fn key_bytes(&self, owner: &str, index: u64) -> [u8; 32] {
+        let mut rng = self.rng(&format!("key:{owner}"), index);
+        let mut bytes = [0u8; 32];
+        for chunk in bytes.chunks_mut(8) {
+            chunk.copy_from_slice(&rng.next_u64().to_le_bytes());
+        }
+        bytes
     }
 
     /// The `storage_uri` that reaches the store named `name`.

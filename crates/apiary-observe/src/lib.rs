@@ -11,6 +11,8 @@
 //!   same code, the same seed and the same faults give the same run.
 //! - [`SimStore`] is an in-memory comb store with latency, throttling, errors,
 //!   lost replies and outages, all drawn from the seed.
+//! - [`SimNetwork`] is a network for the colony's transport: latency, loss, cuts,
+//!   NAT, and a relay that is slow and can fail.
 //! - [`Trace`] records what happened, with the Node, the Bee and the virtual time.
 //!   Two runs from one seed have the same [`Trace::digest`].
 //!
@@ -18,10 +20,12 @@
 //! takes the sim's [`Env`](apiary_core::Env) and a simulated comb store; nothing
 //! in it knows it is being observed.
 
+mod net;
 mod sim;
 mod store;
 mod trace;
 
+pub use net::{Link, Nat, Placement, Relay, SimNetwork, SimTransport};
 pub use sim::{Run, Sim, SimClock, wall_origin};
 pub use store::{SimStore, StoreFaults};
 pub use trace::{Event, Trace};
