@@ -1,6 +1,64 @@
-//! The dance floor: entries with versions and expiry, merged as a state-based
-//! CRDT, over in-memory, gossip and comb-store transports.
+//! The dance floor: entries with versions and lifetimes, shared between a
+//! colony's Nodes and merged as a state-based CRDT.
 //!
-//! Empty until phase 5 of the redesign (the semi-social colony). Presence
-//! entries will replace the V1 heartbeat files, and the V1 heartbeat-over-storage
-//! logic in `apiary-runtime` becomes the `StoreFloor` fallback.
+//! - [`entry`]: what an entry is, and how it travels
+//! - [`state`]: the merge rules, and one Node's copy ([`InMemoryFloor`], the whole
+//!   floor of a solitary Node)
+//! - [`gossip`]: [`GossipFloor`], the same copy kept in step with the colony's
+//!   other Nodes over the gossip protocol
+//!
+//! Nodes read only their own copy. Nothing on the floor is asked of anyone, so a
+//! Node that cannot reach its peers still has a floor, and it is a little out of
+//! date rather than unavailable.
+
+use std::time::Duration;
+
+use apiary_core::SeededRng;
+
+pub mod entry;
+pub mod gossip;
+pub mod state;
+
+pub use entry::{Entry, EntryBody, EntryKey, EntryKind, Presence, WireEntry};
+pub use gossip::{GossipConfig, GossipCounts, GossipFloor};
+pub use state::{InMemoryFloor, MAX_TTL};
+
+/// A Node's floor, however it is kept in step with the others.
+pub trait Floor: Send + Sync + 'static {
+    /// Post `body` under `key` for `ttl` (at most [`MAX_TTL`]); returns its version.
+    fn publish(&self, key: EntryKey, body: EntryBody, ttl: Duration) -> u64;
+
+    /// Take `key` down.
+    fn withdraw(&self, key: &EntryKey);
+
+    /// The live entry under `key`.
+    fn get(&self, key: &EntryKey) -> Option<Entry>;
+
+    /// Every live entry of `kind`.
+    fn entries(&self, kind: EntryKind) -> Vec<Entry>;
+
+    /// Up to `k` live entries of `kind` at random, from this Node's copy only.
+    fn sample(&self, kind: EntryKind, k: usize, rng: &mut dyn SeededRng) -> Vec<Entry>;
+}
+
+impl Floor for InMemoryFloor {
+    fn publish(&self, key: EntryKey, body: EntryBody, ttl: Duration) -> u64 {
+        InMemoryFloor::publish(self, key, body, ttl)
+    }
+
+    fn withdraw(&self, key: &EntryKey) {
+        InMemoryFloor::withdraw(self, key);
+    }
+
+    fn get(&self, key: &EntryKey) -> Option<Entry> {
+        InMemoryFloor::get(self, key)
+    }
+
+    fn entries(&self, kind: EntryKind) -> Vec<Entry> {
+        InMemoryFloor::entries(self, kind)
+    }
+
+    fn sample(&self, kind: EntryKind, k: usize, rng: &mut dyn SeededRng) -> Vec<Entry> {
+        InMemoryFloor::sample(self, kind, k, rng)
+    }
+}

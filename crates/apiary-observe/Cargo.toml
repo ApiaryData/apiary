@@ -21,6 +21,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 apiary-colony.workspace = true
+apiary-floor.workspace = true
 apiary-runtime.workspace = true
 datafusion.workspace = true
 arrow.workspace = true
