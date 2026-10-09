@@ -12,6 +12,9 @@ use apiary_core::{Clock, Env, NodeId};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 
+use tracing_subscriber::layer::SubscriberExt;
+
+use crate::marks::MarkLayer;
 use crate::net::SimNetwork;
 use crate::store::SimStore;
 use crate::trace::Trace;
@@ -89,7 +92,13 @@ pub struct Sim {
     seed: u64,
     clock: Arc<SimClock>,
     trace: Trace,
+    /// Distinguishes this run's stores in the process-wide store registry, so
+    /// runs going at once (tests do) never see each other's buckets.
+    run_id: u64,
+    registered: Arc<std::sync::Mutex<Vec<String>>>,
 }
+
+static NEXT_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The outcome of [`Sim::run`].
 pub struct Run<T> {
@@ -105,7 +114,18 @@ impl Sim {
     fn new(seed: u64) -> Self {
         let clock = Arc::new(SimClock::new(wall_origin()));
         let trace = Trace::new(clock.clone());
-        Self { seed, clock, trace }
+        Self {
+            seed,
+            clock,
+            trace,
+            run_id: NEXT_RUN.fetch_add(1, Ordering::Relaxed),
+            registered: Arc::default(),
+        }
+    }
+
+    /// The registry authority for the store called `name` in this run.
+    fn authority(&self, name: &str) -> String {
+        format!("sim{}-{name}", self.run_id)
     }
 
     /// Run `scenario` on a single-threaded runtime with a virtual clock. The same
@@ -122,10 +142,18 @@ impl Sim {
             .expect("simulation runtime");
         runtime.block_on(async {
             let sim = Sim::new(seed);
+            // The Nodes' own marks become trace events for as long as the run lasts.
+            let _marks = tracing::subscriber::set_default(
+                tracing_subscriber::registry().with(MarkLayer::new(sim.trace.clone())),
+            );
             let started = sim.clock.monotonic();
             let trace = sim.trace.clone();
             let clock = sim.clock.clone();
+            let registered = Arc::clone(&sim.registered);
             let value = scenario(sim).await;
+            for authority in registered.lock().expect("registry list").drain(..) {
+                apiary_comb::custom_store::unregister_store(&authority);
+            }
             Run {
                 value,
                 trace,
@@ -173,8 +201,31 @@ impl Sim {
             self.trace.clone(),
             self.rng(&format!("store:{name}"), 0),
         );
-        store.register();
+        self.register(&store);
         store
+    }
+
+    fn register(&self, store: &SimStore) {
+        let authority = self.authority(store.name());
+        store.register(&authority);
+        self.registered
+            .lock()
+            .expect("registry list")
+            .push(authority);
+    }
+
+    /// A second way into the bucket `of`: the same objects, but its own faults. A
+    /// Node given a view of the shared bucket can be cut off from it alone, which
+    /// is how a Node that has lost its link looks to the rest of the colony.
+    pub fn store_view(&self, of: &SimStore, name: &str) -> SimStore {
+        let view = of.view(
+            name,
+            Arc::clone(&self.clock),
+            self.trace.clone(),
+            self.rng(&format!("store:{name}"), 0),
+        );
+        self.register(&view);
+        view
     }
 
     /// A simulated network for the colony's transport.
@@ -207,7 +258,7 @@ impl Sim {
 
     /// The `storage_uri` that reaches the store named `name`.
     pub fn drive_uri(&self, name: &str) -> String {
-        format!("apiary-drive://sim-{name}/")
+        format!("apiary-drive://{}/", self.authority(name))
     }
 
     /// A Node configuration for the Node called `name`, on the store `store`:

@@ -167,3 +167,56 @@ fn a_run_replays_exactly_from_its_seed() {
     let (other, _) = digest_of(12, "solo-b");
     assert_ne!(first, other);
 }
+
+/// How many seeds the sweep tries: `SIM_SEEDS=500 cargo test` widens it.
+fn seeds() -> u64 {
+    std::env::var("SIM_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20)
+}
+
+#[test]
+fn the_outage_scenario_holds_across_seeds_and_each_replays() {
+    for seed in 0..seeds() {
+        // A distinct bucket per seed, as the registry is process-wide.
+        let name: &'static str = Box::leak(format!("sweep-{seed}").into_boxed_str());
+        let first = Sim::run(seed, |sim| scenario(sim, name));
+        let r = &first.value;
+        assert_eq!(
+            r.total_after_recovery, 25,
+            "seed {seed}: no row lost or repeated"
+        );
+        assert_eq!(
+            r.in_comb_after_recovery, 25,
+            "seed {seed}: all of it shipped"
+        );
+        assert!(r.flush_during_outage_failed, "seed {seed}");
+        let again = Sim::run(seed, |sim| scenario(sim, name));
+        let (a, b) = (first.trace.events(), again.trace.events());
+        if let Some(i) = (0..a.len().min(b.len())).find(|i| a[*i] != b[*i]) {
+            panic!(
+                "seed {seed} does not replay: diverges at event {i} of {} and {}:
+  first:  {:?}
+  second: {:?}
+  before: {:?}",
+                a.len(),
+                b.len(),
+                a[i],
+                b[i],
+                &a[i.saturating_sub(2)..i]
+            );
+        }
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "seed {seed}: one run is a prefix of the other"
+        );
+        assert_eq!(
+            first.trace.digest(),
+            again.trace.digest(),
+            "seed {seed} does not replay: rerun with SIM_SEEDS={}",
+            seed + 1
+        );
+    }
+}

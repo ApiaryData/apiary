@@ -104,9 +104,14 @@ pub struct Hive {
 impl Hive {
     /// Create a new hive.
     pub fn new() -> Self {
+        Self::new_at(Utc::now())
+    }
+
+    /// Create a new hive, created at `now`.
+    pub fn new_at(now: DateTime<Utc>) -> Self {
         Self {
             boxes: HashMap::new(),
-            created_at: Utc::now(),
+            created_at: now,
             properties: HashMap::new(),
         }
     }
@@ -135,9 +140,14 @@ pub struct Box {
 impl Box {
     /// Create a new box.
     pub fn new() -> Self {
+        Self::new_at(Utc::now())
+    }
+
+    /// Create a new box, created at `now`.
+    pub fn new_at(now: DateTime<Utc>) -> Self {
         Self {
             frames: HashMap::new(),
-            created_at: Utc::now(),
+            created_at: now,
             properties: HashMap::new(),
         }
     }
@@ -178,10 +188,15 @@ fn default_max_partitions() -> u32 {
 impl Frame {
     /// Create a new frame with a schema.
     pub fn new(schema: serde_json::Value) -> Self {
+        Self::new_at(schema, Utc::now())
+    }
+
+    /// Create a new frame with a schema, created at `now`.
+    pub fn new_at(schema: serde_json::Value, now: DateTime<Utc>) -> Self {
         Self {
             schema,
             partition_by: Vec::new(),
-            created_at: Utc::now(),
+            created_at: now,
             max_partitions: default_max_partitions(),
             properties: HashMap::new(),
         }

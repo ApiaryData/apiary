@@ -85,12 +85,30 @@ impl SimStore {
         }
     }
 
-    /// Make this store reachable as `apiary-drive://sim-<name>/`.
-    pub(crate) fn register(&self) {
-        apiary_comb::custom_store::register_store(
-            &format!("sim-{}", self.name),
-            Arc::new(self.clone()),
-        );
+    /// The same objects under another name, with faults of their own.
+    pub(crate) fn view(
+        &self,
+        name: &str,
+        clock: Arc<SimClock>,
+        trace: Trace,
+        rng: StdSeededRng,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            inner: Arc::clone(&self.inner),
+            clock,
+            trace,
+            state: Arc::new(Mutex::new(State {
+                faults: StoreFaults::default(),
+                rng,
+                next_slot: Duration::ZERO,
+            })),
+        }
+    }
+
+    /// Make this store reachable as `apiary-drive://<authority>/`.
+    pub(crate) fn register(&self, authority: &str) {
+        apiary_comb::custom_store::register_store(authority, Arc::new(self.clone()));
     }
 
     /// The store's name.
@@ -305,6 +323,9 @@ impl ObjectStore for SimStore {
             op,
             &path,
             &match &result {
+                // A Delta commit records how long Delta itself took, in real time,
+                // so its size can differ by a digit between runs. Say nothing of it.
+                Ok(_) if path.contains("_delta_log") => "ok".to_string(),
                 Ok(r) => format!("ok {} bytes", r.meta.size),
                 Err(e) => format!("failed: {e}"),
             },

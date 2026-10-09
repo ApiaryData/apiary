@@ -5,32 +5,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use apiary_net::{
-    Admitted, Caps, Handler, Mesh, MeshConfig, NetError, NodeId, NodeKey, PathKind, PeerAddr,
-    Protocol, RevocationStore, Token, TokenSpec, Transport, Trust,
-};
-use apiary_observe::{Link, Nat, Placement, Relay, Sim, SimNetwork, wall_origin};
+use apiary_net::{Admitted, Handler, NetError, PathKind, Protocol};
+use apiary_observe::{Colony, Link, Nat, Placement, Relay, Sim, SimNetwork};
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-const APIARY: &str = "plant";
-
-struct Node {
-    key: NodeKey,
-    mesh: Mesh,
-}
-
-impl Node {
-    fn id(&self) -> NodeId {
-        self.key.id()
-    }
-
-    async fn connect(&self, to: &Node) -> Result<Arc<Admitted>, NetError> {
-        self.mesh
-            .connect(&PeerAddr::id_only(to.id()), Protocol::Control)
-            .await
-    }
-}
 
 /// Echoes each stream's bytes back, once.
 struct Echo;
@@ -48,60 +26,13 @@ impl Handler for Echo {
     }
 }
 
-/// A colony of real `Mesh`es on the simulated network.
-struct Colony {
-    nodes: Vec<(&'static str, Node)>,
-}
-
-impl Colony {
-    fn new(sim: &Sim, net: &SimNetwork, members: &[(&'static str, Placement)]) -> Self {
-        let apiary = sim.apiary_key();
-        let issued = wall_origin().timestamp();
-        let nodes = members
-            .iter()
-            .map(|(name, placement)| {
-                let key = sim.node_key(name);
-                let spec = TokenSpec {
-                    apiary: APIARY.into(),
-                    colony: "plant".into(),
-                    caps: Caps::ALL,
-                    lifetime_secs: 86_400,
-                    node: None,
-                    bootstrap: vec![],
-                    relay: None,
-                };
-                let token = Token::parse(&apiary.issue(&spec, issued)).unwrap();
-                let transport: Arc<dyn Transport> =
-                    Arc::new(net.join(name, key.id(), placement.clone()));
-                let mesh = Mesh::new(
-                    transport,
-                    MeshConfig {
-                        trust: Trust {
-                            apiary: APIARY.into(),
-                            key: apiary.public(),
-                        },
-                        token,
-                        site: Some(placement.site.clone()),
-                        clock: sim.clock(),
-                    },
-                    Arc::new(RevocationStore::open(None, apiary.public())),
-                );
-                mesh.register(Protocol::Control, Arc::new(Echo));
-                mesh.start();
-                (*name, Node { key, mesh })
-            })
-            .collect();
-        Self { nodes }
+/// A colony whose every member answers control streams with an echo.
+fn echo_colony(sim: &Sim, net: &SimNetwork, members: &[(&'static str, Placement)]) -> Colony {
+    let colony = Colony::new(sim, net, members);
+    for member in colony.members() {
+        member.mesh.register(Protocol::Control, Arc::new(Echo));
     }
-
-    fn get(&self, name: &str) -> &Node {
-        &self
-            .nodes
-            .iter()
-            .find(|(n, _)| *n == name)
-            .unwrap_or_else(|| panic!("no node {name}"))
-            .1
-    }
+    colony
 }
 
 fn members(pod: Nat) -> Vec<(&'static str, Placement)> {
@@ -134,7 +65,7 @@ fn paths_follow_the_nat_the_way_the_gate_measured() {
     let run = Sim::run(1, |sim| async move {
         let net = sim.network();
         net.set_relay(Relay::Tls("cloud".into()));
-        let colony = Colony::new(&sim, &net, &members(Nat::Cone));
+        let colony = echo_colony(&sim, &net, &members(Nat::Cone));
         let (pi1, pi2, cloud, pod) = (
             colony.get("pi-1"),
             colony.get("pi-2"),
@@ -171,7 +102,7 @@ fn paths_follow_the_nat_the_way_the_gate_measured() {
     Sim::run(2, |sim| async move {
         let net = sim.network();
         net.set_relay(Relay::Tls("cloud".into()));
-        let colony = Colony::new(&sim, &net, &members(Nat::Symmetric));
+        let colony = echo_colony(&sim, &net, &members(Nat::Symmetric));
         let across = colony.get("pod").connect(colony.get("pi-1")).await.unwrap();
         sim.sleep(Duration::from_secs(60)).await;
         assert_eq!(across.path().kind, PathKind::Relayed);
@@ -182,7 +113,7 @@ fn paths_follow_the_nat_the_way_the_gate_measured() {
     Sim::run(3, |sim| async move {
         let net = sim.network();
         net.set_relay(Relay::Plain("cloud".into()));
-        let colony = Colony::new(&sim, &net, &members(Nat::Cone));
+        let colony = echo_colony(&sim, &net, &members(Nat::Cone));
         let across = colony.get("pod").connect(colony.get("pi-1")).await.unwrap();
         sim.sleep(Duration::from_secs(60)).await;
         assert_eq!(across.path().kind, PathKind::Relayed);
@@ -191,7 +122,7 @@ fn paths_follow_the_nat_the_way_the_gate_measured() {
     // No relay: two NATed sites cannot reach each other, and finding that out takes time.
     let run = Sim::run(4, |sim| async move {
         let net = sim.network();
-        let colony = Colony::new(&sim, &net, &members(Nat::Cone));
+        let colony = echo_colony(&sim, &net, &members(Nat::Cone));
         colony
             .get("pod")
             .connect(colony.get("pi-1"))
@@ -209,7 +140,7 @@ fn a_relayed_path_costs_the_extra_legs() {
         let net = sim.network();
         net.set_wan(Link::with_latency(Duration::from_millis(20)));
         net.set_relay(Relay::Plain("cloud".into()));
-        let colony = Colony::new(&sim, &net, &members(Nat::Cone));
+        let colony = echo_colony(&sim, &net, &members(Nat::Cone));
         let (cloud, pod, pi1) = (colony.get("cloud"), colony.get("pod"), colony.get("pi-1"));
         let direct = pod.connect(cloud).await.unwrap();
         let relayed = pod.connect(pi1).await.unwrap();
@@ -232,7 +163,7 @@ fn a_relayed_path_costs_the_extra_legs() {
 fn partitions_cut_connections_and_heal_lets_them_back() {
     Sim::run(6, |sim| async move {
         let net = sim.network();
-        let colony = Colony::new(&sim, &net, &members(Nat::Cone));
+        let colony = echo_colony(&sim, &net, &members(Nat::Cone));
         let (pi1, cloud) = (colony.get("pi-1"), colony.get("cloud"));
         let conn = pi1.connect(cloud).await.unwrap();
         assert_eq!(echo(&conn, b"before").await, b"before");
@@ -256,7 +187,7 @@ fn a_relay_outage_breaks_relayed_paths_and_leaves_direct_ones() {
     Sim::run(7, |sim| async move {
         let net = sim.network();
         net.set_relay(Relay::Plain("cloud".into()));
-        let colony = Colony::new(&sim, &net, &members(Nat::Cone));
+        let colony = echo_colony(&sim, &net, &members(Nat::Cone));
         let (pod, pi1, cloud) = (colony.get("pod"), colony.get("pi-1"), colony.get("cloud"));
         let relayed = pod.connect(pi1).await.unwrap();
         let direct = pod.connect(cloud).await.unwrap();
@@ -287,7 +218,7 @@ async fn messy_day(sim: Sim) -> (bool, bool, usize) {
         bandwidth: Some(2_000_000.0),
     });
     net.set_relay(Relay::Tls("cloud".into()));
-    let colony = Colony::new(&sim, &net, &members(Nat::Cone));
+    let colony = echo_colony(&sim, &net, &members(Nat::Cone));
     let (pod, pi1, cloud) = (colony.get("pod"), colony.get("pi-1"), colony.get("cloud"));
 
     let across = pod.connect(pi1).await.unwrap();
@@ -333,4 +264,33 @@ fn a_run_replays_exactly_from_its_seed() {
 
     // Another seed draws other jitter and loss.
     assert_ne!(a.trace.digest(), Sim::run(32, messy_day).trace.digest());
+}
+
+/// How many seeds the sweeps try: `SIM_SEEDS=500 cargo test` widens them.
+fn seeds() -> u64 {
+    std::env::var("SIM_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20)
+}
+
+#[test]
+fn a_messy_day_ends_well_and_every_seed_replays() {
+    for seed in 0..seeds() {
+        let first = Sim::run(seed, messy_day);
+        assert!(
+            first.value.0,
+            "seed {seed}: a large object crossed and the path was punched"
+        );
+        assert!(
+            first.value.1,
+            "seed {seed}: refused while cut, accepted once healed"
+        );
+        let again = Sim::run(seed, messy_day);
+        assert_eq!(
+            first.trace.digest(),
+            again.trace.digest(),
+            "seed {seed} does not replay"
+        );
+    }
 }
