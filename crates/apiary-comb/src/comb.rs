@@ -614,6 +614,43 @@ impl Comb {
         table_provider(state, table).await
     }
 
+    /// A scan of exactly `files` (paths relative to the table's root) of a
+    /// Frame's table as of `version`. This is how a Node other than the one that
+    /// planned a query rebuilds the scan of a Patch: the table version pins what
+    /// the query sees, and the files pin which part of it this Patch reads.
+    pub async fn table_provider_at(
+        &self,
+        state: &SessionState,
+        hive: &str,
+        box_name: &str,
+        frame: &str,
+        version: i64,
+        files: &[String],
+    ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+        let url = self.frame_url(hive, box_name, frame)?;
+        let table = deltalake::DeltaTableBuilder::from_url(url)
+            .map_err(|e| delta_err(format!("Failed to open table {hive}.{box_name}.{frame}"), e))?
+            .with_storage_options(self.storage_options.clone())
+            .with_version(version as u64)
+            .load()
+            .await
+            .map_err(|e| {
+                delta_err(
+                    format!("Failed to open table {hive}.{box_name}.{frame} at version {version}"),
+                    e,
+                )
+            })?;
+        table
+            .update_datafusion_session(state)
+            .map_err(|e| delta_err("Failed to prepare the query session", e))?;
+        table
+            .table_provider()
+            .with_session(Arc::new(state.clone()))
+            .with_file_paths(files.iter().cloned())
+            .await
+            .map_err(df_err)
+    }
+
     /// Register a Frame's table with a query session under `name`.
     ///
     /// The table is scanned lazily, with partition pruning and file skipping

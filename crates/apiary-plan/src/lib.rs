@@ -9,9 +9,14 @@
 //! intercepted before they reach DataFusion.
 
 mod catalog;
+pub mod codec;
+pub mod exchange;
 pub mod join_policy;
+pub mod patch;
+pub mod scan;
 mod session;
 mod staged;
+pub mod stages;
 pub mod timing;
 
 pub use join_policy::FitJoinsToBee;
@@ -29,6 +34,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::{Expr, cast, lit};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
 use apiary_comb::Comb;
@@ -57,6 +63,38 @@ pub struct QueryOutput {
 struct Selection {
     hive: Option<String>,
     box_name: Option<String>,
+}
+
+/// How [`ApiaryQueryContext::sql_staged`] runs a query.
+#[derive(Clone)]
+pub struct StagedOptions {
+    /// Run from the plan as it is written to the comb store and read back, as a
+    /// Node that did not plan the query would.
+    pub round_trip: bool,
+    /// Patches of a stage run at once.
+    pub concurrency: usize,
+    /// The share of the Node's memory the Patches run under.
+    pub pool: Option<Arc<dyn MemoryPool>>,
+}
+
+impl Default for StagedOptions {
+    fn default() -> Self {
+        Self {
+            round_trip: true,
+            concurrency: 4,
+            pool: None,
+        }
+    }
+}
+
+/// A query planned and ready to run.
+pub struct PlannedQuery {
+    /// The physical plan.
+    pub physical: Arc<dyn ExecutionPlan>,
+    /// The task context to run it in.
+    pub task_ctx: Arc<datafusion::execution::TaskContext>,
+    /// The session it was planned in.
+    pub session: SessionContext,
 }
 
 /// The Apiary query context: a Node's long-lived DataFusion session with
@@ -202,6 +240,103 @@ impl ApiaryQueryContext {
 
         // Standard SQL: resolve frame references, register tables, execute
         self.execute_standard_sql(trimmed, pool).await
+    }
+
+    /// The scans a Patch of this Node's queries needs: the comb, and the session
+    /// scans are built in (under `pool`, if one is given).
+    pub fn scan_source(&self, pool: Option<Arc<dyn MemoryPool>>) -> Result<scan::ScanSource> {
+        let session = self.query_session(pool)?;
+        Ok(scan::ScanSource::new(
+            Arc::clone(&self.comb),
+            session.state(),
+        ))
+    }
+
+    /// Run a query as Patches on this Node: plan it, cut the plan into stages, and
+    /// run each stage's Patches, handing batches from stage to stage through
+    /// `exchange`. This is what a colony does with the Patches spread across Bees
+    /// and Nodes; here one Node runs them all, which makes it the reference the
+    /// colony's answers are compared with.
+    pub async fn sql_staged(
+        &self,
+        query: &str,
+        exchange: Arc<dyn exchange::Exchange>,
+        options: StagedOptions,
+    ) -> Result<Vec<RecordBatch>> {
+        let planned = self.plan_sql(query, options.pool.clone()).await?;
+        let mut staged = stages::cut(Arc::clone(&planned.physical))
+            .map_err(|e| into_apiary_error(e, "Cannot cut the query into stages"))?;
+        let held = std::mem::take(&mut staged.held);
+        if options.round_trip {
+            // Run from the plan as another Node would read it.
+            let record = codec::encode_plan("q", self.node_id.as_str(), &staged)
+                .map_err(|e| into_apiary_error(e, "Cannot write the plan"))?;
+            let (_, decoded) = codec::decode_plan(&record, &planned.task_ctx)
+                .map_err(|e| into_apiary_error(e, "Cannot read the plan back"))?;
+            staged = decoded;
+        }
+        let query_id = uuid::Uuid::new_v4().to_string();
+        let env = patch::PatchEnv::new(
+            query_id.clone(),
+            self.node_id.as_str(),
+            Arc::clone(&exchange),
+            self.scan_source(options.pool.clone())?,
+            held,
+        );
+        let ctx = env
+            .task_context(options.pool.clone())
+            .map_err(|e| into_apiary_error(e, "Cannot build the Patch context"))?;
+        let outcome = async {
+            let (root, feeders) = staged
+                .stages
+                .split_last()
+                .expect("a plan has a result stage");
+            for stage in feeders {
+                patch::run_stage(stage, &env, &ctx, "local", options.concurrency).await?;
+            }
+            patch::run_result(root, Arc::clone(&ctx)).await
+        }
+        .await;
+        exchange.clear(&query_id).await?;
+        outcome
+    }
+
+    /// Plan a query without running it: the physical plan and the session it was
+    /// planned in. Custom commands (`USE`, `SHOW`, `DESCRIBE`) are not queries
+    /// and have no plan.
+    pub async fn plan_sql(
+        &self,
+        query: &str,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<PlannedQuery> {
+        let trimmed = query.trim();
+        if let Some(err) = check_unsupported_dml(trimmed) {
+            return Err(err);
+        }
+        let session = self.query_session(pool)?;
+        let state = session.state();
+        let dialect = state.config_options().sql_parser.dialect;
+        let statement = state
+            .sql_to_statement(trimmed, &dialect)
+            .map_err(|e| into_apiary_error(e, "SQL parse error"))?;
+        let plan = state
+            .statement_to_plan(statement)
+            .await
+            .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        let df = session
+            .execute_logical_plan(plan)
+            .await
+            .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        let task_ctx = Arc::new(df.task_ctx());
+        let physical = df
+            .create_physical_plan()
+            .await
+            .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        Ok(PlannedQuery {
+            physical,
+            task_ctx,
+            session,
+        })
     }
 
     /// Handle custom SQL commands (USE, SHOW, DESCRIBE).
@@ -844,3 +979,5 @@ mod catalog_tests;
 
 #[cfg(test)]
 mod staged_tests;
+#[cfg(test)]
+mod stages_tests;

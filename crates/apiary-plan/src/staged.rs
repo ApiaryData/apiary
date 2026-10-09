@@ -36,6 +36,7 @@ use apiary_comb::{Crop, STAGE_COLUMN, Segment};
 use apiary_core::{ApiaryError, FrameSchema, Result};
 
 use crate::catalog::{CatalogShared, add_file_discovery, add_metadata_read};
+use crate::scan::FramePatchProvider;
 
 /// Schema metadata that marks the crop's scan, so the rows a query read from it
 /// can be told apart from the comb's.
@@ -108,10 +109,21 @@ pub(crate) async fn load_frame(
     let scan_started = Instant::now();
     let comb_provider: Arc<dyn TableProvider> = match table {
         Some(table) => {
-            shared
+            let inner = shared
                 .comb
                 .table_provider(&shared.scan_state, &table)
-                .await?
+                .await?;
+            // Scans of a table at a known version carry what is needed to rebuild
+            // them on another Node.
+            match table.version() {
+                Some(version) => Arc::new(FramePatchProvider::new(
+                    inner,
+                    (hive, box_name, frame),
+                    version as i64,
+                    table.table_url().path(),
+                )),
+                None => inner,
+            }
         }
         None => empty_table(&schema)?,
     };
