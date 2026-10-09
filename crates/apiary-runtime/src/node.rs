@@ -754,6 +754,9 @@ impl ApiaryNode {
     /// - 1-part names after USE HIVE / USE BOX
     pub async fn sql(&self, query: &str) -> Result<Vec<RecordBatch>> {
         let query_ctx = Arc::clone(&self.query_ctx);
+        if self.env.inline_cpu() {
+            return query_ctx.sql(query).await;
+        }
         let query_owned = query.to_string();
         let rt_handle = tokio::runtime::Handle::current();
 
@@ -772,6 +775,9 @@ impl ApiaryNode {
     /// has columns).
     pub async fn sql_with_stages(&self, query: &str) -> Result<apiary_plan::QueryOutput> {
         let query_ctx = Arc::clone(&self.query_ctx);
+        if self.env.inline_cpu() {
+            return query_ctx.sql_with_stages(query).await;
+        }
         let query_owned = query.to_string();
         let rt_handle = tokio::runtime::Handle::current();
 

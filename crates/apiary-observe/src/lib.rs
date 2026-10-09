@@ -2,5 +2,26 @@
 //! with injected latency and throttling, and a simulated network, so any run
 //! replays exactly from its seed.
 //!
-//! Empty until phase 3 of the redesign. It builds on `apiary_core::Env`,
-//! which already carries the clock and seed through a Node.
+//! Seeley studied colonies in glass-walled hives with paint-marked bees. This is
+//! Apiary's version: run a Node (or a colony of them) inside a [`Sim`], mark what
+//! each of them does in a [`Trace`], and replay the run from its seed.
+//!
+//! - [`Sim::run`] builds a single-threaded runtime whose clock is virtual: sleeps
+//!   cost no real time, and time advances only when every task is waiting. The
+//!   same code, the same seed and the same faults give the same run.
+//! - [`SimStore`] is an in-memory comb store with latency, throttling, errors,
+//!   lost replies and outages, all drawn from the seed.
+//! - [`Trace`] records what happened, with the Node, the Bee and the virtual time.
+//!   Two runs from one seed have the same [`Trace::digest`].
+//!
+//! The code under test is the production code. A Node started under a [`Sim`]
+//! takes the sim's [`Env`](apiary_core::Env) and a simulated comb store; nothing
+//! in it knows it is being observed.
+
+mod sim;
+mod store;
+mod trace;
+
+pub use sim::{Run, Sim, SimClock, wall_origin};
+pub use store::{SimStore, StoreFaults};
+pub use trace::{Event, Trace};
