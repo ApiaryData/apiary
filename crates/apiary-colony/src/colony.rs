@@ -422,8 +422,12 @@ async fn run_bee(mut bee: Bee, shared: Arc<Shared>, mut stop: watch::Receiver<bo
         let decision = bee.reconsider(&stimuli, now);
         shared.snapshot(&bee, false);
         if !decision.engaged {
+            // Look again soon only while something is due (a stimulus of 1 is a
+            // task waiting). Pressure still building, a crop merely filling, is
+            // checked at the idle pace: four Bees polling every 2 ms would take
+            // a slice of a small Node's CPU for nothing.
             shared
-                .wait(stimuli.strongest() > 0.0, seen, &mut stop)
+                .wait(stimuli.strongest() >= 1.0, seen, &mut stop)
                 .await;
             continue;
         }

@@ -418,7 +418,9 @@ async fn mqtt_section(dir: &Path) -> Value {
                 println!("mqtt: gave up with {} rows", rows_in(&b.node).await);
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Poll finely: a 20-rows-per-message run lands in about 100 ms, so a
+            // coarse poll would round the result to its own step.
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         let got = rows_in(&b.node).await;
         println!(
