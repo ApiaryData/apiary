@@ -45,6 +45,11 @@ pub struct ForageConfig {
     pub straggler_factor: f64,
     /// Time between a home Node's checks on its queries' progress.
     pub poll: Duration,
+    /// A query that reads no more than this many bytes is run whole by the Bee that
+    /// planned it. A dance cannot recruit anyone before such a query is finished,
+    /// and handing batches between stages through the comb store would cost more
+    /// than it saves.
+    pub local_bytes: u64,
     /// A Node whose share of lost attempts is above this makes its Followers wait a
     /// gossip round after claiming, and yield to the lower Node and Bee id.
     pub yield_above: f64,
@@ -70,6 +75,7 @@ impl Default for ForageConfig {
             claim_refresh: Duration::from_secs(2),
             straggler_factor: 6.0,
             poll: Duration::from_millis(100),
+            local_bytes: 64 * 1024 * 1024,
             yield_above: 0.04,
             gossip_round: Duration::from_millis(250),
             seed: 0,

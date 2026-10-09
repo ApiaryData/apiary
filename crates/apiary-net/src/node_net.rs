@@ -453,6 +453,11 @@ impl NetNode {
         })
     }
 
+    /// The colony this Node's token admits it to.
+    pub fn colony(&self) -> &str {
+        &self.colony
+    }
+
     /// This Node's id.
     pub fn id(&self) -> NodeId {
         self.mesh.id()

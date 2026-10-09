@@ -5,18 +5,21 @@
 //!
 //! | Role | Stimulus | Work |
 //! |---|---|---|
-//! | Forager | queries waiting | run a query under the Bee's share of memory |
+//! | Forager | queries waiting; Patches of queries planned here | run a query under the Bee's share of memory; pull a Patch |
+//! | Follower | dances on the floor with Patches left | follow one, claim a Patch of its group and run it |
+//! | Receiver | a query planned here is ready for its result stage | run it and answer the caller |
 //! | Ripener | the crop is full or old; nectar is ready to cap; harvest is due | deposit, cap, harvest |
 //! | Undertaker | clearing is due | delete what no table version needs |
-//! | Scout | the Node's picture of its comb is stale | survey the comb for nectar ready to cap |
+//! | Scout | the Node's picture of its comb is stale; queries to plan or look over | survey the comb; plan and advertise queries |
 //!
-//! Followers, Receivers and Guards have no stimulus yet: dances, tremble signals
-//! and a handoff wait arrive in later phases, and the entrance still validates
-//! deposits inline.
+//! The Follower and Receiver, and the colony's share of the Forager and Scout,
+//! work once the Node has joined a colony (`set_forage`). Guards have no stimulus
+//! yet: tremble signals and a handoff wait arrive in a later phase, and the
+//! entrance still validates deposits inline.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -27,6 +30,7 @@ use tracing::{debug, warn};
 use apiary_colony::{BeeContext, Calibration, Duties, Role, Stimuli};
 use apiary_comb::Crop;
 use apiary_core::{ApiaryError, Clock, Result, StorageBackend};
+use apiary_forage::Forage;
 
 use crate::deposit::Depositor;
 use crate::upkeep::Upkeep;
@@ -93,6 +97,10 @@ pub struct NodeDuties {
     /// Waiting queries, each with the time it joined the queue.
     queries: Mutex<VecDeque<(Duration, QueryPatch)>>,
     board: Mutex<Board>,
+    /// The colony's foraging, once the Node has joined one: Scouts, Foragers,
+    /// Followers and Receivers then also work on Patches of queries run across
+    /// Nodes.
+    forage: RwLock<Option<Arc<Forage>>>,
 }
 
 /// Which Ripener work is most urgent.
@@ -136,7 +144,17 @@ impl NodeDuties {
             crop_bytes,
             queries: Mutex::default(),
             board: Mutex::new(board),
+            forage: RwLock::new(None),
         }
+    }
+
+    /// Join the colony: from now on Bees also do the colony's work.
+    pub fn set_forage(&self, forage: Arc<Forage>) {
+        *self.forage.write().expect("forage lock") = Some(forage);
+    }
+
+    fn forage_handle(&self) -> Option<Arc<Forage>> {
+        self.forage.read().expect("forage lock").clone()
     }
 
     /// Queue a query for a Forager. Refused if too many already wait: a Node
@@ -354,10 +372,22 @@ impl Duties for NodeDuties {
             };
             (scout, undertaker)
         };
+        // What the colony calls for, if this Node is in one.
+        let (c_scout, c_forager, c_follower, c_receiver) = match self.forage_handle() {
+            Some(f) => (
+                f.scout_stimulus(),
+                f.forager_stimulus(),
+                f.follower_stimulus(),
+                f.receiver_stimulus(),
+            ),
+            None => (0.0, 0.0, 0.0, 0.0),
+        };
         Stimuli::none()
-            .with(Role::Forager, self.forage_stimulus())
+            .with(Role::Forager, self.forage_stimulus() + c_forager)
+            .with(Role::Follower, c_follower)
+            .with(Role::Receiver, c_receiver)
             .with(Role::Ripener, ripener)
-            .with(Role::Scout, scout)
+            .with(Role::Scout, scout + c_scout)
             .with(Role::Undertaker, undertaker)
     }
 
@@ -376,7 +406,11 @@ impl Duties for NodeDuties {
                         patch(bee.pool()).await;
                         true
                     }
-                    None => false,
+                    // No whole query waits: pull a Patch of one planned here.
+                    None => match self.forage_handle() {
+                        Some(f) => f.forage(bee.index() as u32, Some(bee.pool())).await,
+                        None => false,
+                    },
                 }
             }
             Role::Ripener => match self.most_urgent() {
@@ -407,6 +441,14 @@ impl Duties for NodeDuties {
                 due
             }
             Role::Scout => {
+                // The colony's Scouting first: plan a waiting query, advertise
+                // stages, find stragglers.
+                if let Some(f) = self.forage_handle()
+                    && f.scout_stimulus() > 0.0
+                    && f.scout(bee.index() as u32, Some(bee.pool())).await
+                {
+                    return true;
+                }
                 let due = {
                     let board = self.board.lock().expect("duties board");
                     let now = self.clock.monotonic();
@@ -420,8 +462,17 @@ impl Duties for NodeDuties {
                 }
                 due
             }
-            // No stimulus yet: dances, tremble signals and a handoff wait come later.
-            Role::Follower | Role::Receiver | Role::Guard => false,
+            Role::Follower => match self.forage_handle() {
+                Some(f) => f.follow(bee.index() as u32, Some(bee.pool())).await,
+                None => false,
+            },
+            Role::Receiver => match self.forage_handle() {
+                Some(f) => f.receive(bee.index() as u32, Some(bee.pool())).await,
+                None => false,
+            },
+            // Tremble signals and a handoff wait come later; the entrance still
+            // validates inline.
+            Role::Guard => false,
         }
     }
 

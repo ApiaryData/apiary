@@ -29,8 +29,25 @@ pub struct PatchRun {
 /// Plans queries and runs their Patches.
 #[async_trait]
 pub trait Executor: Send + Sync + 'static {
-    /// Plan `sql` as query `query`, writing the plan where other Nodes can read it.
-    async fn plan(&self, query: &str, sql: &str) -> Result<Arc<dyn QueryPlan>>;
+    /// Plan `sql` as query `query`, under `pool` if given. Nothing is written: a
+    /// small query is run whole where it was planned, and never needs a plan record.
+    async fn plan(
+        &self,
+        query: &str,
+        sql: &str,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Arc<dyn QueryPlan>>;
+
+    /// Write the plan where other Nodes can read it, for a query the colony will run.
+    async fn publish(&self, plan: &Arc<dyn QueryPlan>) -> Result<()>;
+
+    /// Run the whole query here, as one unit and without the exchange: what a
+    /// small query is worth.
+    async fn run_whole(
+        &self,
+        plan: &Arc<dyn QueryPlan>,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Vec<RecordBatch>>;
 
     /// Read the plan another Node wrote for `query`.
     async fn load(&self, query: &str) -> Result<Arc<dyn QueryPlan>>;

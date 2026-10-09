@@ -205,6 +205,10 @@ impl Floor for GossipFloor {
         self.shared.floor.now()
     }
 
+    fn changed(&self) -> &tokio::sync::Notify {
+        self.shared.floor.changed()
+    }
+
     fn sample(&self, kind: EntryKind, k: usize, rng: &mut dyn SeededRng) -> Vec<Entry> {
         self.shared.floor.sample(kind, k, rng)
     }

@@ -7,6 +7,8 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::execution::memory_pool::MemoryPool;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
 
 use apiary_core::{ApiaryError, Result, StorageBackend};
 use apiary_plan::ApiaryQueryContext;
@@ -24,6 +26,13 @@ pub struct StagedQuery {
     info: Vec<StageInfo>,
     staged: StagePlan,
     env: Arc<PatchEnv>,
+    /// The plan as DataFusion made it, for running the query whole. A plan read
+    /// from the comb store has none.
+    whole: Option<(
+        Arc<dyn ExecutionPlan>,
+        Arc<datafusion::execution::TaskContext>,
+    )>,
+    bytes: Option<u64>,
 }
 
 impl QueryPlan for StagedQuery {
@@ -33,6 +42,14 @@ impl QueryPlan for StagedQuery {
 
     fn stages(&self) -> &[StageInfo] {
         &self.info
+    }
+
+    fn schema(&self) -> arrow::datatypes::SchemaRef {
+        self.staged.root().schema()
+    }
+
+    fn input_bytes(&self) -> Option<u64> {
+        self.bytes
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -98,6 +115,22 @@ impl PlanExecutor {
     }
 }
 
+/// Bytes the plan reads: the total of its leaves' statistics, or `None` if any
+/// leaf does not say.
+fn input_bytes(plan: &Arc<dyn ExecutionPlan>) -> Option<u64> {
+    let children = plan.children();
+    if children.is_empty() {
+        if matches!(plan.name(), "EmptyExec" | "PlaceholderRowExec") {
+            return Some(0);
+        }
+        let stats = StatisticsContext::new()
+            .compute(plan.as_ref(), &StatisticsArgs::new())
+            .ok()?;
+        return stats.total_byte_size.get_value().map(|b| *b as u64);
+    }
+    children.into_iter().map(input_bytes).sum()
+}
+
 fn staged_of(plan: &Arc<dyn QueryPlan>) -> Result<&StagedQuery> {
     plan.as_any()
         .downcast_ref::<StagedQuery>()
@@ -114,22 +147,50 @@ fn internal(context: &str, e: impl std::fmt::Display) -> ApiaryError {
 
 #[async_trait]
 impl Executor for PlanExecutor {
-    async fn plan(&self, query: &str, sql: &str) -> Result<Arc<dyn QueryPlan>> {
-        let planned = self.ctx.plan_sql(sql, None).await?;
+    async fn plan(
+        &self,
+        query: &str,
+        sql: &str,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Arc<dyn QueryPlan>> {
+        let planned = self.ctx.plan_sql(sql, pool).await?;
+        let bytes = input_bytes(&planned.physical);
         let mut staged = stages::cut(Arc::clone(&planned.physical))
             .map_err(|e| internal("Cannot cut the query into stages", e))?;
         let held = std::mem::take(&mut staged.held);
-        let record = encode_plan(query, &self.node, &staged)
-            .map_err(|e| internal("Cannot write the plan", e))?;
-        self.store
-            .put(&Self::record_key(query), Bytes::from(record))
-            .await?;
         Ok(Arc::new(StagedQuery {
             query: query.to_string(),
             info: describe(&staged),
             env: self.env(query, held)?,
             staged,
+            whole: Some((planned.physical, planned.task_ctx)),
+            bytes,
         }))
+    }
+
+    async fn publish(&self, plan: &Arc<dyn QueryPlan>) -> Result<()> {
+        let q = staged_of(plan)?;
+        // `held` leaves (rows only this Node has) are not in the record.
+        let record = encode_plan(&q.query, &self.node, &q.staged)
+            .map_err(|e| internal("Cannot write the plan", e))?;
+        self.store
+            .put(&Self::record_key(&q.query), Bytes::from(record))
+            .await
+    }
+
+    async fn run_whole(
+        &self,
+        plan: &Arc<dyn QueryPlan>,
+        _pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Vec<RecordBatch>> {
+        let q = staged_of(plan)?;
+        let (physical, task_ctx) = q
+            .whole
+            .as_ref()
+            .ok_or_else(|| internal("No whole plan", "this plan was read from the comb"))?;
+        datafusion::physical_plan::collect(Arc::clone(physical), Arc::clone(task_ctx))
+            .await
+            .map_err(|e| internal("Query failed", e))
     }
 
     async fn load(&self, query: &str) -> Result<Arc<dyn QueryPlan>> {
@@ -142,6 +203,8 @@ impl Executor for PlanExecutor {
             info: describe(&staged),
             env: self.env(query, Default::default())?,
             staged,
+            whole: None,
+            bytes: None,
         }))
     }
 

@@ -59,6 +59,8 @@ pub struct ForageCounts {
     pub redone: u64,
     /// Results delivered.
     pub answered: u64,
+    /// Queries small enough to be run whole by the Bee that planned them.
+    pub whole: u64,
     /// Rows in the output of the attempts that won: the colony's useful work.
     pub rows: u64,
 }
@@ -74,10 +76,20 @@ struct Counters {
     dances: AtomicU64,
     redone: AtomicU64,
     answered: AtomicU64,
+    whole: AtomicU64,
     rows: AtomicU64,
 }
 
-type Reply = oneshot::Sender<Result<Vec<RecordBatch>>>;
+/// A query's answer: its rows, and the schema they have even when there are none.
+#[derive(Clone, Debug)]
+pub struct Answer {
+    /// The rows.
+    pub batches: Vec<RecordBatch>,
+    /// The schema of the result.
+    pub schema: arrow::datatypes::SchemaRef,
+}
+
+type Reply = oneshot::Sender<Result<Answer>>;
 
 struct Submitted {
     query: String,
@@ -205,6 +217,7 @@ impl Forage {
             dances: c.dances.load(Ordering::Relaxed),
             redone: c.redone.load(Ordering::Relaxed),
             answered: c.answered.load(Ordering::Relaxed),
+            whole: c.whole.load(Ordering::Relaxed),
             rows: c.rows.load(Ordering::Relaxed),
         }
     }
@@ -222,7 +235,7 @@ impl Forage {
 
     /// Submit a query. A Scout plans it and the colony runs it; the answer comes
     /// back on the returned channel.
-    pub fn submit(&self, sql: impl Into<String>) -> oneshot::Receiver<Result<Vec<RecordBatch>>> {
+    pub fn submit(&self, sql: impl Into<String>) -> oneshot::Receiver<Result<Answer>> {
         let (reply, answer) = oneshot::channel();
         let mut st = self.lock();
         st.next_query += 1;
@@ -472,10 +485,10 @@ impl Forage {
 
     /// Do a Scout's work: plan a waiting query, or look over the queries planned
     /// here and advertise what needs it.
-    pub async fn scout(self: &Arc<Self>, bee: u32) -> bool {
+    pub async fn scout(self: &Arc<Self>, bee: u32, pool: Option<Arc<dyn MemoryPool>>) -> bool {
         let next = self.lock().queue.pop_front();
         if let Some(sub) = next {
-            self.plan_query(bee, sub).await;
+            self.plan_query(bee, sub, pool).await;
             return true;
         }
         self.forget_finished();
@@ -509,10 +522,37 @@ impl Forage {
         st.dancing.retain(|(q, ..), _| keep(q));
     }
 
-    async fn plan_query(self: &Arc<Self>, bee: u32, sub: Submitted) {
-        match self.exec.plan(&sub.query, &sub.sql).await {
+    async fn plan_query(
+        self: &Arc<Self>,
+        bee: u32,
+        sub: Submitted,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) {
+        match self.exec.plan(&sub.query, &sub.sql, pool.clone()).await {
             Ok(plan) => {
                 self.counters.planned.fetch_add(1, Ordering::Relaxed);
+                // A small query is finished before a dance could recruit anyone.
+                if plan
+                    .input_bytes()
+                    .is_some_and(|bytes| bytes <= self.cfg.local_bytes)
+                {
+                    self.counters.whole.fetch_add(1, Ordering::Relaxed);
+                    let answer = self
+                        .exec
+                        .run_whole(&plan, pool)
+                        .await
+                        .map(|batches| Answer {
+                            batches,
+                            schema: plan.schema(),
+                        });
+                    self.counters.answered.fetch_add(1, Ordering::Relaxed);
+                    let _ = sub.reply.send(answer);
+                    return;
+                }
+                if let Err(e) = self.exec.publish(&plan).await {
+                    let _ = sub.reply.send(Err(e));
+                    return;
+                }
                 {
                     let mut st = self.lock();
                     st.homes.insert(
@@ -1125,7 +1165,14 @@ impl Forage {
                 return false;
             }
         }
-        let answer = self.exec.run_result(&plan, pool).await;
+        let answer = self
+            .exec
+            .run_result(&plan, pool)
+            .await
+            .map(|batches| Answer {
+                batches,
+                schema: plan.schema(),
+            });
         let reply = self.lock().homes.remove(&query).and_then(|h| h.reply);
         if let Err(e) = self.exec.finish(&query).await {
             debug!(error = %e, "Could not tidy up after a query");

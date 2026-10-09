@@ -278,3 +278,24 @@ async fn joins_planned_for_a_small_bee_agree_when_run_as_patches() {
     );
     assert_eq!(patched, whole, "{shape}");
 }
+
+/// A filter that prunes away every file leaves a scan with nothing to read; it is
+/// still a Patch that any Node can run, and it gives no rows.
+#[tokio::test]
+async fn a_scan_pruned_to_nothing_is_still_a_patch() {
+    let env = farm().await;
+    let ctx = env.context();
+    for sql in [
+        "SELECT region, temp FROM farm.field.sensors WHERE temp > 1000",
+        "SELECT count(*), sum(temp) FROM farm.field.sensors WHERE temp > 1000",
+    ] {
+        let whole = lines(&ctx.sql(sql).await.unwrap());
+        let (exchange, _dir) = exchange().await;
+        let staged = lines(
+            &ctx.sql_staged(sql, exchange, StagedOptions::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(staged, whole, "{sql}");
+    }
+}

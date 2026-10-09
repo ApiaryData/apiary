@@ -44,6 +44,8 @@ pub struct Work {
     pub patch_ms: u64,
     /// Rows a Patch produces.
     pub rows: u64,
+    /// Bytes a Patch of a scan reads; the query's input is their total.
+    pub bytes: u64,
     /// Patches vary by up to this fraction either way.
     pub jitter: f64,
 }
@@ -66,6 +68,7 @@ impl Shape {
                     pinned: false,
                     patch_ms,
                     rows,
+                    bytes: 1 << 30,
                     jitter: 0.2,
                 },
                 Work {
@@ -74,6 +77,7 @@ impl Shape {
                     pinned: false,
                     patch_ms: 5,
                     rows: 1,
+                    bytes: 0,
                     jitter: 0.0,
                 },
             ],
@@ -90,6 +94,7 @@ impl Shape {
                     pinned: false,
                     patch_ms: scan_ms,
                     rows,
+                    bytes: 1 << 30,
                     jitter: 0.2,
                 },
                 Work {
@@ -98,6 +103,7 @@ impl Shape {
                     pinned: false,
                     patch_ms: merge_ms,
                     rows: rows / 4,
+                    bytes: 0,
                     jitter: 0.1,
                 },
                 Work {
@@ -106,10 +112,25 @@ impl Shape {
                     pinned: false,
                     patch_ms: 5,
                     rows: 1,
+                    bytes: 0,
                     jitter: 0.0,
                 },
             ],
         }
+    }
+
+    /// The same query reading only `bytes` in all: small enough to be run whole.
+    pub fn reading(mut self, bytes: u64) -> Self {
+        let scans = self
+            .stages
+            .iter()
+            .filter(|w| w.inputs.is_empty())
+            .count()
+            .max(1) as u64;
+        for w in self.stages.iter_mut().filter(|w| w.inputs.is_empty()) {
+            w.bytes = bytes / scans / w.patches.max(1) as u64;
+        }
+        self
     }
 
     /// The same query with its first stage pinned to the Node that plans it.
@@ -175,6 +196,21 @@ impl QueryPlan for SimPlan {
         &self.info
     }
 
+    fn schema(&self) -> arrow::datatypes::SchemaRef {
+        Arc::new(arrow::datatypes::Schema::empty())
+    }
+
+    fn input_bytes(&self) -> Option<u64> {
+        Some(
+            self.shape
+                .stages
+                .iter()
+                .filter(|w| w.inputs.is_empty())
+                .map(|w| w.bytes * w.patches as u64)
+                .sum(),
+        )
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -233,18 +269,44 @@ impl SimExecutor {
 
 #[async_trait]
 impl Executor for SimExecutor {
-    async fn plan(&self, query: &str, sql: &str) -> Result<Arc<dyn QueryPlan>> {
+    async fn plan(
+        &self,
+        query: &str,
+        sql: &str,
+        _pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Arc<dyn QueryPlan>> {
         let shape = self
             .shapes
             .get(sql)
             .ok_or_else(|| internal(format!("the simulation does not know {sql:?}")))?;
+        Ok(Arc::new(SimPlan::new(query, shape)))
+    }
+
+    async fn publish(&self, plan: &Arc<dyn QueryPlan>) -> Result<()> {
+        let plan = Self::plan_of(plan)?;
         self.store
             .put(
-                &format!("plans/{query}"),
-                Bytes::from(serde_json::to_vec(&shape).expect("a shape serialises")),
+                &format!("plans/{}", plan.query),
+                Bytes::from(serde_json::to_vec(&plan.shape).expect("a shape serialises")),
             )
-            .await?;
-        Ok(Arc::new(SimPlan::new(query, shape)))
+            .await
+    }
+
+    async fn run_whole(
+        &self,
+        plan: &Arc<dyn QueryPlan>,
+        _pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Vec<RecordBatch>> {
+        let plan = Self::plan_of(plan)?;
+        // Every stage's Patches, one after another, on this Node.
+        let mut total = Duration::ZERO;
+        for (stage, work) in plan.shape.stages.iter().enumerate() {
+            for patch in 0..work.patches {
+                total += self.cost(work, &plan.query, stage, patch);
+            }
+        }
+        self.clock.sleep(total).await;
+        Ok(Vec::new())
     }
 
     async fn load(&self, query: &str) -> Result<Arc<dyn QueryPlan>> {
@@ -340,7 +402,7 @@ impl Duties for ForageDuties {
     async fn perform(&self, role: Role, bee: &BeeContext) -> bool {
         let index = bee.index() as u32;
         match role {
-            Role::Scout => self.forage.scout(index).await,
+            Role::Scout => self.forage.scout(index, Some(bee.pool())).await,
             Role::Forager => self.forage.forage(index, Some(bee.pool())).await,
             Role::Follower => self.forage.follow(index, Some(bee.pool())).await,
             Role::Receiver => self.forage.receive(index, Some(bee.pool())).await,
@@ -519,7 +581,7 @@ impl ForageColony {
     }
 
     /// Submit `sql` at the Node called `at`.
-    pub fn submit(&self, at: &str, sql: &str) -> oneshot::Receiver<Result<Vec<RecordBatch>>> {
+    pub fn submit(&self, at: &str, sql: &str) -> oneshot::Receiver<Result<apiary_forage::Answer>> {
         let node = self.node(at);
         let answer = node.forage.submit(sql);
         node.bees.wake();

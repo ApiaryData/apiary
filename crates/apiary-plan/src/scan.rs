@@ -29,6 +29,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
@@ -107,6 +108,11 @@ impl ScanSource {
                 spec.hive, spec.box_name, spec.frame
             ))
         })?;
+        // No files for this partition (pruning left none): there is nothing to scan,
+        // and an empty selection must not be mistaken for "every file".
+        if files.is_empty() {
+            return Ok(Arc::new(EmptyExec::new(spec.output_schema()?)));
+        }
         let provider = self
             .comb
             .table_provider_at(
@@ -362,6 +368,14 @@ impl FramePatchProvider {
     /// plain Parquet files, as paths relative to the table root.
     fn groups_of(&self, plan: &Arc<dyn ExecutionPlan>) -> Option<Vec<Vec<String>>> {
         let child = plan.children().into_iter().next()?;
+        // Pruning removed every file: nothing to read, in as many partitions as the
+        // scan has.
+        if child.name() == "EmptyExec" {
+            return Some(vec![
+                Vec::new();
+                plan.output_partitioning().partition_count().max(1)
+            ]);
+        }
         let source = child.downcast_ref::<DataSourceExec>()?;
         let config = source.data_source().downcast_ref::<FileScanConfig>()?;
         let prefix = format!("{}/", self.root);

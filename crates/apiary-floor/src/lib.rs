@@ -45,6 +45,10 @@ pub trait Floor: Send + Sync + 'static {
     /// Now, on the clock entries' lifetimes are measured against, in milliseconds.
     fn now(&self) -> apiary_core::Millis;
 
+    /// Signalled whenever this Node's copy changes, by a post or by news from a
+    /// peer, so a Node can wake its Bees to look.
+    fn changed(&self) -> &tokio::sync::Notify;
+
     /// Up to `k` live entries of `kind` at random, from this Node's copy only.
     fn sample(&self, kind: EntryKind, k: usize, rng: &mut dyn SeededRng) -> Vec<Entry>;
 }
@@ -72,6 +76,10 @@ impl Floor for InMemoryFloor {
 
     fn now(&self) -> apiary_core::Millis {
         InMemoryFloor::now(self)
+    }
+
+    fn changed(&self) -> &tokio::sync::Notify {
+        InMemoryFloor::changed(self)
     }
 
     fn sample(&self, kind: EntryKind, k: usize, rng: &mut dyn SeededRng) -> Vec<Entry> {

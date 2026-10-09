@@ -89,6 +89,9 @@ pub struct ApiaryNode {
     /// What the Bees do: queries, ripening, clearing and surveying.
     duties: Arc<NodeDuties>,
 
+    /// The colony this Node has joined, if it has joined one.
+    colony_link: std::sync::RwLock<Option<ColonyLink>>,
+
     /// Local cell cache with LRU eviction.
     pub cell_cache: Arc<CellCache>,
 
@@ -411,6 +414,7 @@ impl ApiaryNode {
             query_ctx,
             colony,
             duties,
+            colony_link: std::sync::RwLock::new(None),
             cell_cache,
             abandonment_tracker: Arc::new(AbandonmentTracker::default()),
             heartbeat_writer,
@@ -787,6 +791,9 @@ impl ApiaryNode {
             "query",
             query.split_whitespace().collect::<Vec<_>>().join(" "),
         );
+        if let Some(answer) = self.sql_in_colony(query).await {
+            return answer.map(|a| a.batches);
+        }
         let ctx = Arc::clone(&self.query_ctx);
         let text = query.to_string();
         self.forage(move |pool| async move { ctx.sql_in(&text, Some(pool)).await })
@@ -797,10 +804,151 @@ impl ApiaryNode {
     /// and the rows each stage gave it (which is how a query with no rows still
     /// has columns).
     pub async fn sql_with_stages(&self, query: &str) -> Result<apiary_plan::QueryOutput> {
+        if let Some(answer) = self.sql_in_colony(query).await {
+            return answer.map(|a| apiary_plan::QueryOutput {
+                batches: a.batches,
+                // A query run across the colony does not yet count the rows each
+                // stage gave it.
+                stages: apiary_plan::StageRows::default(),
+                schema: a.schema,
+            });
+        }
         let ctx = Arc::clone(&self.query_ctx);
         let text = query.to_string();
         self.forage(move |pool| async move { ctx.sql_with_stages_in(&text, Some(pool)).await })
             .await
+    }
+
+    /// Join a colony: this Node's Bees will also plan, advertise, follow and
+    /// answer the queries the colony runs across its Nodes, and the Node posts its
+    /// presence on `floor`. `me` is the Node's id on the network.
+    pub fn join_colony(
+        &self,
+        me: apiary_net::NodeId,
+        floor: Arc<dyn apiary_floor::Floor>,
+        config: apiary_forage::ForageConfig,
+    ) -> Arc<apiary_forage::Forage> {
+        let exchange: Arc<dyn apiary_plan::exchange::Exchange> = Arc::new(
+            apiary_plan::exchange::StoreExchange::new(Arc::clone(&self.storage)),
+        );
+        let exec = Arc::new(apiary_forage::PlanExecutor::new(
+            self.config.node_id.as_str(),
+            Arc::clone(&self.query_ctx),
+            exchange,
+            Arc::clone(&self.storage),
+        ));
+        let forage = apiary_forage::Forage::new(
+            me,
+            self.config.node_id.as_str(),
+            Arc::clone(&floor),
+            exec,
+            self.env.clock(),
+            config,
+        );
+        self.duties.set_forage(Arc::clone(&forage));
+
+        // Post this Node's presence, and wake the Bees whenever the floor changes.
+        let clock = self.env.clock();
+        let load = ColonyLoad {
+            colony: Arc::clone(&self.colony),
+            duties: Arc::clone(&self.duties),
+        };
+        let memory = self.config.memory_bytes;
+        let presence_floor = Arc::clone(&floor);
+        let mut cancel = self.cancel_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                let l = load.load();
+                presence_floor.publish(
+                    apiary_floor::EntryKey::presence(me),
+                    apiary_floor::EntryBody::Presence(apiary_floor::Presence {
+                        site: None,
+                        bees: l.bees_total as u32,
+                        idle_bees: l.bees_idle as u32,
+                        temperature: l.colony_temperature,
+                        memory_pressure: l.memory_pressure,
+                        memory_bytes: memory,
+                    }),
+                    Duration::from_secs(3),
+                );
+                tokio::select! {
+                    () = clock.sleep(Duration::from_secs(1)) => {}
+                    _ = cancel.changed() => break,
+                }
+            }
+            presence_floor.withdraw(&apiary_floor::EntryKey::presence(me));
+        });
+        let colony = Arc::clone(&self.colony);
+        let wake_floor = Arc::clone(&floor);
+        let mut stop = self.cancel_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = wake_floor.changed().notified() => colony.wake(),
+                    _ = stop.changed() => break,
+                }
+            }
+        });
+
+        *self.colony_link.write().expect("colony link") = Some(ColonyLink {
+            me,
+            floor,
+            forage: Arc::clone(&forage),
+        });
+        info!(node = %me.fmt_short(), "Joined the colony");
+        forage
+    }
+
+    /// The colony's foraging on this Node, if it has joined a colony.
+    pub fn colony_forage(&self) -> Option<Arc<apiary_forage::Forage>> {
+        self.colony_link
+            .read()
+            .expect("colony link")
+            .as_ref()
+            .map(|link| Arc::clone(&link.forage))
+    }
+
+    /// How many other Nodes' presence this Node sees on its floor.
+    pub fn colony_peers(&self) -> usize {
+        match &*self.colony_link.read().expect("colony link") {
+            Some(link) => link
+                .floor
+                .entries(apiary_floor::EntryKind::Presence)
+                .iter()
+                .filter(|e| e.key.node != link.me)
+                .count(),
+            None => 0,
+        }
+    }
+
+    /// Run `query` across the colony, if this Node is in one with other Nodes and
+    /// the query is one with a plan (not `USE`, `SHOW` or `DESCRIBE`). `None`
+    /// means the query should run here, whole.
+    async fn sql_in_colony(&self, query: &str) -> Option<Result<apiary_forage::Answer>> {
+        if apiary_plan::is_custom_command(query) || self.colony_peers() == 0 {
+            return None;
+        }
+        let forage = Arc::clone(
+            &self
+                .colony_link
+                .read()
+                .expect("colony link")
+                .as_ref()?
+                .forage,
+        );
+        let answer = forage.submit(query);
+        self.colony.wake();
+        let clock = self.env.clock();
+        Some(tokio::select! {
+            result = answer => result.unwrap_or_else(|_| {
+                Err::<apiary_forage::Answer, _>(ApiaryError::Internal {
+                    message: "The query was dropped before it finished".into(),
+                })
+            }),
+            () = clock.sleep(QUERY_TIMEOUT) => Err(ApiaryError::Internal {
+                message: format!("The query took longer than {QUERY_TIMEOUT:?}"),
+            }),
+        })
     }
 
     /// Hand a query to the Bees and wait for the Forager that takes it up. It
@@ -904,6 +1052,13 @@ impl ApiaryNode {
                 .collect(),
         }
     }
+}
+
+/// The colony a Node has joined.
+struct ColonyLink {
+    me: apiary_net::NodeId,
+    floor: Arc<dyn apiary_floor::Floor>,
+    forage: Arc<apiary_forage::Forage>,
 }
 
 /// A Node's Bees as the heartbeat reports them.

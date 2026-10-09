@@ -21,6 +21,6 @@ pub mod real;
 
 pub use config::{ForageConfig, Mode};
 pub use exec::{Executor, PatchRun};
-pub use forage::{Forage, ForageCounts};
+pub use forage::{Answer, Forage, ForageCounts};
 pub use plan::{QueryPlan, StageInfo};
 pub use real::{PlanExecutor, StagedQuery};

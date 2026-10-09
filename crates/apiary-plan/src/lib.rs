@@ -640,6 +640,19 @@ impl ApiaryQueryContext {
 // Helper functions
 // ---------------------------------------------------------------------------
 
+/// Whether `sql` is one of Apiary's own commands (`USE`, `SHOW`, `DESCRIBE`),
+/// which have no query plan and run where they are asked.
+pub fn is_custom_command(sql: &str) -> bool {
+    let upper = sql.trim().to_uppercase();
+    let upper = upper.trim_end_matches(';').trim();
+    upper.starts_with("USE HIVE ")
+        || upper.starts_with("USE BOX ")
+        || upper == "SHOW HIVES"
+        || upper.starts_with("SHOW BOXES")
+        || upper.starts_with("SHOW FRAMES")
+        || upper.starts_with("DESCRIBE ")
+}
+
 /// Check for unsupported DML and return an error if detected.
 fn check_unsupported_dml(sql: &str) -> Option<ApiaryError> {
     let upper = sql.to_uppercase();

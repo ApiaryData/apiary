@@ -56,7 +56,7 @@ fn a_query_is_foraged_by_the_whole_colony() {
             .expect("the query succeeds");
         let took = sim.clock().monotonic() - started;
         assert!(
-            rows.is_empty(),
+            rows.batches.is_empty(),
             "the simulated result stage returns no rows"
         );
 
@@ -104,14 +104,13 @@ fn totals(colony: &ForageColony) -> ForageCounts {
             dances: a.dances + c.dances,
             redone: a.redone + c.redone,
             answered: a.answered + c.answered,
+            whole: a.whole + c.whole,
             rows: a.rows + c.rows,
         })
 }
 
 async fn finish(
-    answer: tokio::sync::oneshot::Receiver<
-        apiary_core::Result<Vec<arrow::record_batch::RecordBatch>>,
-    >,
+    answer: tokio::sync::oneshot::Receiver<apiary_core::Result<apiary_forage::Answer>>,
     within: Duration,
 ) {
     tokio::time::timeout(within, answer)
@@ -358,6 +357,45 @@ fn a_stage_that_reads_rows_held_by_one_node_runs_only_there() {
         pi1.won >= 8,
         "pi-1 ran every Patch of the pinned stage: {counts:?}"
     );
+}
+
+#[test]
+fn a_small_query_is_run_whole_by_the_bee_that_planned_it() {
+    let run = Sim::run(9, |sim| async move {
+        let net = sim.network();
+        net.set_relay(Relay::Tls("cloud".into()));
+        let colony = ForageColony::start(&sim, &net, &nodes(), ColonySpec::default()).await;
+        colony.teach(
+            ROLLUPS,
+            Shape::rollup(8, 100, 4, 50, 1_000).reading(1 << 20),
+        );
+        sim.sleep(Duration::from_secs(2)).await;
+        let started = sim.clock().monotonic();
+        finish(colony.submit("pi-1", ROLLUPS), Duration::from_secs(60)).await;
+        let took = sim.clock().monotonic() - started;
+        let counts: Vec<_> = colony
+            .nodes
+            .iter()
+            .map(|n| (n.name, n.forage.counts()))
+            .collect();
+        colony.shutdown().await;
+        (took, counts)
+    });
+    let (took, counts) = run.value;
+    let pi1 = counts.iter().find(|(n, _)| *n == "pi-1").unwrap().1;
+    assert_eq!(
+        (pi1.planned, pi1.whole, pi1.answered),
+        (1, 1, 1),
+        "{counts:?}"
+    );
+    // Nobody was recruited: no dances, no Patches run by the colony.
+    assert_eq!(
+        counts.iter().map(|(_, c)| c.won + c.dances).sum::<u64>(),
+        0,
+        "{counts:?}"
+    );
+    // On a quarter-speed Node: (8 x 100 ms + 4 x 50 ms + 5 ms) / 0.25, about 4 s.
+    assert!(took < Duration::from_secs(6), "{took:?}");
 }
 
 #[test]

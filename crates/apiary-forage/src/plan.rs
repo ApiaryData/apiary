@@ -33,6 +33,13 @@ pub trait QueryPlan: Send + Sync + 'static {
     /// Its stages, in the order they can run.
     fn stages(&self) -> &[StageInfo];
 
+    /// The schema of its result, which a query with no rows still has.
+    fn schema(&self) -> arrow::datatypes::SchemaRef;
+
+    /// Bytes the query reads, if its inputs say. `None` when they do not: such a
+    /// query is treated as large.
+    fn input_bytes(&self) -> Option<u64>;
+
     /// For downcasting to what the [`Executor`](crate::Executor) made.
     fn as_any(&self) -> &dyn Any;
 
