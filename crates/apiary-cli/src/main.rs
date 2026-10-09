@@ -475,6 +475,7 @@ fn run_node(file: FileConfig) -> Result<(), String> {
                 node.join_colony(
                     net.id(),
                     Arc::clone(&floor) as Arc<dyn Floor>,
+                    Some(net.mesh().clone()),
                     ForageConfig::default(),
                 );
                 Some(floor)

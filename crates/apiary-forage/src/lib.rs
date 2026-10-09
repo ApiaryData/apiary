@@ -15,6 +15,7 @@
 pub mod config;
 pub mod exec;
 pub mod forage;
+pub mod net_exchange;
 pub mod plan;
 pub mod profit;
 pub mod real;
@@ -22,5 +23,6 @@ pub mod real;
 pub use config::{ForageConfig, Mode};
 pub use exec::{Executor, PatchRun};
 pub use forage::{Answer, Forage, ForageCounts};
+pub use net_exchange::{NetExchange, NetExchangeCounts};
 pub use plan::{QueryPlan, StageInfo};
 pub use real::{PlanExecutor, StagedQuery};

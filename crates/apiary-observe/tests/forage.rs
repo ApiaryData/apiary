@@ -4,6 +4,7 @@
 //! Followers and Receivers, and the real exchange in a simulated comb store; only
 //! the cost of a Patch is made up, as virtual time.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use apiary_core::SeededRng;
@@ -441,4 +442,111 @@ fn a_run_replays_exactly_from_its_seed() {
     assert_eq!(a.trace.render(), b.trace.render());
     assert_eq!(a.trace.digest(), b.trace.digest());
     assert_ne!(a.trace.digest(), Sim::run(12, scenario).trace.digest());
+}
+
+// ---------------------------------------------------------------------------
+// The exchange protocol
+// ---------------------------------------------------------------------------
+
+#[test]
+fn batches_travel_between_nodes_over_the_exchange_protocol() {
+    let run = Sim::run(12, |sim| async move {
+        let net = sim.network();
+        net.set_relay(Relay::Tls("cloud".into()));
+        let spec = ColonySpec {
+            net_exchange: true,
+            ..ColonySpec::default()
+        };
+        let colony = ForageColony::start(&sim, &net, &nodes(), spec).await;
+        colony.teach(ROLLUPS, Shape::rollup(24, 600, 6, 300, 10_000));
+        sim.sleep(Duration::from_secs(2)).await;
+        let answers: Vec<_> = ["cloud", "pi-1", "pod"]
+            .iter()
+            .map(|n| colony.submit(n, ROLLUPS))
+            .collect();
+        for a in answers {
+            finish(a, Duration::from_secs(300)).await;
+        }
+        let moved: Vec<_> = colony
+            .nodes
+            .iter()
+            .map(|n| n.exchange.as_ref().unwrap().counts())
+            .collect();
+        colony.shutdown().await;
+        moved
+    });
+    let moved = run.value;
+    let sum = |f: fn(&apiary_forage::NetExchangeCounts) -> u64| moved.iter().map(f).sum::<u64>();
+    assert!(
+        sum(|c| c.peer) > 0,
+        "nothing crossed between Nodes: {moved:?}"
+    );
+    assert!(sum(|c| c.local) > 0, "{moved:?}");
+    // Every producer was up, so the store was never read for an output.
+    assert_eq!(sum(|c| c.store), 0, "{moved:?}");
+    assert_eq!(sum(|c| c.fell_back), 0, "{moved:?}");
+}
+
+#[test]
+fn an_output_is_fetched_from_its_producer_and_read_from_the_store_once_it_is_gone() {
+    use apiary_comb::custom_store::ObjectStoreBackend;
+    use apiary_core::StorageBackend;
+    use apiary_forage::NetExchange;
+    use apiary_plan::exchange::{Completion, Exchange, PatchKey, StoreExchange};
+    use bytes::Bytes;
+
+    Sim::run(13, |sim| async move {
+        let net = sim.network();
+        let mesh = apiary_observe::Colony::new(
+            &sim,
+            &net,
+            &[
+                ("a", Placement::public("one")),
+                ("b", Placement::public("two")),
+            ],
+        );
+        let (a, b) = (mesh.get("a"), mesh.get("b"));
+        let bucket = sim.store("bucket");
+        let store: Arc<dyn StorageBackend> = Arc::new(ObjectStoreBackend::new(Arc::new(bucket)));
+        let exchange = |m: &apiary_observe::Member| {
+            NetExchange::new(
+                m.id(),
+                Arc::new(StoreExchange::new(Arc::clone(&store))),
+                m.mesh.clone(),
+                1 << 20,
+            )
+        };
+        let (ex_a, ex_b) = (exchange(a), exchange(b));
+        a.connect(b).await.expect("admitted");
+
+        let key = PatchKey::new("q", 0, 0);
+        let data = Bytes::from_static(b"nectar, in arrow");
+        ex_a.put(&key, "a-1", 0, data.clone()).await.unwrap();
+        ex_a.complete(
+            &key,
+            &Completion {
+                attempt: "a-1".into(),
+                node: "ignored".into(),
+                rows: vec![1],
+                bytes: vec![16],
+            },
+        )
+        .await
+        .unwrap();
+
+        // B finds out where it was made and asks A for it.
+        let record = ex_b.completion(&key).await.unwrap().unwrap();
+        assert_eq!(ex_b.get(&key, &record, 0).await.unwrap(), data);
+        let c = ex_b.counts();
+        assert_eq!((c.peer, c.store, c.fell_back), (1, 0, 0), "{c:?}");
+
+        // A is cut off. The output is still in the store.
+        net.isolate(a.id());
+        assert_eq!(ex_b.get(&key, &record, 0).await.unwrap(), data);
+        let c = ex_b.counts();
+        assert_eq!((c.peer, c.store, c.fell_back), (1, 1, 1), "{c:?}");
+        // A itself still has it in memory.
+        assert_eq!(ex_a.get(&key, &record, 0).await.unwrap(), data);
+        assert_eq!(ex_a.counts().local, 1);
+    });
 }

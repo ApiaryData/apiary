@@ -116,7 +116,12 @@ async fn join(
         SystemClock::shared(),
         GossipConfig::new("barn"),
     ));
-    node.join_colony(key.id(), Arc::clone(&floor) as Arc<dyn Floor>, forage);
+    node.join_colony(
+        key.id(),
+        Arc::clone(&floor) as Arc<dyn Floor>,
+        Some(mesh.clone()),
+        forage,
+    );
     Member {
         node,
         floor,
@@ -217,6 +222,15 @@ async fn a_query_is_run_across_two_real_nodes_and_gives_the_whole_answer() {
         "{fa:?} {fb:?}"
     );
     eprintln!("A {fa:?}\nB {fb:?}");
+
+    // Batches handed between stages crossed from one Node to the other over QUIC.
+    let (xa, xb) = (
+        a.node.exchange_counts().unwrap(),
+        b.node.exchange_counts().unwrap(),
+    );
+    eprintln!("exchange: A {xa:?} B {xb:?}");
+    assert!(xa.peer + xb.peer > 0, "{xa:?} {xb:?}");
+    assert_eq!(xa.fell_back + xb.fell_back, 0, "{xa:?} {xb:?}");
 
     // What going through the colony costs a small query.
     for sql in [

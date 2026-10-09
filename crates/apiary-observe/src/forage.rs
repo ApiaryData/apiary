@@ -17,7 +17,7 @@ use apiary_comb::custom_store::ObjectStoreBackend;
 use apiary_core::rng::hash_str;
 use apiary_core::{ApiaryError, Clock, Result, StorageBackend};
 use apiary_floor::{Floor, GossipConfig, GossipFloor};
-use apiary_forage::{Executor, Forage, ForageConfig, PatchRun, QueryPlan, StageInfo};
+use apiary_forage::{Executor, Forage, ForageConfig, NetExchange, PatchRun, QueryPlan, StageInfo};
 use apiary_plan::exchange::{Completion, Exchange, PatchKey, StoreExchange};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
@@ -252,8 +252,10 @@ impl SimExecutor {
         Duration::from_secs_f64(work.patch_ms as f64 / 1000.0 * factor / self.speed)
     }
 
-    /// Reading a Patch's inputs: every stage that feeds it must be complete.
-    async fn check_inputs(&self, plan: &SimPlan, stage: usize) -> Result<()> {
+    /// Reading a Patch's inputs: every stage that feeds it must be complete, and a
+    /// Patch of the stage reads the output of one Patch of each (the result stage
+    /// reads them all), which is what moves batches over the exchange.
+    async fn read_inputs(&self, plan: &SimPlan, stage: usize, patch: usize) -> Result<()> {
         for input in &plan.info[stage].inputs {
             let done = self.exchange.completed(&plan.query, *input).await?;
             if done.len() < plan.info[*input].patches {
@@ -261,6 +263,20 @@ impl SimExecutor {
                     "stage {input} of {} is not complete yet",
                     plan.query
                 )));
+            }
+            let reads: Vec<usize> = if plan.info[stage].result {
+                (0..plan.info[*input].patches).collect()
+            } else {
+                vec![patch % plan.info[*input].patches]
+            };
+            for index in reads {
+                let key = PatchKey::new(&plan.query, *input, index);
+                let record = self
+                    .exchange
+                    .completion(&key)
+                    .await?
+                    .ok_or_else(|| internal(format!("{key:?} is not complete yet")))?;
+                self.exchange.get(&key, &record, 0).await?;
             }
         }
         Ok(())
@@ -325,7 +341,7 @@ impl Executor for SimExecutor {
         _pool: Option<Arc<dyn MemoryPool>>,
     ) -> Result<PatchRun> {
         let plan = Self::plan_of(plan)?;
-        self.check_inputs(plan, stage).await?;
+        self.read_inputs(plan, stage, patch).await?;
         let work = &plan.shape.stages[stage];
         self.clock
             .sleep(self.cost(work, &plan.query, stage, patch))
@@ -362,7 +378,7 @@ impl Executor for SimExecutor {
     ) -> Result<Vec<RecordBatch>> {
         let plan = Self::plan_of(plan)?;
         let stage = plan.info.len() - 1;
-        self.check_inputs(plan, stage).await?;
+        self.read_inputs(plan, stage, 0).await?;
         let work = &plan.shape.stages[stage];
         self.clock
             .sleep(self.cost(work, &plan.query, stage, 0))
@@ -446,6 +462,8 @@ pub struct ForageNode {
     pub floor: Arc<GossipFloor>,
     /// Its Bees.
     pub bees: Bees,
+    /// How its Patches' outputs travelled, if the colony uses the exchange protocol.
+    pub exchange: Option<Arc<NetExchange>>,
 }
 
 /// A colony of Nodes foraging together.
@@ -469,6 +487,8 @@ pub struct ColonySpec {
     pub dwell: Duration,
     /// Time between gossip rounds.
     pub gossip: Duration,
+    /// Hand batches between Nodes over the exchange protocol, not only the store.
+    pub net_exchange: bool,
 }
 
 impl Default for ColonySpec {
@@ -478,6 +498,7 @@ impl Default for ColonySpec {
             store_latency: Duration::from_millis(15),
             dwell: Duration::from_millis(500),
             gossip: Duration::from_millis(250),
+            net_exchange: false,
         }
     }
 }
@@ -508,7 +529,20 @@ impl ForageColony {
             let latency = cfg.store_latency;
             view.set_faults(|f| f.latency = latency);
             let store: Arc<dyn StorageBackend> = Arc::new(ObjectStoreBackend::new(Arc::new(view)));
-            let exchange: Arc<dyn Exchange> = Arc::new(StoreExchange::new(Arc::clone(&store)));
+            let store_exchange: Arc<dyn Exchange> =
+                Arc::new(StoreExchange::new(Arc::clone(&store)));
+            let net_exchange = cfg.net_exchange.then(|| {
+                NetExchange::new(
+                    member.id(),
+                    Arc::clone(&store_exchange),
+                    member.mesh.clone(),
+                    64 << 20,
+                )
+            });
+            let exchange: Arc<dyn Exchange> = match &net_exchange {
+                Some(net) => Arc::clone(net) as _,
+                None => store_exchange,
+            };
             let exec = Arc::new(SimExecutor {
                 node: spec.name.to_string(),
                 speed: spec.speed,
@@ -552,6 +586,7 @@ impl ForageColony {
                 forage,
                 floor,
                 bees,
+                exchange: net_exchange,
             });
         }
         Self {

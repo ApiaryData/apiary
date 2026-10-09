@@ -822,15 +822,32 @@ impl ApiaryNode {
     /// Join a colony: this Node's Bees will also plan, advertise, follow and
     /// answer the queries the colony runs across its Nodes, and the Node posts its
     /// presence on `floor`. `me` is the Node's id on the network.
+    ///
+    /// With a `mesh`, a Patch's output is also served from this Node's memory to
+    /// the colony's other Nodes over the exchange protocol; without one, Patches
+    /// hand each other batches through the comb store alone.
     pub fn join_colony(
         &self,
         me: apiary_net::NodeId,
         floor: Arc<dyn apiary_floor::Floor>,
+        mesh: Option<apiary_net::Mesh>,
         config: apiary_forage::ForageConfig,
     ) -> Arc<apiary_forage::Forage> {
-        let exchange: Arc<dyn apiary_plan::exchange::Exchange> = Arc::new(
+        let store_exchange: Arc<dyn apiary_plan::exchange::Exchange> = Arc::new(
             apiary_plan::exchange::StoreExchange::new(Arc::clone(&self.storage)),
         );
+        let (exchange, net_exchange): (Arc<dyn apiary_plan::exchange::Exchange>, _) = match mesh {
+            Some(mesh) => {
+                let net = apiary_forage::NetExchange::new(
+                    me,
+                    store_exchange,
+                    mesh,
+                    (self.config.memory_bytes / 8) as usize,
+                );
+                (Arc::clone(&net) as _, Some(net))
+            }
+            None => (store_exchange, None),
+        };
         let exec = Arc::new(apiary_forage::PlanExecutor::new(
             self.config.node_id.as_str(),
             Arc::clone(&self.query_ctx),
@@ -894,6 +911,7 @@ impl ApiaryNode {
             me,
             floor,
             forage: Arc::clone(&forage),
+            exchange: net_exchange,
         });
         info!(node = %me.fmt_short(), "Joined the colony");
         forage
@@ -906,6 +924,16 @@ impl ApiaryNode {
             .expect("colony link")
             .as_ref()
             .map(|link| Arc::clone(&link.forage))
+    }
+
+    /// How Patch outputs have reached this Node's Bees, if it serves them over the
+    /// exchange protocol.
+    pub fn exchange_counts(&self) -> Option<apiary_forage::NetExchangeCounts> {
+        self.colony_link
+            .read()
+            .expect("colony link")
+            .as_ref()
+            .and_then(|link| link.exchange.as_ref().map(|e| e.counts()))
     }
 
     /// How many other Nodes' presence this Node sees on its floor.
@@ -1059,6 +1087,7 @@ struct ColonyLink {
     me: apiary_net::NodeId,
     floor: Arc<dyn apiary_floor::Floor>,
     forage: Arc<apiary_forage::Forage>,
+    exchange: Option<Arc<apiary_forage::NetExchange>>,
 }
 
 /// A Node's Bees as the heartbeat reports them.
