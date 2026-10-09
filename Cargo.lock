@@ -194,6 +194,13 @@ dependencies = [
 [[package]]
 name = "apiary-colony"
 version = "0.1.2-alpha"
+dependencies = [
+ "apiary-core",
+ "async-trait",
+ "datafusion",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "apiary-comb"
@@ -298,6 +305,7 @@ dependencies = [
 name = "apiary-observe"
 version = "0.1.2-alpha"
 dependencies = [
+ "apiary-colony",
  "apiary-comb",
  "apiary-core",
  "apiary-net",
@@ -306,6 +314,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "datafusion",
  "futures",
  "object_store",
  "serde_json",
@@ -355,12 +364,15 @@ dependencies = [
 name = "apiary-runtime"
 version = "0.1.2-alpha"
 dependencies = [
+ "apiary-colony",
  "apiary-comb",
  "apiary-core",
  "apiary-plan",
  "arrow",
  "async-trait",
  "chrono",
+ "datafusion",
+ "futures",
  "serde",
  "serde_json",
  "tempfile",

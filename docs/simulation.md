@@ -30,7 +30,7 @@ reproduction: `Sim::run(<seed>, ...)` and read `run.trace.render()`.
 
 | Piece | What it does |
 |---|---|
-| `Sim` / `SimClock` | Virtual monotonic and wall time (wall starts 2026-01-01), the seed, seeded keys and Node ids. |
+| `Sim` / `SimClock` | Virtual monotonic and wall time (wall starts 2040-01-01, after any date a test runs on), the seed, seeded keys and Node ids. |
 | `SimStore` | An in-memory comb bucket with latency and jitter, a requests-per-second ceiling, transient errors, replies lost after the write landed, and outages (now, or scheduled). `Sim::store_view` gives each Node its own way into a shared bucket, so one Node can be cut off alone. |
 | `SimNetwork` | The colony's `Transport` over delayed in-memory streams: per-link latency, jitter, loss and bandwidth; site partitions and isolated Nodes; NAT kinds; a relay that is none, plain or TLS, and can fail. |
 | `Colony` | Real `Mesh`es (admission, revocation, control protocols) with seeded keys on a `SimNetwork`. |
@@ -51,15 +51,17 @@ takes one.
 
 ## Determinism: what the Node does to make it hold, and what it cannot
 
-The production code is unchanged apart from three seams.
+The production code is unchanged apart from two seams.
 
 - **`Env`** carries the clock and seed through a Node. Everything that sleeps or reads
   time goes through it. The sweeps found one leak (the registry stamped hives, boxes and
-  frames with the system clock); it now uses the Node's clock.
-- **`Env::with_inline_cpu`** (the simulator turns it on) runs queries on the Node's own
-  runtime instead of the Bee pool's blocking threads. A query parked on a blocking
-  thread, waiting for a simulated bucket, would hold virtual time still. Production
-  leaves it off. Phase 4's CPU threads will need the same thought.
+  frames with the system clock); it now uses the Node's clock. The Bees' own polling runs
+  on the runtime's timer, which in a simulation is the virtual clock.
+- Queries run as Forager Patches on the Node's runtime (see `docs/colony.md`), not on
+  blocking threads, so a query waiting for a simulated bucket does not hold virtual time
+  still. Real disks are the other thing to keep out of a scenario: a blocking read
+  finishes in real time, and the order several finish in would leak into the run, so
+  hosts in a simulation serve from memory.
 - **Delta's kernel** reads the log on a private thread while the caller waits, so the
   simulator keeps a simulated bucket's clock reads and latency consistent across that
   thread (a request there takes no virtual time) and records Delta's random data-file
@@ -72,7 +74,6 @@ The production code is unchanged apart from three seams.
   The drive protocol itself is simulated through the object-store interface (put,
   get, list, create-if-absent, across NAT, a lossy link and a relay outage), and Delta
   over the drive is covered over real QUIC by `apiary-net`'s tests and the Phase 2 gate.
-- **Bees and threshold roles**, until phase 4 builds them.
 - **Real time.** A simulated bucket's latency is virtual; nothing here measures speed.
 
 ## Seed sweeps

@@ -74,11 +74,21 @@ async fn test_node_bee_status_reflects_pool() {
 
     let node = ApiaryNode::start(config).await.unwrap();
 
-    let bees = node.bee_status().await;
+    // A new Node's Bees spend their first moments calibrating and looking round.
+    let mut bees = node.bee_status().await;
+    for _ in 0..100 {
+        if bees.iter().all(|b| b.state == "idle") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        bees = node.bee_status().await;
+    }
     assert_eq!(bees.len(), 4, "Should have 4 bees");
     for bee in &bees {
         assert_eq!(bee.state, "idle");
-        assert_eq!(bee.memory_budget, 32 * 1024 * 1024);
+        // A Bee's Patch is a whole query over four partitions, until a query is
+        // split into one Patch per partition.
+        assert_eq!(bee.memory_budget, 4 * 32 * 1024 * 1024);
         assert_eq!(bee.memory_used, 0);
     }
 

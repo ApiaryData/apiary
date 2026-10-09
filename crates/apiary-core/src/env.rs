@@ -14,7 +14,6 @@ use crate::rng::{SeededRng, StdSeededRng, hash_str};
 pub struct Env {
     clock: Arc<dyn Clock>,
     seed: u64,
-    inline_cpu: bool,
 }
 
 impl Env {
@@ -23,32 +22,12 @@ impl Env {
         Self {
             clock: SystemClock::shared(),
             seed: StdSeededRng::from_entropy().next_u64(),
-            inline_cpu: false,
         }
     }
 
     /// An environment with the given clock and seed.
     pub fn new(clock: Arc<dyn Clock>, seed: u64) -> Self {
-        Self {
-            clock,
-            seed,
-            inline_cpu: false,
-        }
-    }
-
-    /// Run CPU work on the Node's own runtime instead of the blocking pool.
-    ///
-    /// A simulation needs this: its virtual clock moves only while every task
-    /// waits, and a query parked on a blocking thread, waiting for a simulated
-    /// store, would hold the clock still forever. Production leaves it off.
-    pub fn with_inline_cpu(mut self) -> Self {
-        self.inline_cpu = true;
-        self
-    }
-
-    /// Whether CPU work runs on the Node's own runtime (see [`with_inline_cpu`](Self::with_inline_cpu)).
-    pub fn inline_cpu(&self) -> bool {
-        self.inline_cpu
+        Self { clock, seed }
     }
 
     /// The clock all time reads and sleeps go through.

@@ -47,6 +47,14 @@ pub const STAGE_COLUMN: &str = "_stage";
 /// The Delta `add` tag that records a Cell's ripeness.
 pub const STATE_TAG: &str = "apiary.state";
 
+/// The application id every commit that rewrites a Frame's files carries (capping,
+/// and a user's overwrite). Delta treats a compaction that changes no data as
+/// transparent to concurrent writers, so without this a capping commit that lands
+/// first, and an overwrite built from the table as it was before, would both
+/// succeed and the capped copy of the old data would outlive the overwrite. Two
+/// commits that share an application id conflict, so one of them yields.
+pub const REWRITE_FENCE: &str = "apiary.rewrite";
+
 /// How far a Cell has ripened. Other engines see only an ordinary Delta file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellState {
@@ -381,7 +389,7 @@ impl Comb {
             Vec::new(),
             SaveMode::Append,
             batch.num_rows(),
-            None,
+            Vec::new(),
         )
         .await
     }
@@ -414,7 +422,7 @@ impl Comb {
             Vec::new(),
             SaveMode::Append,
             ripened.num_rows(),
-            Some(transaction),
+            vec![transaction],
         )
         .await
     }
@@ -460,9 +468,11 @@ impl Comb {
         let adds = self
             .write_cells(table, batch, target_cell_size, state)
             .await?;
-        let removes: Vec<Action> = table
+        let snapshot = table
             .snapshot()
-            .map_err(|e| delta_err("Failed to read table snapshot", e))?
+            .map_err(|e| delta_err("Failed to read table snapshot", e))?;
+        let table_version = snapshot.version();
+        let removes: Vec<Action> = snapshot
             .log_data()
             .into_iter()
             .map(|file| Action::Remove(file.remove_action(true)))
@@ -473,7 +483,7 @@ impl Comb {
             removes,
             SaveMode::Overwrite,
             batch.num_rows(),
-            supersedes.map(|(app_id, version)| Transaction::new(app_id, version as i64)),
+            overwrite_transactions(supersedes, table_version as i64),
         )
         .await
     }
@@ -526,7 +536,7 @@ impl Comb {
         removes: Vec<Action>,
         mode: SaveMode,
         rows: usize,
-        transaction: Option<Transaction>,
+        transactions: Vec<Transaction>,
     ) -> Result<Committed> {
         let snapshot = table
             .snapshot()
@@ -534,7 +544,7 @@ impl Comb {
 
         // An empty write with a transaction still commits: the transaction is
         // the point (a deposit record, or a crop being superseded).
-        if adds.is_empty() && removes.is_empty() && transaction.is_none() {
+        if adds.is_empty() && removes.is_empty() && transactions.is_empty() {
             debug!("Empty write, nothing to commit");
             return Ok(Committed {
                 version: snapshot.version(),
@@ -550,12 +560,11 @@ impl Comb {
         let partition_by = (!partition_cols.is_empty()).then_some(partition_cols);
 
         let actions: Vec<Action> = adds.into_iter().map(Action::Add).chain(removes).collect();
-        let properties = match transaction {
-            Some(transaction) => {
-                CommitProperties::default().with_application_transaction(transaction)
-            }
-            None => CommitProperties::default(),
-        };
+        let properties = transactions
+            .into_iter()
+            .fold(CommitProperties::default(), |properties, transaction| {
+                properties.with_application_transaction(transaction)
+            });
         let finalized = CommitBuilder::from(properties)
             .with_max_retries(COMMIT_RETRIES)
             .with_actions(actions)
@@ -682,6 +691,20 @@ fn register_s3_handlers() {
 
 pub(crate) fn delta_err(context: impl Into<String>, e: DeltaTableError) -> ApiaryError {
     ApiaryError::storage(context, e)
+}
+
+/// What an overwrite records: that a crop's segments are superseded (if they are),
+/// and the rewrite fence, so a capping commit in the same race makes one of the
+/// two yield.
+fn overwrite_transactions(supersedes: Option<(&str, u64)>, table_version: i64) -> Vec<Transaction> {
+    supersedes
+        .map(|(app_id, version)| Transaction::new(app_id, version as i64))
+        .into_iter()
+        .chain(std::iter::once(Transaction::new(
+            REWRITE_FENCE,
+            table_version,
+        )))
+        .collect()
 }
 
 fn df_err(e: datafusion::error::DataFusionError) -> ApiaryError {

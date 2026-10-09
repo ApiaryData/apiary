@@ -63,6 +63,7 @@ fn cap_now() -> CapOptions {
         target_cell_size: CELL,
         max_age: Duration::ZERO,
         now_ms: now_ms(),
+        max_commits: None,
     }
 }
 
@@ -218,6 +219,7 @@ async fn capping_waits_for_a_group_to_fill_unless_it_is_old() {
         target_cell_size: CELL,
         max_age: Duration::from_secs(600),
         now_ms: now_ms(),
+        max_commits: None,
     };
     assert_eq!(comb.cap(&table, &young).await.unwrap().nectar_cells, 0);
 
@@ -507,4 +509,44 @@ async fn clearing_deletes_files_capping_removed() {
         .unwrap()
         .unwrap();
     assert_eq!(sensors(&read), vec![1, 2], "the table reads as before");
+}
+
+#[tokio::test]
+async fn an_overwrite_built_before_capping_cannot_leave_the_capped_copy_behind() {
+    let (_dir, comb, table) = setup(&[]).await;
+    for sensors in [vec![1], vec![2]] {
+        let t = reopen(&comb).await;
+        comb.append(&t, &batch("north", sensors, 1.0), CELL, CellState::Nectar)
+            .await
+            .unwrap();
+    }
+    drop(table);
+    // The user's overwrite is built from the table as it is now...
+    let before_capping = reopen(&comb).await;
+    // ...capping commits first...
+    let report = comb.cap(&reopen(&comb).await, &cap_now()).await.unwrap();
+    assert_eq!(report.capped_cells, 1);
+
+    // ...and the overwrite must not slip in after it: Delta treats the capping
+    // commit as changing no data, so only the rewrite fence stops the capped copy
+    // of the old rows from outliving the overwrite.
+    let refused = comb
+        .overwrite(
+            &before_capping,
+            &batch("north", vec![42], 2.0),
+            CELL,
+            CellState::Nectar,
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "the overwrite conflicts with the capping commit"
+    );
+
+    let read = comb
+        .read(&reopen(&comb).await, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sensors(&read), vec![1, 2], "nothing was half-replaced");
 }

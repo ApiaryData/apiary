@@ -107,6 +107,26 @@ pub struct NodeConfig {
     /// committed looks unneeded.
     #[serde(default = "default_clear_grace")]
     pub clear_grace: Duration,
+
+    /// The most commits a Frame's log takes per minute, deposits and capping
+    /// together. A streaming Frame ships larger, less frequent commits rather
+    /// than exceed it.
+    #[serde(default = "default_commit_budget_per_min")]
+    pub commit_budget_per_min: u32,
+
+    /// How different the Bees on this Node are from one another (the spread of
+    /// the log-normal their thresholds are drawn from). Zero makes them all the
+    /// same, which makes the Node's load swing more.
+    #[serde(default = "default_colony_diversity")]
+    pub colony_diversity: f64,
+}
+
+fn default_commit_budget_per_min() -> u32 {
+    30
+}
+
+fn default_colony_diversity() -> f64 {
+    0.5
 }
 
 fn default_cap_interval() -> Duration {
@@ -243,6 +263,8 @@ impl NodeConfig {
             retention: None,
             clear_interval: default_clear_interval(),
             clear_grace: default_clear_grace(),
+            commit_budget_per_min: default_commit_budget_per_min(),
+            colony_diversity: default_colony_diversity(),
         }
     }
 }

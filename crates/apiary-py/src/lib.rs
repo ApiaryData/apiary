@@ -782,7 +782,8 @@ impl Apiary {
     /// Return the status of each bee in the pool.
     ///
     /// Returns:
-    ///     list[dict]: A list of bee status dicts, each with bee_id, state, memory_used, memory_budget.
+    ///     list[dict]: A list of bee status dicts, each with bee_id, state, role,
+    ///     age (completed Patches), cooling, memory_used, memory_budget.
     fn bee_status(&self) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
@@ -802,6 +803,9 @@ impl Apiary {
                 dict.set_item("state", &s.state)?;
                 dict.set_item("memory_used", s.memory_used)?;
                 dict.set_item("memory_budget", s.memory_budget)?;
+                dict.set_item("role", &s.role)?;
+                dict.set_item("age", s.age)?;
+                dict.set_item("cooling", s.cooling)?;
                 list.append(dict)?;
             }
             Ok(list.into())
@@ -848,7 +852,8 @@ impl Apiary {
     ///
     /// Returns:
     ///     dict: Colony status with 'temperature' (0.0-1.0), 'regulation'
-    ///           ("cold"/"ideal"/"warm"/"hot"/"critical"), and 'setpoint'.
+    ///           ("cold"/"ideal"/"warm"/"hot"/"critical"), 'setpoint', and
+    ///           'roles' (how many Bees hold each role).
     fn colony_status(&self) -> PyResult<Py<PyAny>> {
         let guard = self
             .node
@@ -865,6 +870,11 @@ impl Apiary {
             dict.set_item("temperature", status.temperature)?;
             dict.set_item("regulation", &status.regulation)?;
             dict.set_item("setpoint", status.setpoint)?;
+            let roles = pyo3::types::PyDict::new(py);
+            for (role, count) in &status.roles {
+                roles.set_item(role, *count)?;
+            }
+            dict.set_item("roles", roles)?;
             Ok(dict.into())
         })
     }

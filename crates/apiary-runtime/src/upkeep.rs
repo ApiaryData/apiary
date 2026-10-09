@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use apiary_comb::{CapOptions, CapReport, Comb, HarvestReport, Recipe};
+use apiary_comb::{CapOptions, CapReport, Comb, HarvestReport, NectarSurvey, Recipe};
+
+use crate::budget::CommitBudget;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::{ApiaryError, Clock, CommitGate, FrameSchema, Result};
 
@@ -54,6 +56,7 @@ pub struct Upkeep {
     settings: UpkeepSettings,
     clock: Arc<dyn Clock>,
     gate: Option<CommitGate>,
+    budget: Option<Arc<CommitBudget>>,
 }
 
 impl Upkeep {
@@ -73,7 +76,14 @@ impl Upkeep {
             settings,
             clock,
             gate: None,
+            budget: None,
         }
+    }
+
+    /// Keep each Frame's capping commits within `budget`.
+    pub fn with_budget(mut self, budget: Arc<CommitBudget>) -> Self {
+        self.budget = Some(budget);
+        self
     }
 
     /// Ask `gate` before any pass that commits.
@@ -120,6 +130,28 @@ impl Upkeep {
         Ok(frames)
     }
 
+    /// Look at every Frame's nectar without touching it: how much there is and
+    /// how many groups the usual capping policy would cap now. A Scout's work.
+    pub async fn survey(&self) -> Result<NectarSurvey> {
+        let options = CapOptions {
+            target_cell_size: self.settings.target_cell_size,
+            max_age: self.settings.cap_max_age,
+            now_ms: self.now_ms(),
+            max_commits: None,
+        };
+        let mut total = NectarSurvey::default();
+        for f in self.frames().await? {
+            if let Some(table) = self
+                .comb
+                .open_frame_table(&f.hive, &f.box_name, &f.frame)
+                .await?
+            {
+                total.add(&self.comb.survey(&table, &options)?);
+            }
+        }
+        Ok(total)
+    }
+
     /// Cap the nectar of every Frame by the usual policy: a group is capped
     /// once it is half a standard Cell, or its oldest Cell is `cap_max_age` old.
     pub async fn cap_all(&self) -> Result<CapReport> {
@@ -137,10 +169,20 @@ impl Upkeep {
             target_cell_size: self.settings.target_cell_size,
             max_age,
             now_ms: self.now_ms(),
+            max_commits: None,
         };
         let mut total = CapReport::default();
         let mut first_error = None;
         for f in self.frames().await? {
+            // A Frame's commits are budgeted: capping gets what deposits left.
+            let allowed = self.budget.as_ref().map(|b| b.remaining(&name(&f)));
+            if allowed == Some(0) {
+                continue;
+            }
+            let options = CapOptions {
+                max_commits: allowed,
+                ..options.clone()
+            };
             let outcome = async {
                 match self
                     .comb
@@ -153,7 +195,12 @@ impl Upkeep {
             }
             .await;
             match outcome {
-                Ok(report) => total.add(&report),
+                Ok(report) => {
+                    if let Some(budget) = &self.budget {
+                        budget.record(&name(&f), report.commits);
+                    }
+                    total.add(&report);
+                }
                 Err(e) => {
                     warn!(frame = %name(&f), error = %e, "Capping failed; will retry");
                     first_error.get_or_insert(e);

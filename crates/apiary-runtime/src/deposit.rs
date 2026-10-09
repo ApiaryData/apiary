@@ -16,6 +16,7 @@ use arrow::record_batch::RecordBatch;
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::{debug, info, warn};
 
+use crate::budget::CommitBudget;
 use apiary_comb::{Comb, Crop, FrameCrop, FrameKey, Segment};
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::{ApiaryError, CommitGate, FrameSchema, Result};
@@ -49,6 +50,8 @@ pub struct Depositor {
     max_deposit_bytes: u64,
     /// Held while depositing, so deposits never overlap.
     busy: Mutex<()>,
+    /// Each Frame's commit budget, if the Node keeps one.
+    budget: Option<Arc<CommitBudget>>,
     /// Asked before every commit: a Node with no trustworthy clock must not
     /// stamp the Delta log. Ingest is unaffected; the crop needs no wall time.
     gate: Option<CommitGate>,
@@ -70,8 +73,15 @@ impl Depositor {
             target_cell_size,
             max_deposit_bytes: target_cell_size.saturating_mul(4).max(1),
             busy: Mutex::new(()),
+            budget: None,
             gate: None,
         }
+    }
+
+    /// Keep each Frame's deposits within `budget`.
+    pub fn with_budget(mut self, budget: Arc<CommitBudget>) -> Self {
+        self.budget = Some(budget);
+        self
     }
 
     /// Ask `gate` before every commit.
@@ -103,6 +113,46 @@ impl Depositor {
     pub async fn deposit_once(&self) -> Result<DepositReport> {
         let _busy = self.busy.lock().await;
         self.run(false).await
+    }
+
+    /// Deposit once, for each Frame whose commit budget allows it: a bounded
+    /// chunk of its oldest segments. A Frame out of budget keeps its crop, and
+    /// its next deposit takes more. Returns the report and whether any Frame
+    /// was held back.
+    pub async fn deposit_within_budget(&self) -> Result<(DepositReport, bool)> {
+        let _busy = self.busy.lock().await;
+        let mut total = DepositReport::default();
+        let mut held_back = false;
+        let mut first_error: Option<ApiaryError> = None;
+
+        let crop = Arc::clone(&self.crop);
+        for key in blocking(move || crop.frames()).await? {
+            let name = format!("{}.{}.{}", key.hive, key.box_name, key.frame);
+            if let Some(budget) = &self.budget
+                && budget.remaining(&name) == 0
+            {
+                held_back = true;
+                continue;
+            }
+            match self.deposit_frame(&key).await {
+                Ok(report) => {
+                    if report.segments > 0
+                        && let Some(budget) = &self.budget
+                    {
+                        budget.record(&name, 1);
+                    }
+                    total.add(&report);
+                }
+                Err(e) => {
+                    warn!(frame = %name, error = %e, "Deposit failed; the rows stay in the crop");
+                    first_error.get_or_insert(e);
+                }
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok((total, held_back)),
+        }
     }
 
     /// Deposit everything, repeating until no Frame has anything pending.

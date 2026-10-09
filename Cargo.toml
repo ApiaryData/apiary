@@ -29,6 +29,7 @@ apiary-runtime = { version = "0.1.2-alpha", path = "crates/apiary-runtime" }
 apiary-plan = { version = "0.1.2-alpha", path = "crates/apiary-plan" }
 apiary-entrance = { version = "0.1.2-alpha", path = "crates/apiary-entrance" }
 apiary-net = { version = "0.1.2-alpha", path = "crates/apiary-net" }
+apiary-colony = { version = "0.1.2-alpha", path = "crates/apiary-colony" }
 
 # Async
 tokio = { version = "1", features = ["full"] }
