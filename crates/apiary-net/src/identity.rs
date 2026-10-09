@@ -94,6 +94,14 @@ impl ApiaryKey {
         }
     }
 
+    /// An Apiary key from its 32 secret bytes (the simulator derives keys from
+    /// its seed so a run replays exactly).
+    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+        Self {
+            secret: SecretKey::from_bytes(bytes),
+        }
+    }
+
     /// Load an Apiary key from a file.
     pub fn load(path: &Path) -> Result<Self> {
         Ok(Self {

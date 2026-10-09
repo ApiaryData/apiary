@@ -297,6 +297,23 @@ dependencies = [
 [[package]]
 name = "apiary-observe"
 version = "0.1.2-alpha"
+dependencies = [
+ "apiary-comb",
+ "apiary-core",
+ "apiary-net",
+ "apiary-runtime",
+ "arrow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "object_store",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "apiary-plan"

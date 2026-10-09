@@ -126,6 +126,13 @@ pub struct ApiaryNode {
 }
 
 impl ApiaryNode {
+    /// Record something this Node did, as an event on the `apiary::mark` target.
+    /// Ordinary logging ignores them; the observation hive collects them into its
+    /// trace, with the Node and the virtual time, so a run can be read back.
+    fn mark(&self, kind: &str, detail: impl std::fmt::Display) {
+        tracing::info!(target: "apiary::mark", node = %self.config.node_id, kind, "{detail}");
+    }
+
     /// Start a new Apiary node with the given configuration.
     ///
     /// Initialises the appropriate storage backend based on `config.storage_uri`
@@ -188,7 +195,7 @@ impl ApiaryNode {
         );
 
         // Initialize registry (retry with backoff for transient S3 errors)
-        let registry = Arc::new(RegistryManager::new(Arc::clone(&storage)));
+        let registry = Arc::new(RegistryManager::new(Arc::clone(&storage)).with_clock(env.clock()));
         {
             let max_retries: u32 = 10;
             let mut delay = Duration::from_secs(1);
@@ -502,6 +509,10 @@ impl ApiaryNode {
             )
             .await?;
 
+        self.mark(
+            "write",
+            format_args!("{hive}.{box_name}.{frame_name} {} rows", batch.num_rows()),
+        );
         Ok(self.write_result(committed, start).await)
     }
 
@@ -551,6 +562,10 @@ impl ApiaryNode {
         if pending >= self.config.crop_max_bytes {
             self.deposit_wake.notify_one();
         }
+        self.mark(
+            "ingest",
+            format_args!("{hive}.{box_name}.{frame_name} {rows} rows"),
+        );
         Ok(IngestResult {
             rows,
             segment: segment.map(|s| s.seq),
@@ -561,7 +576,12 @@ impl ApiaryNode {
     /// Deposit everything in the crop into the comb now, rather than waiting
     /// for the interval.
     pub async fn flush_crop(&self) -> Result<DepositReport> {
-        self.depositor.flush().await
+        let result = self.depositor.flush().await;
+        match &result {
+            Ok(report) => self.mark("deposit", format_args!("{report:?}")),
+            Err(e) => self.mark("deposit", format_args!("failed: {e}")),
+        }
+        result
     }
 
     /// The schema a Frame's table stores (what an incoming batch is checked
@@ -581,19 +601,34 @@ impl ApiaryNode {
     /// than waiting for the interval: merge it to the standard Cell size, ripen
     /// it with the Frame's recipe and seal it.
     pub async fn cap_frames(&self) -> Result<CapReport> {
-        self.upkeep.cap_all_now().await
+        let result = self.upkeep.cap_all_now().await;
+        match &result {
+            Ok(report) => self.mark("cap", format_args!("{report:?}")),
+            Err(e) => self.mark("cap", format_args!("failed: {e}")),
+        }
+        result
     }
 
     /// Harvest capped Cells to the harvest store now (one paced pass per Frame).
     /// Fails if the node has no `harvest_uri`.
     pub async fn harvest(&self) -> Result<HarvestReport> {
-        self.upkeep.harvest_all().await
+        let result = self.upkeep.harvest_all().await;
+        match &result {
+            Ok(report) => self.mark("harvest", format_args!("{report:?}")),
+            Err(e) => self.mark("harvest", format_args!("failed: {e}")),
+        }
+        result
     }
 
     /// Clear now: retire harvested Cells past retention, then delete the files
     /// no table version needs.
     pub async fn clear_comb(&self) -> Result<ClearReport> {
-        self.upkeep.clear_all().await
+        let result = self.upkeep.clear_all().await;
+        match &result {
+            Ok(report) => self.mark("clear", format_args!("{report:?}")),
+            Err(e) => self.mark("clear", format_args!("failed: {e}")),
+        }
+        result
     }
 
     /// Set how a Frame ripens: the columns its Cells are sorted by, and the
@@ -753,7 +788,14 @@ impl ApiaryNode {
     /// - 3-part table names: hive.box.frame
     /// - 1-part names after USE HIVE / USE BOX
     pub async fn sql(&self, query: &str) -> Result<Vec<RecordBatch>> {
+        self.mark(
+            "query",
+            query.split_whitespace().collect::<Vec<_>>().join(" "),
+        );
         let query_ctx = Arc::clone(&self.query_ctx);
+        if self.env.inline_cpu() {
+            return query_ctx.sql(query).await;
+        }
         let query_owned = query.to_string();
         let rt_handle = tokio::runtime::Handle::current();
 
@@ -772,6 +814,9 @@ impl ApiaryNode {
     /// has columns).
     pub async fn sql_with_stages(&self, query: &str) -> Result<apiary_plan::QueryOutput> {
         let query_ctx = Arc::clone(&self.query_ctx);
+        if self.env.inline_cpu() {
+            return query_ctx.sql_with_stages(query).await;
+        }
         let query_owned = query.to_string();
         let rt_handle = tokio::runtime::Handle::current();
 

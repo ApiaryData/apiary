@@ -4,4 +4,23 @@ version.workspace = true
 edition.workspace = true
 description = "Apiary observation hive: deterministic simulator, fault injection and tracing"
 license.workspace = true
-publish = false # empty until phase 3 of the redesign
+publish = false # a test harness; nothing depends on it at run time
+
+[dependencies]
+apiary-core.workspace = true
+apiary-comb.workspace = true
+apiary-net.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+futures.workspace = true
+object_store.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+apiary-runtime.workspace = true
+arrow.workspace = true
+serde_json.workspace = true
+tempfile = "3"

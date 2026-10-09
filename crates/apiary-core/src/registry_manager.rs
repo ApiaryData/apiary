@@ -4,7 +4,7 @@
 //! using conditional writes for atomic updates.
 
 use crate::{
-    Result,
+    Clock, Result, SystemClock,
     error::ApiaryError,
     registry::{Box as ApiaryBox, Frame, Hive, Registry},
     storage::StorageBackend,
@@ -24,12 +24,23 @@ fn registry_state_key(version: u64) -> String {
 /// Registry manager for DDL operations.
 pub struct RegistryManager {
     storage: Arc<dyn StorageBackend>,
+    clock: Arc<dyn Clock>,
 }
 
 impl RegistryManager {
-    /// Create a new registry manager.
+    /// Create a new registry manager, on the system clock.
     pub fn new(storage: Arc<dyn StorageBackend>) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            clock: SystemClock::shared(),
+        }
+    }
+
+    /// Stamp hives, boxes and frames with this clock's time instead of the
+    /// system's, so a simulated run writes the same registry every time.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Load the latest registry from storage, or create a new one if none exists.
@@ -91,7 +102,7 @@ impl RegistryManager {
             }
 
             // Add the new hive
-            let hive = Hive::new();
+            let hive = Hive::new_at(self.clock.now_utc());
             registry.hives.insert(hive_name.to_string(), hive);
             registry.version = registry.next_version();
 
@@ -147,7 +158,7 @@ impl RegistryManager {
             }
 
             // Add the new box
-            let box_ = ApiaryBox::new();
+            let box_ = ApiaryBox::new_at(self.clock.now_utc());
             registry
                 .get_hive_mut(hive_name)
                 .unwrap()
@@ -223,11 +234,8 @@ impl RegistryManager {
             }
 
             // Add the new frame
-            let frame = if partition_by.is_empty() {
-                Frame::new(schema.clone())
-            } else {
-                Frame::with_partitioning(schema.clone(), partition_by.clone())
-            };
+            let mut frame = Frame::new_at(schema.clone(), self.clock.now_utc());
+            frame.partition_by = partition_by.clone();
 
             registry
                 .get_hive_mut(hive_name)
