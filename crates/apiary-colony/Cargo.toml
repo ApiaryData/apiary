@@ -2,6 +2,16 @@
 name = "apiary-colony"
 version.workspace = true
 edition.workspace = true
-description = "Bees, roles, response thresholds, dances, tremble and stop signals for Apiary"
+description = "Bees, roles chosen by response thresholds, and Node temperature for Apiary"
 license.workspace = true
-publish = false # empty until phase 4 of the redesign
+publish = false # not yet released on its own; the runtime depends on it
+
+[dependencies]
+apiary-core.workspace = true
+async-trait.workspace = true
+datafusion.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
