@@ -15,7 +15,7 @@ use std::time::Duration;
 use apiary_net::{ControlRouter, DRIVE_SERVICE, DriveService, DriveStore, Protocol};
 use apiary_observe::{Colony, Link, Nat, Placement, Relay, Sim};
 use futures::TryStreamExt;
-use object_store::local::LocalFileSystem;
+use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
 
@@ -33,7 +33,7 @@ struct Seen {
     put_after_outage_ok: bool,
 }
 
-async fn day_at_the_plant(sim: Sim, dir: std::path::PathBuf) -> Seen {
+async fn day_at_the_plant(sim: Sim) -> Seen {
     let net = sim.network();
     net.set_wan(Link {
         latency: Duration::from_millis(15),
@@ -62,8 +62,13 @@ async fn day_at_the_plant(sim: Sim, dir: std::path::PathBuf) -> Seen {
     // The host serves its drive; the pod, behind a symmetric NAT, reaches it
     // through the relay.
     let router = ControlRouter::new();
-    let drive: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new_with_prefix(&dir).unwrap());
-    router.add(DRIVE_SERVICE, Arc::new(DriveService::new(drive)));
+    // The host's drive is in memory: a real disk's blocking reads finish in real
+    // time, and the order they finish in would leak into the run.
+    let drive: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    router.add(
+        DRIVE_SERVICE,
+        Arc::new(DriveService::new(Arc::clone(&drive))),
+    );
     host.mesh.register(Protocol::Control, router);
     let store = DriveStore::new(pod.mesh.clone(), host.addr());
 
@@ -114,7 +119,7 @@ async fn day_at_the_plant(sim: Sim, dir: std::path::PathBuf) -> Seen {
         .put(&p("log/0003.json"), PutPayload::from("lost"))
         .await
         .is_err();
-    let landed_anyway = dir.join("log/0003.json").exists();
+    let landed_anyway = drive.head(&p("log/0003.json")).await.is_ok();
     assert!(!landed_anyway, "a refused write left nothing behind");
 
     net.set_relay_down(false);
@@ -134,8 +139,7 @@ async fn day_at_the_plant(sim: Sim, dir: std::path::PathBuf) -> Seen {
 
 #[test]
 fn the_drive_works_across_nat_and_a_relay_and_survives_an_outage() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let run = Sim::run(1, |sim| day_at_the_plant(sim, dir.path().to_path_buf()));
+    let run = Sim::run(1, day_at_the_plant);
     let seen = run.value;
     assert!(
         seen.big_object_intact,
@@ -156,10 +160,7 @@ fn the_drive_works_across_nat_and_a_relay_and_survives_an_outage() {
 
 #[test]
 fn a_day_at_the_plant_replays_exactly() {
-    let run = |seed| {
-        let dir = tempfile::TempDir::new().unwrap();
-        Sim::run(seed, |sim| day_at_the_plant(sim, dir.path().to_path_buf()))
-    };
+    let run = |seed| Sim::run(seed, day_at_the_plant);
     let (a, b) = (run(5), run(5));
     let (ea, eb) = (a.trace.events(), b.trace.events());
     if let Some(i) = (0..ea.len().min(eb.len())).find(|i| ea[*i] != eb[*i]) {

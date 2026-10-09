@@ -364,12 +364,15 @@ dependencies = [
 name = "apiary-runtime"
 version = "0.1.2-alpha"
 dependencies = [
+ "apiary-colony",
  "apiary-comb",
  "apiary-core",
  "apiary-plan",
  "arrow",
  "async-trait",
  "chrono",
+ "datafusion",
+ "futures",
  "serde",
  "serde_json",
  "tempfile",

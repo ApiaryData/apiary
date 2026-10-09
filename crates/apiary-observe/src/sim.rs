@@ -20,9 +20,12 @@ use crate::store::SimStore;
 use crate::trace::Trace;
 
 /// Where the wall clock starts in a simulation: after the commit gate's earliest
-/// plausible date, so Nodes commit, and nowhere near a real clock reading.
+/// plausible date, so Nodes commit, and after any real date a test will run on.
+/// Delta stamps its data files with the real clock, outside the simulation's
+/// control; a simulated clock that started in the past would see those files as
+/// coming from the future, and nectar would never look old enough to cap.
 pub fn wall_origin() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+    Utc.with_ymd_and_hms(2040, 1, 1, 0, 0, 0)
         .single()
         .expect("a valid date")
 }
@@ -169,7 +172,7 @@ impl Sim {
 
     /// The environment to start Nodes with: the virtual clock and the seed.
     pub fn env(&self) -> Env {
-        Env::new(self.clock.clone(), self.seed).with_inline_cpu()
+        Env::new(self.clock.clone(), self.seed)
     }
 
     /// The virtual clock.

@@ -210,14 +210,18 @@ impl Bee {
 
     /// Reconsider the role. Called only between Patches.
     ///
-    /// Within its dwell time a Bee may keep its role but not change it. Otherwise
+    /// Within its dwell time a Bee may keep its role but not change it, unless
+    /// nothing is calling the role it holds: dwell damps flapping between roles
+    /// that are both wanted, and a Bee idling in a role nobody needs would only
+    /// leave work waiting. Otherwise
     /// it looks at each role in an order of its own and engages the first whose
     /// probability `s² / (s² + θ²)` it draws; the forager stimulus is first damped
     /// by the share of foragers, `s / (1 + α F̂)`.
     pub fn reconsider(&mut self, stimuli: &Stimuli, now: Duration) -> Decision {
-        let may_change = self
-            .changed_at
-            .is_none_or(|at| now.saturating_sub(at) >= self.params.dwell);
+        let may_change = stimuli.get(self.role) <= 0.0
+            || self
+                .changed_at
+                .is_none_or(|at| now.saturating_sub(at) >= self.params.dwell);
         let mut order: Vec<Role> = if may_change {
             Role::ALL.to_vec()
         } else {
@@ -313,14 +317,44 @@ mod tests {
         let first = bee.reconsider(&ripe, Duration::from_secs(1));
         assert_eq!((first.role, first.engaged), (Role::Ripener, true));
 
-        // Something else calls, but the Bee is within its dwell: it keeps its role.
-        let scout = Stimuli::none().with(Role::Scout, 5.0);
-        let held = bee.reconsider(&scout, Duration::from_secs(5));
-        assert_eq!(held.role, Role::Ripener);
-        assert!(!held.engaged, "nothing calls the role it holds");
+        // Something else calls too, but the role it holds is still wanted and the
+        // Bee is within its dwell: it keeps its role.
+        let both = Stimuli::none()
+            .with(Role::Ripener, 5.0)
+            .with(Role::Scout, 5.0);
+        for _ in 0..20 {
+            let held = bee.reconsider(&both, Duration::from_secs(5));
+            assert_eq!((held.role, held.engaged), (Role::Ripener, true));
+        }
 
-        let moved = bee.reconsider(&scout, Duration::from_secs(12));
-        assert_eq!((moved.role, moved.engaged), (Role::Scout, true));
+        // Once the dwell is over it may move.
+        let mut moved = false;
+        for _ in 0..40 {
+            if bee.reconsider(&both, Duration::from_secs(12)).role == Role::Scout {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "after its dwell the Bee can take up the other role");
+    }
+
+    #[test]
+    fn a_bee_idling_in_a_role_nobody_needs_is_free_to_leave_it() {
+        let mut params = BeeParams::default();
+        params.thresholds.sigma = 0.0;
+        params.thresholds.median = 0.01;
+        params.dwell = Duration::from_secs(10);
+        let mut bee = Bee::new("n", 0, &env(3), params);
+        let first = bee.reconsider(
+            &Stimuli::none().with(Role::Ripener, 5.0),
+            Duration::from_secs(1),
+        );
+        assert_eq!(first.role, Role::Ripener);
+
+        // Ripening is no longer called for, but a query is: no waiting out the dwell.
+        let forage = Stimuli::none().with(Role::Forager, 5.0);
+        let d = bee.reconsider(&forage, Duration::from_secs(2));
+        assert_eq!((d.role, d.engaged), (Role::Forager, true));
     }
 
     #[test]

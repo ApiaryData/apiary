@@ -20,8 +20,6 @@ use apiary_core::error::ApiaryError;
 use apiary_core::storage::StorageBackend;
 use apiary_core::types::NodeId;
 
-use crate::bee::BeePool;
-use crate::behavioral::ColonyThermometer;
 use crate::cache::CellCache;
 
 // ---------------------------------------------------------------------------
@@ -46,6 +44,12 @@ pub struct HeartbeatLoad {
     pub memory_pressure: f64,
     pub queue_depth: usize,
     pub colony_temperature: f64,
+}
+
+/// Where a Node's current load is read from (its Bees).
+pub trait LoadSource: Send + Sync + 'static {
+    /// The load now.
+    fn load(&self) -> HeartbeatLoad;
 }
 
 /// Cache summary for a node.
@@ -78,9 +82,8 @@ pub struct HeartbeatWriter {
     node_id: NodeId,
     interval: Duration,
     version: AtomicU64,
-    bee_pool: Arc<BeePool>,
+    load: Arc<dyn LoadSource>,
     cell_cache: Arc<CellCache>,
-    thermometer: ColonyThermometer,
     cores: usize,
     memory_total_bytes: u64,
     memory_per_bee: u64,
@@ -89,11 +92,11 @@ pub struct HeartbeatWriter {
 }
 
 impl HeartbeatWriter {
-    /// Create a new heartbeat writer from a node config and bee pool.
+    /// Create a new heartbeat writer from a node config and the source of its load.
     pub fn new(
         storage: Arc<dyn StorageBackend>,
         config: &apiary_core::config::NodeConfig,
-        bee_pool: Arc<BeePool>,
+        load: Arc<dyn LoadSource>,
         cell_cache: Arc<CellCache>,
     ) -> Self {
         Self {
@@ -101,9 +104,8 @@ impl HeartbeatWriter {
             node_id: config.node_id.clone(),
             interval: config.heartbeat_interval,
             version: AtomicU64::new(0),
-            bee_pool,
+            load,
             cell_cache,
-            thermometer: ColonyThermometer::default(),
             cores: config.cores,
             memory_total_bytes: config.memory_bytes,
             memory_per_bee: config.memory_per_bee,
@@ -120,24 +122,7 @@ impl HeartbeatWriter {
 
     /// Collect a heartbeat snapshot from the current node state.
     pub async fn collect_heartbeat(&self) -> Heartbeat {
-        let statuses = self.bee_pool.status().await;
-        let bees_total = statuses.len();
-        let bees_busy = statuses.iter().filter(|s| s.state != "idle").count();
-        let bees_idle = bees_total - bees_busy;
-
-        let total_memory_used: u64 = statuses.iter().map(|s| s.memory_used).sum();
-        let total_budget: u64 = statuses.iter().map(|s| s.memory_budget).sum();
-        let memory_pressure = if total_budget > 0 {
-            total_memory_used as f64 / total_budget as f64
-        } else {
-            0.0
-        };
-
-        // Use the colony thermometer to measure system health
-        let colony_temperature = self.thermometer.measure(&self.bee_pool).await;
-
-        // Get queue depth from bee pool
-        let queue_depth = self.bee_pool.queue_size().await;
+        let load = self.load.load();
 
         let version = self.version.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -155,14 +140,7 @@ impl HeartbeatWriter {
                 memory_per_bee: self.memory_per_bee,
                 target_cell_size: self.target_cell_size,
             },
-            load: HeartbeatLoad {
-                bees_total,
-                bees_busy,
-                bees_idle,
-                memory_pressure,
-                queue_depth,
-                colony_temperature,
-            },
+            load,
             cache: HeartbeatCache {
                 size_bytes: cache_size,
                 cached_cells,
@@ -494,8 +472,24 @@ mod tests {
         config
     }
 
-    fn make_pool(config: &NodeConfig) -> Arc<BeePool> {
-        Arc::new(BeePool::new(config))
+    /// The load of a Node with `cores` idle Bees.
+    struct IdleBees(usize);
+
+    impl LoadSource for IdleBees {
+        fn load(&self) -> HeartbeatLoad {
+            HeartbeatLoad {
+                bees_total: self.0,
+                bees_busy: 0,
+                bees_idle: self.0,
+                memory_pressure: 0.0,
+                queue_depth: 0,
+                colony_temperature: 0.0,
+            }
+        }
+    }
+
+    fn make_pool(config: &NodeConfig) -> Arc<dyn LoadSource> {
+        Arc::new(IdleBees(config.cores))
     }
 
     async fn make_cache(config: &NodeConfig, storage: Arc<dyn StorageBackend>) -> Arc<CellCache> {

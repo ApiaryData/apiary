@@ -16,8 +16,8 @@ use arrow::array::{ArrayRef, StringArray};
 use arrow::compute::{cast, concat_batches};
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
-use deltalake::kernel::Action;
 use deltalake::kernel::transaction::{CommitBuilder, CommitProperties};
+use deltalake::kernel::{Action, Transaction};
 use deltalake::protocol::DeltaOperation;
 use deltalake::writer::RecordBatchWriter;
 use deltalake::{DeltaTable, DeltaTableError};
@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 use apiary_core::{ApiaryError, FrameSchema, Result};
 
 use crate::cell::{Capped, Cell, Nectar, Recipe, Ripe, RipenessChecks, state_of};
-use crate::comb::{CellState, Comb, delta_err};
+use crate::comb::{CellState, Comb, REWRITE_FENCE, delta_err};
 use crate::schema::conform_batch;
 
 /// A Cell's partition values, in a fixed order.
@@ -45,6 +45,9 @@ pub struct CapOptions {
     pub max_age: Duration,
     /// The time now, in milliseconds since the epoch.
     pub now_ms: i64,
+    /// The most capping commits this pass may make (one per group), if limited.
+    /// A Frame's commit budget is spent on deposits and capping alike.
+    pub max_commits: Option<usize>,
 }
 
 /// What a capping pass did to one Frame.
@@ -58,6 +61,8 @@ pub struct CapReport {
     pub rows: u64,
     /// Groups abandoned because a user write got in the way.
     pub aborted: usize,
+    /// Commits made (one per group capped).
+    pub commits: usize,
 }
 
 impl CapReport {
@@ -67,6 +72,27 @@ impl CapReport {
         self.capped_cells += other.capped_cells;
         self.rows += other.rows;
         self.aborted += other.aborted;
+        self.commits += other.commits;
+    }
+}
+
+/// What a read-only look at a Frame's nectar found.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NectarSurvey {
+    /// Nectar Cells in the current table version.
+    pub nectar_cells: usize,
+    /// Bytes across them.
+    pub nectar_bytes: u64,
+    /// Groups the capping policy would cap now.
+    pub ready_groups: usize,
+}
+
+impl NectarSurvey {
+    /// Add another survey's counts.
+    pub fn add(&mut self, other: &NectarSurvey) {
+        self.nectar_cells += other.nectar_cells;
+        self.nectar_bytes += other.nectar_bytes;
+        self.ready_groups += other.ready_groups;
     }
 }
 
@@ -136,57 +162,39 @@ impl Comb {
         let partition_by = snapshot.metadata().partition_columns().to_vec();
         let schema = table_arrow_schema(table)?;
 
-        #[allow(deprecated)]
-        let mut nectar: Vec<Cell<Nectar>> = snapshot
-            .log_data()
-            .into_iter()
-            .filter_map(|file| Cell::from_add(file.add_action()))
-            .collect();
-        nectar.sort_by(|a, b| {
-            a.modified_ms()
-                .cmp(&b.modified_ms())
-                .then(a.path().cmp(b.path()))
-        });
-
-        let mut by_partition: BTreeMap<PartitionKey, Vec<Cell<Nectar>>> = BTreeMap::new();
-        for cell in nectar {
-            let mut key: Vec<_> = cell
-                .partition_values()
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            key.sort();
-            by_partition.entry(key).or_default().push(cell);
-        }
-
-        let max_age_ms = options.max_age.as_millis() as i64;
         let store = table.log_store().object_store(None);
         let mut report = CapReport::default();
+        // The table as the next commit sees it. Each group's commit carries the
+        // rewrite fence, so it would conflict with the group before it unless the
+        // base moves up to include that one.
+        let mut base = table.clone();
 
-        for cells in by_partition.into_values() {
-            for group in chunk(cells, options.target_cell_size) {
-                let bytes: u64 = group.iter().map(Cell::bytes).sum();
-                let oldest = group.iter().map(Cell::modified_ms).min().unwrap_or(0);
-                let full = bytes >= options.target_cell_size / 2;
-                let stale = options.now_ms - oldest >= max_age_ms;
-                if !(full || stale) {
-                    continue;
+        for group in nectar_groups(table, options)? {
+            if !group_is_ready(&group, options) {
+                continue;
+            }
+            if options.max_commits.is_some_and(|max| report.commits >= max) {
+                break;
+            }
+            match self
+                .cap_group(
+                    &base,
+                    &store,
+                    &schema,
+                    &partition_by,
+                    &recipe,
+                    options,
+                    group,
+                )
+                .await?
+            {
+                Some(done) => {
+                    report.add(&done);
+                    base.update_incremental(None)
+                        .await
+                        .map_err(|e| delta_err("Failed to follow our own capping commit", e))?;
                 }
-                match self
-                    .cap_group(
-                        table,
-                        &store,
-                        &schema,
-                        &partition_by,
-                        &recipe,
-                        options,
-                        group,
-                    )
-                    .await?
-                {
-                    Some(done) => report.add(&done),
-                    None => report.aborted += 1,
-                }
+                None => report.aborted += 1,
             }
         }
         if report.nectar_cells > 0 {
@@ -198,6 +206,20 @@ impl Comb {
             );
         }
         Ok(report)
+    }
+
+    /// Look at a Frame's nectar without touching it: how much there is, and how
+    /// many groups the capping policy would cap now. A Scout's work.
+    pub fn survey(&self, table: &DeltaTable, options: &CapOptions) -> Result<NectarSurvey> {
+        let mut survey = NectarSurvey::default();
+        for group in nectar_groups(table, options)? {
+            survey.nectar_cells += group.len();
+            survey.nectar_bytes += group.iter().map(Cell::bytes).sum::<u64>();
+            if group_is_ready(&group, options) {
+                survey.ready_groups += 1;
+            }
+        }
+        Ok(survey)
     }
 
     /// Cap one group. `None` if a user write got in the way.
@@ -240,6 +262,7 @@ impl Comb {
             capped_cells: capped.len(),
             rows: ripened.num_rows() as u64,
             aborted: 0,
+            commits: 1,
         };
         let new_paths: Vec<String> = capped.iter().map(|c| c.path().to_string()).collect();
         match self.commit_capping(table, group, capped).await {
@@ -275,24 +298,30 @@ impl Comb {
             .collect();
         actions.extend(capped.into_iter().map(|c| Action::Add(c.into_add())));
 
-        let finalized = CommitBuilder::from(CommitProperties::default())
-            .with_actions(actions)
-            .build(
-                Some(snapshot),
-                table.log_store(),
-                DeltaOperation::Optimize {
-                    predicate: None,
-                    target_size: 0,
-                },
-            )
-            .await
-            .map_err(|e| {
-                if is_conflict(&e) {
-                    CapError::Conflict(e)
-                } else {
-                    CapError::Other(delta_err("Failed to commit capping", e))
-                }
-            })?;
+        // The fence makes this commit and an overwrite built from the table before
+        // it conflict, whichever lands second: Delta ignores a compaction's
+        // removals, so otherwise the capped copy of what the user replaced would
+        // stay.
+        let fence = Transaction::new(REWRITE_FENCE, snapshot.version() as i64);
+        let finalized =
+            CommitBuilder::from(CommitProperties::default().with_application_transaction(fence))
+                .with_actions(actions)
+                .build(
+                    Some(snapshot),
+                    table.log_store(),
+                    DeltaOperation::Optimize {
+                        predicate: None,
+                        target_size: 0,
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    if is_conflict(&e) {
+                        CapError::Conflict(e)
+                    } else {
+                        CapError::Other(delta_err("Failed to commit capping", e))
+                    }
+                })?;
         Ok(finalized.version() as u64)
     }
 
@@ -493,6 +522,50 @@ impl Comb {
 }
 
 /// The Arrow schema of a table's data files.
+/// A Frame's nectar, oldest first, grouped by partition and cut into groups of
+/// up to the standard Cell size.
+fn nectar_groups(table: &DeltaTable, options: &CapOptions) -> Result<Vec<Vec<Cell<Nectar>>>> {
+    let snapshot = table
+        .snapshot()
+        .map_err(|e| delta_err("Failed to read table snapshot", e))?;
+    #[allow(deprecated)]
+    let mut nectar: Vec<Cell<Nectar>> = snapshot
+        .log_data()
+        .into_iter()
+        .filter_map(|file| Cell::from_add(file.add_action()))
+        .collect();
+    nectar.sort_by(|a, b| {
+        a.modified_ms()
+            .cmp(&b.modified_ms())
+            .then(a.path().cmp(b.path()))
+    });
+
+    let mut by_partition: BTreeMap<PartitionKey, Vec<Cell<Nectar>>> = BTreeMap::new();
+    for cell in nectar {
+        let mut key: Vec<_> = cell
+            .partition_values()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        key.sort();
+        by_partition.entry(key).or_default().push(cell);
+    }
+    Ok(by_partition
+        .into_values()
+        .flat_map(|cells| chunk(cells, options.target_cell_size))
+        .collect())
+}
+
+/// Whether a group is at least half a standard Cell, or its oldest Cell is
+/// older than `max_age`.
+fn group_is_ready(group: &[Cell<Nectar>], options: &CapOptions) -> bool {
+    let bytes: u64 = group.iter().map(Cell::bytes).sum();
+    let oldest = group.iter().map(Cell::modified_ms).min().unwrap_or(0);
+    let full = bytes >= options.target_cell_size / 2;
+    let stale = options.now_ms - oldest >= options.max_age.as_millis() as i64;
+    full || stale
+}
+
 fn table_arrow_schema(table: &DeltaTable) -> Result<arrow::datatypes::SchemaRef> {
     Ok(RecordBatchWriter::for_table(table)
         .map_err(|e| delta_err("Failed to read the table schema", e))?

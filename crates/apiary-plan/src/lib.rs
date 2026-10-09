@@ -25,6 +25,9 @@ use arrow::array::StringArray;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{Column, TableReference};
+use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::memory_pool::MemoryPool;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::{Expr, cast, lit};
 use datafusion::prelude::SessionContext;
 
@@ -101,6 +104,11 @@ impl ApiaryQueryContext {
         })
     }
 
+    /// The Node's memory pool, which Bees take shares of.
+    pub fn memory_pool(&self) -> Arc<dyn MemoryPool> {
+        Arc::clone(&self.session.runtime_env().memory_pool)
+    }
+
     fn selection(&self) -> Selection {
         self.selection.lock().expect("selection poisoned").clone()
     }
@@ -115,13 +123,26 @@ impl ApiaryQueryContext {
 
     /// A context for one query: the shared runtime and catalogue, with this
     /// moment's hive and box as the default namespace.
-    fn query_session(&self) -> SessionContext {
+    fn query_session(&self, pool: Option<Arc<dyn MemoryPool>>) -> Result<SessionContext> {
         let selection = self.selection();
         let mut state = self.session.state();
         let catalog = &mut state.config_mut().options_mut().catalog;
         catalog.default_catalog = selection.hive.unwrap_or_else(|| NO_HIVE.to_string());
         catalog.default_schema = selection.box_name.unwrap_or_else(|| NO_BOX.to_string());
-        SessionContext::new_with_state(state)
+        if let Some(pool) = pool {
+            // Run this query under the pool it was given (a Bee's share of the
+            // Node's), keeping the Node's spill directory, caches and stores.
+            let runtime = RuntimeEnvBuilder::from_runtime_env(state.runtime_env())
+                .with_memory_pool(pool)
+                .build_arc()
+                .map_err(|e| ApiaryError::Internal {
+                    message: format!("Failed to build the query's runtime: {e}"),
+                })?;
+            state = SessionStateBuilder::new_from_existing(state)
+                .with_runtime_env(runtime)
+                .build();
+        }
+        Ok(SessionContext::new_with_state(state))
     }
 
     /// Execute a SQL query and return results as RecordBatches.
@@ -137,6 +158,28 @@ impl ApiaryQueryContext {
 
     /// Execute a SQL query and report how many rows each stage gave it.
     pub async fn sql_with_stages(&self, query: &str) -> Result<QueryOutput> {
+        self.sql_with_stages_in(query, None).await
+    }
+
+    /// Execute a SQL query under `pool` (a Bee's share of the Node's memory
+    /// pool): operators that would take more than the share are refused, and
+    /// spill.
+    pub async fn sql_in(
+        &self,
+        query: &str,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Vec<RecordBatch>> {
+        self.sql_with_stages_in(query, pool)
+            .await
+            .map(|output| output.batches)
+    }
+
+    /// [`sql_with_stages`](Self::sql_with_stages) under `pool`.
+    pub async fn sql_with_stages_in(
+        &self,
+        query: &str,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<QueryOutput> {
         let trimmed = query.trim();
 
         // Detect and block unsupported DML
@@ -158,7 +201,7 @@ impl ApiaryQueryContext {
         }
 
         // Standard SQL: resolve frame references, register tables, execute
-        self.execute_standard_sql(trimmed).await
+        self.execute_standard_sql(trimmed, pool).await
     }
 
     /// Handle custom SQL commands (USE, SHOW, DESCRIBE).
@@ -347,12 +390,16 @@ impl ApiaryQueryContext {
     /// Execute standard SQL on the Node's session. DataFusion resolves
     /// `hive.box.frame` (or a shorter name, after USE HIVE / USE BOX) through
     /// the catalogue and scans each Frame's Delta table lazily.
-    async fn execute_standard_sql(&self, sql: &str) -> Result<QueryOutput> {
+    async fn execute_standard_sql(
+        &self,
+        sql: &str,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<QueryOutput> {
         let mut timings = timing::QueryTimings::begin_from_sql(sql);
 
         // --- parse phase ---
         let parse_start = timings.as_ref().map(|t| t.start_phase());
-        let session = self.query_session();
+        let session = self.query_session(pool)?;
         let state = session.state();
         let dialect = state.config_options().sql_parser.dialect;
         let statement = state
@@ -423,7 +470,7 @@ impl ApiaryQueryContext {
         frame: &str,
         partition_filter: Option<&HashMap<String, String>>,
     ) -> Result<Option<RecordBatch>> {
-        let session = self.query_session();
+        let session = self.query_session(None)?;
         let to_error = |e| into_apiary_error(e, "Failed to read frame");
         let mut df = session
             .table(TableReference::full(hive, box_name, frame))

@@ -64,6 +64,10 @@ pub struct NodeSection {
     pub retention_secs: Option<u64>,
     pub clear_interval_secs: Option<u64>,
     pub clear_grace_secs: Option<u64>,
+    /// The most commits a Frame's log takes per minute.
+    pub commit_budget_per_min: Option<u32>,
+    /// How different the Bees are from one another (default 0.5).
+    pub colony_diversity: Option<f64>,
 }
 
 /// `[flight]`: the Flight SQL entrance.
@@ -167,6 +171,12 @@ impl FileConfig {
         }
         if let Some(v) = n.clear_grace_secs {
             config.clear_grace = secs(v);
+        }
+        if let Some(v) = n.commit_budget_per_min {
+            config.commit_budget_per_min = v;
+        }
+        if let Some(v) = n.colony_diversity {
+            config.colony_diversity = v;
         }
         config
     }

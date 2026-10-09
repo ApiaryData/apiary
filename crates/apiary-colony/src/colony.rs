@@ -10,7 +10,7 @@
 //! memory reserved over the pool, the queue of waiting Patches over what the
 //! Node tolerates, and the SoC's heat.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -189,6 +189,8 @@ struct Shared {
     foraging: AtomicUsize,
     slots: Vec<Slot>,
     wake: Notify,
+    /// Counts nudges, so one that arrives while a Bee is busy is not lost.
+    wake_count: AtomicU64,
     stop: watch::Sender<bool>,
 }
 
@@ -211,16 +213,27 @@ impl Shared {
         self.foraging.load(Ordering::Relaxed) as f64 / self.slots.len().max(1) as f64
     }
 
-    /// Wait for a nudge, the next look, or the end.
-    async fn wait(&self, calling: bool, stop: &mut watch::Receiver<bool>) {
+    /// Wait for a nudge, the next look, or the end. `seen` is the nudge count
+    /// the Bee read before it looked: a nudge since then ends the wait at once.
+    async fn wait(&self, calling: bool, seen: u64, stop: &mut watch::Receiver<bool>) {
         let poll = if calling {
             self.engaged_poll
         } else {
             self.idle_poll
         };
+        let nudged = self.wake.notified();
+        tokio::pin!(nudged);
+        nudged.as_mut().enable();
+        if self.wake_count.load(Ordering::Acquire) != seen {
+            return;
+        }
+        // The poll is the scheduler's own pacing, not the Node's notion of time, so
+        // it runs on the runtime's timer: the same as the Node's clock in
+        // production and in a simulation (whose virtual clock is the runtime's),
+        // and still moving when a test holds the Node's clock still.
         tokio::select! {
-            () = self.wake.notified() => {}
-            () = self.clock.sleep(poll) => {}
+            () = nudged => {}
+            () = tokio::time::sleep(poll) => {}
             _ = stop.changed() => {}
         }
     }
@@ -300,6 +313,7 @@ impl Colony {
             foraging: AtomicUsize::new(0),
             slots,
             wake: Notify::new(),
+            wake_count: AtomicU64::new(0),
             stop,
         });
         let tasks = bees
@@ -322,6 +336,7 @@ impl Colony {
 
     /// Tell the Bees something new is calling.
     pub fn wake(&self) {
+        self.shared.wake_count.fetch_add(1, Ordering::Release);
         self.shared.wake.notify_waiters();
     }
 
@@ -362,7 +377,7 @@ impl Colony {
     /// Stop the Bees. A Patch in flight finishes first.
     pub async fn shutdown(&self) {
         let _ = self.shared.stop.send(true);
-        self.shared.wake.notify_waiters();
+        self.wake();
         let tasks: Vec<_> = std::mem::take(&mut *self.tasks.lock().expect("task lock"));
         for task in tasks {
             let _ = task.await;
@@ -377,6 +392,7 @@ async fn run_bee(mut bee: Bee, shared: Arc<Shared>, mut stop: watch::Receiver<bo
         if *stop.borrow() {
             return;
         }
+        let seen = shared.wake_count.load(Ordering::Acquire);
 
         // A new Bee's first Patches measure itself.
         if bee.needs_calibration() {
@@ -393,7 +409,7 @@ async fn run_bee(mut bee: Bee, shared: Arc<Shared>, mut stop: watch::Receiver<bo
         // Too hot: stop claiming, finish nothing new, look again later.
         if !bee.may_claim(shared.temperature()) {
             shared.snapshot(&bee, false);
-            shared.wait(false, &mut stop).await;
+            shared.wait(false, seen, &mut stop).await;
             continue;
         }
 
@@ -406,7 +422,9 @@ async fn run_bee(mut bee: Bee, shared: Arc<Shared>, mut stop: watch::Receiver<bo
         let decision = bee.reconsider(&stimuli, now);
         shared.snapshot(&bee, false);
         if !decision.engaged {
-            shared.wait(stimuli.strongest() > 0.0, &mut stop).await;
+            shared
+                .wait(stimuli.strongest() > 0.0, seen, &mut stop)
+                .await;
             continue;
         }
 
@@ -432,7 +450,7 @@ async fn run_bee(mut bee: Bee, shared: Arc<Shared>, mut stop: watch::Receiver<bo
         if !worked {
             // The stimulus called but there was nothing to take: look again soon,
             // not at once.
-            shared.wait(true, &mut stop).await;
+            shared.wait(true, seen, &mut stop).await;
         }
     }
 }

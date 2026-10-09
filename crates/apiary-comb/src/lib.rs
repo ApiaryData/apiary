@@ -16,12 +16,14 @@ pub mod schema;
 pub mod upkeep;
 
 pub use cell::{Capped, Cell, Nectar, Recipe, Ripe, RipenessChecks};
-pub use comb::{CellState, Comb, Committed, FrameStats, STAGE_COLUMN, STATE_TAG, query_session};
+pub use comb::{
+    CellState, Comb, Committed, FrameStats, REWRITE_FENCE, STAGE_COLUMN, STATE_TAG, query_session,
+};
 pub use crop::{Crop, FrameCrop, FrameKey, Segment};
 pub use deltalake::DeltaTable;
 pub use local::LocalBackend;
 pub use s3::S3Backend;
-pub use upkeep::{CapOptions, CapReport, HarvestReport};
+pub use upkeep::{CapOptions, CapReport, HarvestReport, NectarSurvey};
 
 #[cfg(test)]
 mod comb_tests;
