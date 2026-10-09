@@ -31,6 +31,7 @@ apiary-entrance = { version = "0.1.2-alpha", path = "crates/apiary-entrance" }
 apiary-net = { version = "0.1.2-alpha", path = "crates/apiary-net" }
 apiary-colony = { version = "0.1.2-alpha", path = "crates/apiary-colony" }
 apiary-floor = { version = "0.1.2-alpha", path = "crates/apiary-floor" }
+apiary-forage = { version = "0.1.2-alpha", path = "crates/apiary-forage" }
 
 # Async
 tokio = { version = "1", features = ["full"] }

@@ -19,7 +19,9 @@ pub mod entry;
 pub mod gossip;
 pub mod state;
 
-pub use entry::{Entry, EntryBody, EntryKey, EntryKind, Presence, WireEntry};
+pub use entry::{
+    ClaimState, Dance, Entry, EntryBody, EntryKey, EntryKind, Presence, SoftClaim, WireEntry,
+};
 pub use gossip::{GossipConfig, GossipCounts, GossipFloor};
 pub use state::{InMemoryFloor, MAX_TTL};
 
@@ -36,6 +38,12 @@ pub trait Floor: Send + Sync + 'static {
 
     /// Every live entry of `kind`.
     fn entries(&self, kind: EntryKind) -> Vec<Entry>;
+
+    /// Every live entry of `kind` whose target starts with `prefix`.
+    fn entries_for(&self, kind: EntryKind, prefix: &str) -> Vec<Entry>;
+
+    /// Now, on the clock entries' lifetimes are measured against, in milliseconds.
+    fn now(&self) -> apiary_core::Millis;
 
     /// Up to `k` live entries of `kind` at random, from this Node's copy only.
     fn sample(&self, kind: EntryKind, k: usize, rng: &mut dyn SeededRng) -> Vec<Entry>;
@@ -56,6 +64,14 @@ impl Floor for InMemoryFloor {
 
     fn entries(&self, kind: EntryKind) -> Vec<Entry> {
         InMemoryFloor::entries(self, kind)
+    }
+
+    fn entries_for(&self, kind: EntryKind, prefix: &str) -> Vec<Entry> {
+        InMemoryFloor::entries_for(self, kind, prefix)
+    }
+
+    fn now(&self) -> apiary_core::Millis {
+        InMemoryFloor::now(self)
     }
 
     fn sample(&self, kind: EntryKind, k: usize, rng: &mut dyn SeededRng) -> Vec<Entry> {

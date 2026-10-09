@@ -53,8 +53,12 @@ pub struct GossipConfig {
     /// The colony whose floor this is. Peers in other colonies are not gossiped
     /// with: a colony's floor is its own.
     pub colony: String,
-    /// Time between rounds.
+    /// Time between rounds when nothing has changed.
     pub interval: Duration,
+    /// When something changes, how long to wait for more before sending news. News
+    /// does not wait for the next round, because a claim the rest of the colony
+    /// hears of late is a Patch two Bees may run.
+    pub coalesce: Duration,
     /// Every this many rounds, a push carries a full digest.
     pub anti_entropy_every: u32,
     /// Seeds the jitter that keeps Nodes from gossiping in step.
@@ -67,6 +71,7 @@ impl GossipConfig {
         Self {
             colony: colony.into(),
             interval: Duration::from_millis(250),
+            coalesce: Duration::from_millis(15),
             anti_entropy_every: 5,
             seed: 0,
         }
@@ -192,6 +197,14 @@ impl Floor for GossipFloor {
         self.shared.floor.entries(kind)
     }
 
+    fn entries_for(&self, kind: EntryKind, prefix: &str) -> Vec<Entry> {
+        self.shared.floor.entries_for(kind, prefix)
+    }
+
+    fn now(&self) -> apiary_core::Millis {
+        self.shared.floor.now()
+    }
+
     fn sample(&self, kind: EntryKind, k: usize, rng: &mut dyn SeededRng) -> Vec<Entry> {
         self.shared.floor.sample(kind, k, rng)
     }
@@ -244,7 +257,13 @@ async fn run(shared: Arc<Shared>, clock: Arc<dyn Clock>) {
     loop {
         // Up to a fifth either way, so Nodes started together do not stay in step.
         let jitter = 0.8 + 0.4 * rng.next_f64();
-        clock.sleep(shared.cfg.interval.mul_f64(jitter)).await;
+        tokio::select! {
+            () = clock.sleep(shared.cfg.interval.mul_f64(jitter)) => {}
+            () = shared.floor.changed().notified() => {
+                // News: gather what else is about to change, then send.
+                clock.sleep(shared.cfg.coalesce).await;
+            }
+        }
         shared.floor.sweep();
         shared.stats.rounds.fetch_add(1, Ordering::Relaxed);
 

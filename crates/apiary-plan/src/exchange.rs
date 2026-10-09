@@ -72,6 +72,9 @@ pub enum Completed {
     Won,
     /// Another attempt got there first; this one's work is surplus.
     Lost(Completion),
+    /// The query was answered and tidied away while this attempt ran; its work is
+    /// surplus and has been removed.
+    Moot,
 }
 
 /// Where stages hand batches to each other.
@@ -88,6 +91,9 @@ pub trait Exchange: Send + Sync + 'static {
 
     /// Read output partition `output` of a completed Patch.
     async fn get(&self, patch: &PatchKey, done: &Completion, output: usize) -> Result<Bytes>;
+
+    /// The Patches of `stage` that are complete.
+    async fn completed(&self, query: &str, stage: usize) -> Result<Vec<usize>>;
 
     /// Remove everything a query left behind.
     async fn clear(&self, query: &str) -> Result<()>;
@@ -115,6 +121,21 @@ impl StoreExchange {
     fn done(patch: &PatchKey) -> String {
         format!("{}/done.json", Self::dir(patch))
     }
+
+    /// Left behind when a query is cleared, so an attempt still running cannot
+    /// complete a Patch of a query that has been answered.
+    fn finished(query: &str) -> String {
+        format!("outputs/{query}/finished")
+    }
+
+    async fn discard(&self, patch: &PatchKey, record: &Completion) -> Result<()> {
+        for output in 0..record.rows.len() {
+            self.store
+                .delete(&Self::file(patch, &record.attempt, output))
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 fn codec(e: serde_json::Error) -> ApiaryError {
@@ -138,6 +159,12 @@ impl Exchange for StoreExchange {
             .put_if_not_exists(&Self::done(patch), Bytes::from(body))
             .await?
         {
+            // The query may have been answered and cleared while this ran.
+            if self.store.exists(&Self::finished(&patch.query)).await? {
+                self.store.delete(&Self::done(patch)).await?;
+                self.discard(patch, record).await?;
+                return Ok(Completed::Moot);
+            }
             return Ok(Completed::Won);
         }
         match self.completion(patch).await? {
@@ -145,11 +172,7 @@ impl Exchange for StoreExchange {
             Some(existing) if existing.attempt == record.attempt => Ok(Completed::Won),
             Some(existing) => {
                 // Surplus work: take it away.
-                for output in 0..record.rows.len() {
-                    self.store
-                        .delete(&Self::file(patch, &record.attempt, output))
-                        .await?;
-                }
+                self.discard(patch, record).await?;
                 Ok(Completed::Lost(existing))
             }
             None => Err(ApiaryError::Internal {
@@ -174,9 +197,35 @@ impl Exchange for StoreExchange {
             .await
     }
 
+    async fn completed(&self, query: &str, stage: usize) -> Result<Vec<usize>> {
+        let prefix = format!("outputs/{query}/{stage}/");
+        let mut done: Vec<usize> = self
+            .store
+            .list(&prefix)
+            .await?
+            .iter()
+            .filter_map(|key| {
+                key.strip_prefix(&prefix)?
+                    .strip_suffix("/done.json")?
+                    .parse()
+                    .ok()
+            })
+            .collect();
+        done.sort_unstable();
+        Ok(done)
+    }
+
     async fn clear(&self, query: &str) -> Result<()> {
+        // The marker first: an attempt that completes a Patch from here on finds it,
+        // and one that completed before it is among the keys listed below.
+        let marker = Self::finished(query);
+        self.store
+            .put(&marker, Bytes::from_static(b"finished"))
+            .await?;
         for key in self.store.list(&format!("outputs/{query}/")).await? {
-            self.store.delete(&key).await?;
+            if key != marker {
+                self.store.delete(&key).await?;
+            }
         }
         Ok(())
     }

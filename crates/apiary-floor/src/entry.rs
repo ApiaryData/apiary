@@ -18,6 +18,10 @@ use apiary_net::NodeId;
 pub enum EntryKind {
     /// A Node's sign of life and load.
     Presence,
+    /// A Bee's advertisement of work worth doing.
+    Dance,
+    /// A Bee's claim on one Patch.
+    SoftClaim,
 }
 
 /// The address of an entry: one author, one subject.
@@ -44,6 +48,74 @@ impl EntryKey {
             bee: 0,
         }
     }
+
+    /// The key of the dance `bee` of `node` performs for a stage's Patches.
+    pub fn dance(query: &str, stage: usize, node: NodeId, bee: u32) -> Self {
+        Self {
+            kind: EntryKind::Dance,
+            target: format!("{query}/{stage}"),
+            node,
+            bee,
+        }
+    }
+
+    /// The key of the claim `bee` of `node` makes on one Patch.
+    pub fn claim(query: &str, stage: usize, patch: usize, node: NodeId, bee: u32) -> Self {
+        Self {
+            kind: EntryKind::SoftClaim,
+            target: format!("{query}/{stage}/{patch}"),
+            node,
+            bee,
+        }
+    }
+}
+
+/// An advertisement of a stage's Patches, as a waggle dance advertises a patch of
+/// flowers. How strongly it is advertised is how long it has left to live: the
+/// entry's lifetime is set so that it lapses when the dance has run its circuits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Dance {
+    /// The query.
+    pub query: String,
+    /// The stage whose Patches are advertised.
+    pub stage: usize,
+    /// How many Patches the stage has.
+    pub patches: usize,
+    /// Circuits at the last posting, before any decay.
+    pub circuits: f64,
+    /// Patches the dancer has finished from this group, which each take a circuit off.
+    pub renewals: u32,
+    /// If the stage's input is held by one Node, that Node: no other can run it.
+    pub pinned: Option<NodeId>,
+    /// Patches a Scout has seen run well past the group's median, which any Bee
+    /// following this dance may run again even though they are claimed. Whichever
+    /// attempt completes first is committed.
+    pub redo: Vec<usize>,
+}
+
+/// Where a claim stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClaimState {
+    /// A Bee is running the Patch.
+    Running,
+    /// The Patch is complete (the comb store has the final word).
+    Done,
+}
+
+/// A Bee's claim on one Patch. Another Bee on another Node may claim it before
+/// gossip tells her this one has; the Patch's completion record settles that.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SoftClaim {
+    /// Whether the Patch is being run or is done.
+    pub state: ClaimState,
+    /// How long the claimant has been running the Patch, or took to finish it, in
+    /// milliseconds. A Scout compares it with the group's median to find stragglers.
+    pub elapsed_ms: u64,
+    /// How many Patches the group has, so a Scout can advertise the group again
+    /// without having read the plan.
+    pub patches: usize,
+    /// The Node that alone can run the group, if there is one.
+    pub pinned: Option<NodeId>,
 }
 
 /// A Node's presence: what the V1 heartbeat file said, on the floor instead.
@@ -69,9 +141,21 @@ pub struct Presence {
 pub enum EntryBody {
     /// A Node's presence.
     Presence(Presence),
+    /// An advertisement of work.
+    Dance(Dance),
+    /// A claim on a Patch.
+    SoftClaim(SoftClaim),
     /// The author took the entry down. It lingers for a while so an older copy
     /// still travelling the mesh cannot bring it back.
     Withdrawn,
+}
+
+impl Entry {
+    /// How long the entry has left to live, as of `now` on this Node's monotonic
+    /// clock, in milliseconds.
+    pub fn remaining(&self, now: Millis) -> Millis {
+        self.expires_at.saturating_sub(now)
+    }
 }
 
 /// An entry as a Node holds it. `expires_at` is on this Node's own monotonic

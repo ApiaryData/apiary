@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use tokio::sync::Notify;
+
 use apiary_core::{Clock, Millis, SeededRng};
 
 use crate::entry::{Entry, EntryBody, EntryKey, EntryKind, WireEntry};
@@ -40,6 +42,9 @@ struct State {
 pub struct InMemoryFloor {
     clock: Arc<dyn Clock>,
     state: Mutex<State>,
+    /// Signalled whenever this copy changes, so gossip can send news at once
+    /// instead of at the next round.
+    changed: Notify,
 }
 
 impl InMemoryFloor {
@@ -51,15 +56,17 @@ impl InMemoryFloor {
                 slots: BTreeMap::new(),
                 seq: 0,
             }),
+            changed: Notify::new(),
         }
+    }
+
+    /// Signalled whenever this copy changes.
+    pub fn changed(&self) -> &Notify {
+        &self.changed
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().expect("floor poisoned")
-    }
-
-    fn now(&self) -> Millis {
-        self.clock.monotonic().as_millis() as Millis
     }
 
     /// Post `body` under `key`, replacing what this Node holds for it, for `ttl`
@@ -83,6 +90,8 @@ impl InMemoryFloor {
                 seq,
             },
         );
+        drop(state);
+        self.changed.notify_one();
         version
     }
 
@@ -114,6 +123,25 @@ impl InMemoryFloor {
             .values()
             .map(|s| &s.entry)
             .filter(|e| e.key.kind == kind && is_live(e, now))
+            .cloned()
+            .collect()
+    }
+
+    /// The time on this Node's monotonic clock that entries' lifetimes are
+    /// measured against, in milliseconds.
+    pub fn now(&self) -> Millis {
+        self.clock.monotonic().as_millis() as Millis
+    }
+
+    /// Every live entry of `kind` whose target starts with `prefix`.
+    pub fn entries_for(&self, kind: EntryKind, prefix: &str) -> Vec<Entry> {
+        let now = self.now();
+        let state = self.lock();
+        state
+            .slots
+            .values()
+            .map(|s| &s.entry)
+            .filter(|e| e.key.kind == kind && e.key.target.starts_with(prefix) && is_live(e, now))
             .cloned()
             .collect()
     }
@@ -174,6 +202,10 @@ impl InMemoryFloor {
                 state.slots.insert(entry.key.clone(), Slot { entry, seq });
                 changed += 1;
             }
+        }
+        drop(state);
+        if changed > 0 {
+            self.changed.notify_one();
         }
         changed
     }

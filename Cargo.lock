@@ -282,6 +282,20 @@ dependencies = [
 [[package]]
 name = "apiary-forage"
 version = "0.1.2-alpha"
+dependencies = [
+ "apiary-core",
+ "apiary-floor",
+ "apiary-net",
+ "apiary-plan",
+ "arrow",
+ "async-trait",
+ "bytes",
+ "datafusion",
+ "futures",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "apiary-net"
@@ -319,7 +333,9 @@ dependencies = [
  "apiary-comb",
  "apiary-core",
  "apiary-floor",
+ "apiary-forage",
  "apiary-net",
+ "apiary-plan",
  "apiary-runtime",
  "arrow",
  "async-trait",
@@ -328,6 +344,7 @@ dependencies = [
  "datafusion",
  "futures",
  "object_store",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
