@@ -18,13 +18,12 @@ use tracing::info;
 use apiary_comb::custom_store::{self, ObjectStoreBackend};
 use apiary_comb::local::{LocalBackend, expand_local_path};
 use apiary_comb::s3::S3Backend;
-use apiary_comb::schema::{conform_batch, delta_schema};
 use apiary_comb::{CapReport, CellState, Comb, Crop, HarvestReport, Recipe};
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
-use apiary_core::{CommitGate, Env, FrameSchema, Result, WriteResult, check_clock};
+use apiary_core::{CommitGate, Env, Result, WriteResult, check_clock};
 use apiary_plan::{ApiaryQueryContext, QueryOptions};
 
 use crate::behavioral::AbandonmentTracker;
@@ -35,28 +34,11 @@ use crate::duties::{DutiesSettings, NodeDuties};
 use crate::heartbeat::{
     HeartbeatLoad, HeartbeatWriter, LoadSource, NodeState, WorldView, WorldViewBuilder,
 };
+use crate::ingest::{IngestResult, Ingestor, StandingCounts, StandingQuery};
 use crate::upkeep::{ClearReport, Upkeep, UpkeepSettings};
 use apiary_colony::{
     BeeParams, Colony, ColonyConfig, NoThermal, SysfsThermal, TemperatureRegulation, ThermalSensor,
 };
-
-/// What one ingest landed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IngestResult {
-    /// Rows landed in the crop.
-    pub rows: u64,
-    /// The crop segment they were written as (`None` for an empty batch).
-    pub segment: Option<u64>,
-    /// Bytes ingested since the crop was last deposited.
-    pub crop_bytes: u64,
-}
-
-/// What ingest needs to know about a Frame, resolved once.
-struct FrameSpec {
-    /// The schema the Frame's table stores.
-    schema: SchemaRef,
-    partition_by: Vec<String>,
-}
 
 /// An Apiary compute node — the runtime for one machine in the swarm.
 ///
@@ -89,6 +71,9 @@ pub struct ApiaryNode {
     /// What the Bees do: queries, ripening, clearing and surveying.
     duties: Arc<NodeDuties>,
 
+    /// The colony this Node has joined, if it has joined one.
+    colony_link: std::sync::RwLock<Option<ColonyLink>>,
+
     /// Local cell cache with LRU eviction.
     pub cell_cache: Arc<CellCache>,
 
@@ -114,11 +99,8 @@ pub struct ApiaryNode {
     /// Asked before every direct commit.
     commit_gate: CommitGate,
 
-    /// Bytes ingested since the crop was last deposited.
-    crop_bytes: Arc<AtomicU64>,
-
-    /// What ingest has learned about each Frame, by Hive, Box and Frame name.
-    frame_specs: RwLock<HashMap<(String, String, String), Arc<FrameSpec>>>,
+    /// Where batches land, and the standing queries that run over them.
+    ingestor: Arc<Ingestor>,
 
     /// Cancellation channel to stop background tasks on shutdown.
     cancel_tx: tokio::sync::watch::Sender<bool>,
@@ -336,6 +318,20 @@ impl ApiaryNode {
         ));
         info!(bees = config.cores, "Bees started");
 
+        // Where batches land, and the rollups that run over them.
+        let ingestor = Arc::new(Ingestor::new(
+            config.node_id.to_string(),
+            Arc::clone(&registry),
+            Arc::clone(&crop),
+            Arc::clone(&storage),
+            Arc::clone(&crop_bytes),
+            config.crop_max_bytes,
+            Arc::clone(&colony),
+            Arc::clone(&duties),
+            Arc::clone(&query_ctx),
+        ));
+        ingestor.load_standing().await?;
+
         // Initialize cell cache
         let cache_dir = config.cache_dir.join("cells");
         let cell_cache = Arc::new(
@@ -411,6 +407,7 @@ impl ApiaryNode {
             query_ctx,
             colony,
             duties,
+            colony_link: std::sync::RwLock::new(None),
             cell_cache,
             abandonment_tracker: Arc::new(AbandonmentTracker::default()),
             heartbeat_writer,
@@ -419,8 +416,7 @@ impl ApiaryNode {
             depositor,
             upkeep,
             commit_gate: gate,
-            crop_bytes,
-            frame_specs: RwLock::new(HashMap::new()),
+            ingestor,
             cancel_tx,
             env,
         })
@@ -517,6 +513,8 @@ impl ApiaryNode {
     /// synced, before this returns. Unlike [`write_to_frame`](Self::write_to_frame),
     /// which commits to the comb before returning, the rows exist only on this
     /// Node until they are deposited.
+    ///
+    /// Each standing query registered for the Frame queues a Patch over the batch.
     pub async fn ingest(
         &self,
         hive: &str,
@@ -524,31 +522,47 @@ impl ApiaryNode {
         frame_name: &str,
         batch: &RecordBatch,
     ) -> Result<IngestResult> {
-        let spec = self.frame_spec(hive, box_name, frame_name).await?;
-        let conformed = conform_batch(batch, &spec.schema, &spec.partition_by)?;
-        let rows = conformed.num_rows() as u64;
-
-        let log = self.crop.frame(hive, box_name, frame_name)?;
-        let segment = tokio::task::spawn_blocking(move || log.append(&conformed))
+        self.ingestor
+            .ingest(hive, box_name, frame_name, batch)
             .await
-            .map_err(|e| ApiaryError::Internal {
-                message: format!("Ingest task failed: {e}"),
-            })??;
+    }
 
-        let bytes = segment.as_ref().map_or(0, |s| s.bytes);
-        let pending = self.crop_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        if pending >= self.config.crop_max_bytes {
-            self.colony.wake();
-        }
-        self.mark(
-            "ingest",
-            format_args!("{hive}.{box_name}.{frame_name} {rows} rows"),
-        );
-        Ok(IngestResult {
-            rows,
-            segment: segment.map(|s| s.seq),
-            crop_bytes: pending,
-        })
+    /// Register a standing query: a rollup that runs over every batch ingested
+    /// for its source Frame and ingests its result into its target Frame. It is
+    /// kept in the comb store, so it survives a restart.
+    pub async fn register_standing(&self, query: StandingQuery) -> Result<()> {
+        self.ingestor.register_standing(query).await
+    }
+
+    /// Remove a standing query.
+    pub async fn remove_standing(&self, hive: &str, box_name: &str, name: &str) -> Result<()> {
+        self.ingestor.remove_standing(hive, box_name, name).await
+    }
+
+    /// Register a model for `predict('name', feature, ...)`: its file goes into the
+    /// comb store, and every Node of the colony fetches it the first time a query
+    /// calls it. `kind` is how it is run (`linear`, or `onnx` where this build has
+    /// ONNX Runtime). Returns the version it took.
+    pub async fn register_model(&self, name: &str, kind: &str, file: Vec<u8>) -> Result<u64> {
+        self.query_ctx
+            .models()
+            .register(name, kind, bytes::Bytes::from(file))
+            .await
+    }
+
+    /// The models this Node runs.
+    pub fn models(&self) -> &Arc<apiary_plan::models::Models> {
+        self.query_ctx.models()
+    }
+
+    /// The standing queries registered on this Node.
+    pub fn standing_queries(&self) -> Vec<StandingQuery> {
+        self.ingestor.standing_queries()
+    }
+
+    /// How the standing queries have fared.
+    pub fn standing_counts(&self) -> StandingCounts {
+        self.ingestor.standing_counts()
     }
 
     /// Deposit everything in the crop into the comb now, rather than waiting
@@ -571,7 +585,11 @@ impl ApiaryNode {
         frame_name: &str,
     ) -> Result<SchemaRef> {
         Ok(Arc::clone(
-            &self.frame_spec(hive, box_name, frame_name).await?.schema,
+            &self
+                .ingestor
+                .frame_spec(hive, box_name, frame_name)
+                .await?
+                .schema,
         ))
     }
 
@@ -628,34 +646,6 @@ impl ApiaryNode {
     /// A Frame's ripening recipe.
     pub async fn recipe(&self, hive: &str, box_name: &str, frame_name: &str) -> Result<Recipe> {
         self.upkeep.recipe(hive, box_name, frame_name).await
-    }
-
-    /// What ingest needs to know about a Frame, from the registry the first
-    /// time and from memory after.
-    async fn frame_spec(
-        &self,
-        hive: &str,
-        box_name: &str,
-        frame_name: &str,
-    ) -> Result<Arc<FrameSpec>> {
-        let key = (
-            hive.to_string(),
-            box_name.to_string(),
-            frame_name.to_string(),
-        );
-        if let Some(spec) = self.frame_specs.read().await.get(&key) {
-            return Ok(Arc::clone(spec));
-        }
-        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
-        let spec = Arc::new(FrameSpec {
-            schema: delta_schema(&FrameSchema::from_json_value(&frame.schema)?),
-            partition_by: frame.partition_by.clone(),
-        });
-        self.frame_specs
-            .write()
-            .await
-            .insert(key, Arc::clone(&spec));
-        Ok(spec)
     }
 
     /// Overwrite all data in a frame with new data, in one Delta commit that
@@ -787,6 +777,9 @@ impl ApiaryNode {
             "query",
             query.split_whitespace().collect::<Vec<_>>().join(" "),
         );
+        if let Some(answer) = self.sql_in_colony(query).await {
+            return answer.map(|a| a.batches);
+        }
         let ctx = Arc::clone(&self.query_ctx);
         let text = query.to_string();
         self.forage(move |pool| async move { ctx.sql_in(&text, Some(pool)).await })
@@ -797,10 +790,179 @@ impl ApiaryNode {
     /// and the rows each stage gave it (which is how a query with no rows still
     /// has columns).
     pub async fn sql_with_stages(&self, query: &str) -> Result<apiary_plan::QueryOutput> {
+        if let Some(answer) = self.sql_in_colony(query).await {
+            return answer.map(|a| apiary_plan::QueryOutput {
+                batches: a.batches,
+                // A query run across the colony does not yet count the rows each
+                // stage gave it.
+                stages: apiary_plan::StageRows::default(),
+                schema: a.schema,
+            });
+        }
         let ctx = Arc::clone(&self.query_ctx);
         let text = query.to_string();
         self.forage(move |pool| async move { ctx.sql_with_stages_in(&text, Some(pool)).await })
             .await
+    }
+
+    /// Join a colony: this Node's Bees will also plan, advertise, follow and
+    /// answer the queries the colony runs across its Nodes, and the Node posts its
+    /// presence on `floor`. `me` is the Node's id on the network.
+    ///
+    /// With a `mesh`, a Patch's output is also served from this Node's memory to
+    /// the colony's other Nodes over the exchange protocol; without one, Patches
+    /// hand each other batches through the comb store alone.
+    pub fn join_colony(
+        &self,
+        me: apiary_net::NodeId,
+        floor: Arc<dyn apiary_floor::Floor>,
+        mesh: Option<apiary_net::Mesh>,
+        config: apiary_forage::ForageConfig,
+    ) -> Arc<apiary_forage::Forage> {
+        let store_exchange: Arc<dyn apiary_plan::exchange::Exchange> = Arc::new(
+            apiary_plan::exchange::StoreExchange::new(Arc::clone(&self.storage)),
+        );
+        let (exchange, net_exchange): (Arc<dyn apiary_plan::exchange::Exchange>, _) = match mesh {
+            Some(mesh) => {
+                let net = apiary_forage::NetExchange::new(
+                    me,
+                    store_exchange,
+                    mesh,
+                    (self.config.memory_bytes / 8) as usize,
+                );
+                (Arc::clone(&net) as _, Some(net))
+            }
+            None => (store_exchange, None),
+        };
+        let exec = Arc::new(apiary_forage::PlanExecutor::new(
+            self.config.node_id.as_str(),
+            Arc::clone(&self.query_ctx),
+            exchange,
+            Arc::clone(&self.storage),
+        ));
+        let forage = apiary_forage::Forage::new(
+            me,
+            self.config.node_id.as_str(),
+            Arc::clone(&floor),
+            exec,
+            self.env.clock(),
+            config,
+        );
+        self.duties.set_forage(Arc::clone(&forage));
+
+        // Post this Node's presence, and wake the Bees whenever the floor changes.
+        let clock = self.env.clock();
+        let load = ColonyLoad {
+            colony: Arc::clone(&self.colony),
+            duties: Arc::clone(&self.duties),
+        };
+        let memory = self.config.memory_bytes;
+        let presence_floor = Arc::clone(&floor);
+        let mut cancel = self.cancel_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                let l = load.load();
+                presence_floor.publish(
+                    apiary_floor::EntryKey::presence(me),
+                    apiary_floor::EntryBody::Presence(apiary_floor::Presence {
+                        site: None,
+                        bees: l.bees_total as u32,
+                        idle_bees: l.bees_idle as u32,
+                        temperature: l.colony_temperature,
+                        memory_pressure: l.memory_pressure,
+                        memory_bytes: memory,
+                    }),
+                    Duration::from_secs(3),
+                );
+                tokio::select! {
+                    () = clock.sleep(Duration::from_secs(1)) => {}
+                    _ = cancel.changed() => break,
+                }
+            }
+            presence_floor.withdraw(&apiary_floor::EntryKey::presence(me));
+        });
+        let colony = Arc::clone(&self.colony);
+        let wake_floor = Arc::clone(&floor);
+        let mut stop = self.cancel_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = wake_floor.changed().notified() => colony.wake(),
+                    _ = stop.changed() => break,
+                }
+            }
+        });
+
+        *self.colony_link.write().expect("colony link") = Some(ColonyLink {
+            me,
+            floor,
+            forage: Arc::clone(&forage),
+            exchange: net_exchange,
+        });
+        info!(node = %me.fmt_short(), "Joined the colony");
+        forage
+    }
+
+    /// The colony's foraging on this Node, if it has joined a colony.
+    pub fn colony_forage(&self) -> Option<Arc<apiary_forage::Forage>> {
+        self.colony_link
+            .read()
+            .expect("colony link")
+            .as_ref()
+            .map(|link| Arc::clone(&link.forage))
+    }
+
+    /// How Patch outputs have reached this Node's Bees, if it serves them over the
+    /// exchange protocol.
+    pub fn exchange_counts(&self) -> Option<apiary_forage::NetExchangeCounts> {
+        self.colony_link
+            .read()
+            .expect("colony link")
+            .as_ref()
+            .and_then(|link| link.exchange.as_ref().map(|e| e.counts()))
+    }
+
+    /// How many other Nodes' presence this Node sees on its floor.
+    pub fn colony_peers(&self) -> usize {
+        match &*self.colony_link.read().expect("colony link") {
+            Some(link) => link
+                .floor
+                .entries(apiary_floor::EntryKind::Presence)
+                .iter()
+                .filter(|e| e.key.node != link.me)
+                .count(),
+            None => 0,
+        }
+    }
+
+    /// Run `query` across the colony, if this Node is in one with other Nodes and
+    /// the query is one with a plan (not `USE`, `SHOW` or `DESCRIBE`). `None`
+    /// means the query should run here, whole.
+    async fn sql_in_colony(&self, query: &str) -> Option<Result<apiary_forage::Answer>> {
+        if apiary_plan::is_custom_command(query) || self.colony_peers() == 0 {
+            return None;
+        }
+        let forage = Arc::clone(
+            &self
+                .colony_link
+                .read()
+                .expect("colony link")
+                .as_ref()?
+                .forage,
+        );
+        let answer = forage.submit(query);
+        self.colony.wake();
+        let clock = self.env.clock();
+        Some(tokio::select! {
+            result = answer => result.unwrap_or_else(|_| {
+                Err::<apiary_forage::Answer, _>(ApiaryError::Internal {
+                    message: "The query was dropped before it finished".into(),
+                })
+            }),
+            () = clock.sleep(QUERY_TIMEOUT) => Err(ApiaryError::Internal {
+                message: format!("The query took longer than {QUERY_TIMEOUT:?}"),
+            }),
+        })
     }
 
     /// Hand a query to the Bees and wait for the Forager that takes it up. It
@@ -904,6 +1066,14 @@ impl ApiaryNode {
                 .collect(),
         }
     }
+}
+
+/// The colony a Node has joined.
+struct ColonyLink {
+    me: apiary_net::NodeId,
+    floor: Arc<dyn apiary_floor::Floor>,
+    forage: Arc<apiary_forage::Forage>,
+    exchange: Option<Arc<apiary_forage::NetExchange>>,
 }
 
 /// A Node's Bees as the heartbeat reports them.

@@ -9,9 +9,17 @@
 //! intercepted before they reach DataFusion.
 
 mod catalog;
+pub mod codec;
+pub mod exchange;
 pub mod join_policy;
+pub mod models;
+#[cfg(feature = "onnx")]
+pub mod onnx;
+pub mod patch;
+pub mod scan;
 mod session;
 mod staged;
+pub mod stages;
 pub mod timing;
 
 pub use join_policy::FitJoinsToBee;
@@ -29,6 +37,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::{Expr, cast, lit};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
 use apiary_comb::Comb;
@@ -39,6 +48,7 @@ use apiary_core::registry_manager::RegistryManager;
 use apiary_core::types::NodeId;
 
 use crate::catalog::{NO_BOX, NO_HIVE, TableIo, into_apiary_error, record_table_io};
+use crate::models::Models;
 
 /// The result of a query: its rows, and how many rows each stage gave it.
 #[derive(Debug)]
@@ -59,6 +69,38 @@ struct Selection {
     box_name: Option<String>,
 }
 
+/// How [`ApiaryQueryContext::sql_staged`] runs a query.
+#[derive(Clone)]
+pub struct StagedOptions {
+    /// Run from the plan as it is written to the comb store and read back, as a
+    /// Node that did not plan the query would.
+    pub round_trip: bool,
+    /// Patches of a stage run at once.
+    pub concurrency: usize,
+    /// The share of the Node's memory the Patches run under.
+    pub pool: Option<Arc<dyn MemoryPool>>,
+}
+
+impl Default for StagedOptions {
+    fn default() -> Self {
+        Self {
+            round_trip: true,
+            concurrency: 4,
+            pool: None,
+        }
+    }
+}
+
+/// A query planned and ready to run.
+pub struct PlannedQuery {
+    /// The physical plan.
+    pub physical: Arc<dyn ExecutionPlan>,
+    /// The task context to run it in.
+    pub task_ctx: Arc<datafusion::execution::TaskContext>,
+    /// The session it was planned in.
+    pub session: SessionContext,
+}
+
 /// The Apiary query context: a Node's long-lived DataFusion session with
 /// Apiary namespace resolution.
 ///
@@ -68,6 +110,8 @@ pub struct ApiaryQueryContext {
     session: SessionContext,
     comb: Arc<Comb>,
     registry: Arc<RegistryManager>,
+    /// The models `predict` runs.
+    models: Arc<Models>,
     selection: Mutex<Selection>,
     #[allow(dead_code)] // Node identity, used once Nodes exchange work directly
     node_id: NodeId,
@@ -94,14 +138,29 @@ impl ApiaryQueryContext {
         node_id: NodeId,
         options: QueryOptions,
     ) -> Result<Self> {
-        let session = session::build_session(&options, Arc::clone(&registry), Arc::clone(&comb))?;
+        let models = options
+            .models
+            .clone()
+            .unwrap_or_else(|| Models::new(registry.storage()));
+        let session = session::build_session(
+            &options,
+            Arc::clone(&registry),
+            Arc::clone(&comb),
+            Arc::clone(&models),
+        )?;
         Ok(Self {
             session,
             comb,
             registry,
+            models,
             selection: Mutex::new(Selection::default()),
             node_id,
         })
+    }
+
+    /// The models this Node's queries can run with `predict`.
+    pub fn models(&self) -> &Arc<Models> {
+        &self.models
     }
 
     /// The Node's memory pool, which Bees take shares of.
@@ -202,6 +261,178 @@ impl ApiaryQueryContext {
 
         // Standard SQL: resolve frame references, register tables, execute
         self.execute_standard_sql(trimmed, pool).await
+    }
+
+    /// A session for a query over data the caller supplies: each of `tables` is
+    /// readable by its bare name. It has the Node's functions and runtime, runs
+    /// under `pool` if given, and can still read Frames by their three-part names.
+    pub fn local_session(
+        &self,
+        pool: Option<Arc<dyn MemoryPool>>,
+        tables: Vec<(&str, RecordBatch)>,
+    ) -> Result<SessionContext> {
+        use datafusion::catalog::{
+            CatalogProvider, CatalogProviderList, MemoryCatalogProvider, MemorySchemaProvider,
+            SchemaProvider,
+        };
+        use datafusion::datasource::MemTable;
+        use datafusion::execution::SessionStateBuilder;
+
+        /// Resolves one catalogue of the caller's own tables, and everything else
+        /// as the Node does.
+        #[derive(Debug)]
+        struct Overlay {
+            local: Arc<MemoryCatalogProvider>,
+            inner: Arc<dyn CatalogProviderList>,
+        }
+        const LOCAL: &str = "__local";
+        impl CatalogProviderList for Overlay {
+            fn register_catalog(
+                &self,
+                name: String,
+                catalog: Arc<dyn CatalogProvider>,
+            ) -> Option<Arc<dyn CatalogProvider>> {
+                self.inner.register_catalog(name, catalog)
+            }
+            fn catalog_names(&self) -> Vec<String> {
+                let mut names = self.inner.catalog_names();
+                names.push(LOCAL.to_string());
+                names
+            }
+            fn catalog(&self, name: &str) -> Option<Arc<dyn CatalogProvider>> {
+                if name == LOCAL {
+                    Some(Arc::clone(&self.local) as Arc<dyn CatalogProvider>)
+                } else {
+                    self.inner.catalog(name)
+                }
+            }
+        }
+
+        let internal = |e: datafusion::error::DataFusionError| ApiaryError::Internal {
+            message: format!("Cannot set up the query's tables: {e}"),
+        };
+        let local = Arc::new(MemoryCatalogProvider::new());
+        let schema = Arc::new(MemorySchemaProvider::new());
+        for (name, batch) in tables {
+            let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).map_err(internal)?;
+            schema
+                .register_table(name.to_string(), Arc::new(table))
+                .map_err(internal)?;
+        }
+        local
+            .register_schema("public", schema as Arc<dyn SchemaProvider>)
+            .map_err(internal)?;
+
+        let mut state = self.query_session(pool)?.state();
+        let overlay = Arc::new(Overlay {
+            local,
+            inner: Arc::clone(state.catalog_list()),
+        });
+        let options = state.config_mut().options_mut();
+        options.catalog.default_catalog = LOCAL.to_string();
+        options.catalog.default_schema = "public".to_string();
+        state = SessionStateBuilder::new_from_existing(state)
+            .with_catalog_list(overlay)
+            .build();
+        Ok(SessionContext::new_with_state(state))
+    }
+
+    /// The scans a Patch of this Node's queries needs: the comb, and the session
+    /// scans are built in (under `pool`, if one is given).
+    pub fn scan_source(&self, pool: Option<Arc<dyn MemoryPool>>) -> Result<scan::ScanSource> {
+        let session = self.query_session(pool)?;
+        Ok(scan::ScanSource::new(
+            Arc::clone(&self.comb),
+            session.state(),
+            Arc::clone(&self.models),
+        ))
+    }
+
+    /// Run a query as Patches on this Node: plan it, cut the plan into stages, and
+    /// run each stage's Patches, handing batches from stage to stage through
+    /// `exchange`. This is what a colony does with the Patches spread across Bees
+    /// and Nodes; here one Node runs them all, which makes it the reference the
+    /// colony's answers are compared with.
+    pub async fn sql_staged(
+        &self,
+        query: &str,
+        exchange: Arc<dyn exchange::Exchange>,
+        options: StagedOptions,
+    ) -> Result<Vec<RecordBatch>> {
+        let planned = self.plan_sql(query, options.pool.clone()).await?;
+        let mut staged = stages::cut(Arc::clone(&planned.physical))
+            .map_err(|e| into_apiary_error(e, "Cannot cut the query into stages"))?;
+        let held = std::mem::take(&mut staged.held);
+        if options.round_trip {
+            // Run from the plan as another Node would read it.
+            let record = codec::encode_plan("q", self.node_id.as_str(), &staged)
+                .map_err(|e| into_apiary_error(e, "Cannot write the plan"))?;
+            let (_, decoded) = codec::decode_plan(&record, &planned.task_ctx)
+                .map_err(|e| into_apiary_error(e, "Cannot read the plan back"))?;
+            staged = decoded;
+        }
+        let query_id = uuid::Uuid::new_v4().to_string();
+        let env = patch::PatchEnv::new(
+            query_id.clone(),
+            self.node_id.as_str(),
+            Arc::clone(&exchange),
+            self.scan_source(options.pool.clone())?,
+            held,
+        );
+        let ctx = env
+            .task_context(options.pool.clone())
+            .map_err(|e| into_apiary_error(e, "Cannot build the Patch context"))?;
+        let outcome = async {
+            let (root, feeders) = staged
+                .stages
+                .split_last()
+                .expect("a plan has a result stage");
+            for stage in feeders {
+                patch::run_stage(stage, &env, &ctx, "local", options.concurrency).await?;
+            }
+            patch::run_result(root, &env, Arc::clone(&ctx)).await
+        }
+        .await;
+        exchange.clear(&query_id).await?;
+        outcome
+    }
+
+    /// Plan a query without running it: the physical plan and the session it was
+    /// planned in. Custom commands (`USE`, `SHOW`, `DESCRIBE`) are not queries
+    /// and have no plan.
+    pub async fn plan_sql(
+        &self,
+        query: &str,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<PlannedQuery> {
+        let trimmed = query.trim();
+        if let Some(err) = check_unsupported_dml(trimmed) {
+            return Err(err);
+        }
+        let session = self.query_session(pool)?;
+        let state = session.state();
+        let dialect = state.config_options().sql_parser.dialect;
+        let statement = state
+            .sql_to_statement(trimmed, &dialect)
+            .map_err(|e| into_apiary_error(e, "SQL parse error"))?;
+        let plan = state
+            .statement_to_plan(statement)
+            .await
+            .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        let df = session
+            .execute_logical_plan(plan)
+            .await
+            .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        let task_ctx = Arc::new(df.task_ctx());
+        let physical = df
+            .create_physical_plan()
+            .await
+            .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        Ok(PlannedQuery {
+            physical,
+            task_ctx,
+            session,
+        })
     }
 
     /// Handle custom SQL commands (USE, SHOW, DESCRIBE).
@@ -440,6 +671,8 @@ impl ApiaryQueryContext {
             .create_physical_plan()
             .await
             .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        // Models the query calls are fetched before it runs.
+        self.models.preload_for(&physical).await?;
         let results = datafusion::physical_plan::collect(Arc::clone(&physical), task_ctx)
             .await
             .map_err(|e| into_apiary_error(e, "DataFusion execution error"))?;
@@ -504,6 +737,19 @@ impl ApiaryQueryContext {
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
+
+/// Whether `sql` is one of Apiary's own commands (`USE`, `SHOW`, `DESCRIBE`),
+/// which have no query plan and run where they are asked.
+pub fn is_custom_command(sql: &str) -> bool {
+    let upper = sql.trim().to_uppercase();
+    let upper = upper.trim_end_matches(';').trim();
+    upper.starts_with("USE HIVE ")
+        || upper.starts_with("USE BOX ")
+        || upper == "SHOW HIVES"
+        || upper.starts_with("SHOW BOXES")
+        || upper.starts_with("SHOW FRAMES")
+        || upper.starts_with("DESCRIBE ")
+}
 
 /// Check for unsupported DML and return an error if detected.
 fn check_unsupported_dml(sql: &str) -> Option<ApiaryError> {
@@ -844,3 +1090,5 @@ mod catalog_tests;
 
 #[cfg(test)]
 mod staged_tests;
+#[cfg(test)]
+mod stages_tests;

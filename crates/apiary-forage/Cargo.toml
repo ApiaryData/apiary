@@ -2,6 +2,23 @@
 name = "apiary-forage"
 version.workspace = true
 edition.workspace = true
-description = "Running one Patch under a Bee memory reservation, with Arrow IPC exchange over QUIC"
+description = "How a colony forages: Patches advertised by dances, claimed, run under a Bee's share of memory and handed on"
 license.workspace = true
-publish = false # empty until phase 5 of the redesign
+publish = false # not yet published; Apiary's crates ship together
+
+[dependencies]
+apiary-core.workspace = true
+apiary-floor.workspace = true
+apiary-net.workspace = true
+apiary-plan.workspace = true
+arrow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+datafusion.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]

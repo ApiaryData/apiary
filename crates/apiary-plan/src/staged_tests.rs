@@ -18,19 +18,19 @@ use crate::{ApiaryQueryContext, QueryOptions, ROWS_FROM_COMB, ROWS_FROM_CROP};
 
 const CELL: u64 = 64 * 1024 * 1024;
 
-struct Env {
-    comb: Arc<Comb>,
-    registry: Arc<RegistryManager>,
-    crop: Arc<Crop>,
-    schema: FrameSchema,
-    _dir: TempDir,
+pub(crate) struct Env {
+    pub(crate) comb: Arc<Comb>,
+    pub(crate) registry: Arc<RegistryManager>,
+    pub(crate) crop: Arc<Crop>,
+    pub(crate) schema: FrameSchema,
+    pub(crate) _dir: TempDir,
 }
 
 fn schema_json() -> serde_json::Value {
     serde_json::json!({"region": "string", "temp": "float64"})
 }
 
-async fn env() -> Env {
+pub(crate) async fn env() -> Env {
     let dir = tempfile::tempdir().unwrap();
     let backend = LocalBackend::new(dir.path().to_path_buf()).await.unwrap();
     let storage: Arc<dyn StorageBackend> = Arc::new(backend);
@@ -56,7 +56,7 @@ async fn env() -> Env {
 }
 
 impl Env {
-    fn context(&self) -> ApiaryQueryContext {
+    pub(crate) fn context(&self) -> ApiaryQueryContext {
         ApiaryQueryContext::with_options(
             Arc::clone(&self.comb),
             Arc::clone(&self.registry),
@@ -70,7 +70,7 @@ impl Env {
     }
 
     /// Land a batch in the crop, as ingest does.
-    fn ingest(&self, batch: &RecordBatch) {
+    pub(crate) fn ingest(&self, batch: &RecordBatch) {
         let conformed = conform_batch(batch, &delta_schema(&self.schema), &[]).unwrap();
         self.crop
             .frame("farm", "field", "sensors")
@@ -81,7 +81,7 @@ impl Env {
 
     /// Deposit the first pending segment (or all of them) into the comb.
     /// With `release` false, stop before cleaning up: a crash in that window.
-    async fn deposit(&self, all: bool, release: bool) {
+    pub(crate) async fn deposit(&self, all: bool, release: bool) {
         let frame = self.crop.frame("farm", "field", "sensors").unwrap();
         let mut pending = frame.pending().unwrap();
         if !all {
@@ -107,7 +107,7 @@ impl Env {
     }
 }
 
-fn readings(region: &str, n: usize) -> RecordBatch {
+pub(crate) fn readings(region: &str, n: usize) -> RecordBatch {
     RecordBatch::try_from_iter(vec![
         (
             "region",

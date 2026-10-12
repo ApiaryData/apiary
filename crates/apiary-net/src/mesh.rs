@@ -297,9 +297,13 @@ impl Mesh {
     pub fn peers(&self) -> Vec<PeerInfo> {
         let conns = self.inner.conns.lock().expect("conns poisoned");
         let mut by_peer: HashMap<NodeId, PeerInfo> = HashMap::new();
-        for ((peer, protocol), admitted) in conns
-            .iter()
-            .flat_map(|(key, list)| list.iter().map(move |c| (key, c)))
+        // In a fixed order, so asking about paths (which a simulated network
+        // notes as it goes) leaves the same trace on every run.
+        let mut keys: Vec<&(NodeId, Protocol)> = conns.keys().collect();
+        keys.sort_by_key(|(peer, protocol)| (*peer, protocol.alpn()));
+        for ((peer, protocol), admitted) in keys
+            .into_iter()
+            .flat_map(|key| conns[key].iter().map(move |c| (key, c)))
         {
             if admitted.is_closed() {
                 continue;

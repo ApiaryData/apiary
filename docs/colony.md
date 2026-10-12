@@ -8,11 +8,13 @@ says what is calling and what to do when a Bee answers (`Duties`), and the Bee c
 
 | Role | Stimulus | Work in a solitary Node |
 |---|---|---|
-| Forager | queries waiting | run the query, under the Bee's share of the Node's memory |
+| Forager | queries waiting; standing-query batches; Patches of a query planned here | run the query, under the Bee's share of the Node's memory; run a rollup over a batch; pull a Patch |
 | Ripener | the crop is full or old; nectar is ready to cap; harvest is due | deposit, cap, harvest |
 | Undertaker | clearing is due | delete files no table version needs |
-| Scout | the Node's picture of its comb is stale | survey the comb for nectar ready to cap |
-| Follower, Receiver, Guard | none yet | dances (phase 5), tremble signals and the handoff wait (phase 6); the entrance still validates inline |
+| Scout | the Node's picture of its comb is stale; a query to plan or look over | survey the comb for nectar ready to cap; plan and advertise queries |
+| Follower | dances with Patches left | follow one, claim a Patch of its group and run it ([foraging](foraging.md)) |
+| Receiver | a query planned here is ready for its result stage | run it and answer the caller |
+| Guard | none yet | tremble signals and the handoff wait (phase 6); the entrance still validates inline |
 
 A stimulus of 1 means a task of that kind is waiting.
 

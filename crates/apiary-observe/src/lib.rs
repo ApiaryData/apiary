@@ -21,6 +21,7 @@
 //! in it knows it is being observed.
 
 mod colony;
+mod forage;
 mod marks;
 mod net;
 mod sim;
@@ -28,6 +29,9 @@ mod store;
 mod trace;
 
 pub use colony::{APIARY, Colony, Member};
+pub use forage::{
+    ColonySpec, ForageColony, ForageNode, NodeSpec, Shape, Shapes, SimExecutor, Work,
+};
 pub use marks::{MARK_TARGET, MarkLayer};
 pub use net::{Link, Nat, Placement, Relay, SimNetwork, SimTransport};
 pub use sim::{Run, Sim, SimClock, wall_origin};

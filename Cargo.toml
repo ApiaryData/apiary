@@ -30,6 +30,8 @@ apiary-plan = { version = "0.1.2-alpha", path = "crates/apiary-plan" }
 apiary-entrance = { version = "0.1.2-alpha", path = "crates/apiary-entrance" }
 apiary-net = { version = "0.1.2-alpha", path = "crates/apiary-net" }
 apiary-colony = { version = "0.1.2-alpha", path = "crates/apiary-colony" }
+apiary-floor = { version = "0.1.2-alpha", path = "crates/apiary-floor" }
+apiary-forage = { version = "0.1.2-alpha", path = "crates/apiary-forage" }
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -75,3 +77,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # Python
 pyo3 = { version = "0.29", features = ["extension-module"] }
 pythonize = "0.29"
+
+# Debug builds of DataFusion, Delta and iroh are huge with full debug info, and every
+# integration test links its own copy. Line tables keep backtraces readable.
+[profile.dev]
+debug = "line-tables-only"

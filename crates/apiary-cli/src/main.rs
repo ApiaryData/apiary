@@ -40,6 +40,8 @@ use apiary_comb::local::expand_local_path;
 use apiary_core::StorageBackend;
 use apiary_entrance::flight::{FlightExtras, start_with};
 use apiary_entrance::{Guard, SetAside, mqtt};
+use apiary_floor::{Floor, GossipConfig, GossipFloor};
+use apiary_forage::ForageConfig;
 use apiary_net::{NetContext, NetNode, Revocations, default_state_dir, parse_public};
 use apiary_runtime::ApiaryNode;
 
@@ -454,6 +456,36 @@ fn run_node(file: FileConfig) -> Result<(), String> {
             // Now the comb is up, it can carry the rendezvous too.
             net.add_rendezvous(Arc::clone(&node.storage));
         }
+        // A Node on a network joins its colony: gossip on the I/O runtime, so a long
+        // scan never delays a round, and Bees that plan, follow and answer queries
+        // run across Nodes.
+        let floor = match &net {
+            Some(net) => {
+                let (mesh, colony) = (net.mesh().clone(), net.colony().to_string());
+                let floor = io_handle
+                    .spawn(async move {
+                        Arc::new(GossipFloor::start(
+                            mesh,
+                            apiary_core::SystemClock::shared(),
+                            GossipConfig::new(colony),
+                        ))
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let forage = match &file.forage {
+                    Some(section) => section.config()?,
+                    None => ForageConfig::default(),
+                };
+                node.join_colony(
+                    net.id(),
+                    Arc::clone(&floor) as Arc<dyn Floor>,
+                    Some(net.mesh().clone()),
+                    forage,
+                );
+                Some(floor)
+            }
+            None => None,
+        };
         let set_aside = SetAside::open(node.config.set_aside_dir())
             .map_err(|e| format!("Cannot open the set-aside directory: {e}"))?;
         let guard = Guard::new(Arc::clone(&node), set_aside)
@@ -525,6 +557,9 @@ fn run_node(file: FileConfig) -> Result<(), String> {
             server.stop().await;
         }
         node.shutdown().await;
+        if let Some(floor) = floor {
+            floor.stop();
+        }
         if let Some(net) = net.and_then(|n| Arc::try_unwrap(n).ok()) {
             net.shutdown().await;
         }
