@@ -1,15 +1,17 @@
 # The dance floor
 
 `apiary-floor` is the shared board a colony's Nodes read and post to: who is here and
-how loaded they are now, and (from the next steps of phase 5) which work is worth
-doing and who has claimed it. It is gossiped, so no Node asks another for anything,
+how loaded they are now, which work is worth doing and who has claimed it. It is gossiped, so no Node asks another for anything,
 and everything on it fades, so nobody has to clean it.
 
 ## Entries
 
-An entry has a key, a version, a lifetime and a body.
+An entry has a key, a version, a lifetime and a body. The kinds are **presence** (a Node's
+sign of life and load), **dance** (an advertisement of a stage's Patches) and **soft claim**
+(a Bee's claim on one Patch); [foraging](foraging.md) says how the last two are used.
 
-- The **key** is a kind (`Presence` so far), a target (empty for a Node's own presence),
+- The **key** is a kind, a target (empty for a Node's own presence, a query and stage for
+  a dance, a Patch for a claim),
   the author's Node id and the author's Bee. One author owns a key. Only the author
   posts under it.
 - Each post carries a higher **version** than the last. Merging keeps, per key, the
@@ -45,6 +47,9 @@ will choose dances.
   floor converge in one round; it is not required for it to converge.
 - Only one push per peer is in flight, with a two-second limit, so a silent peer never
   holds up the others. A Node that has nothing new to say and no digest due says nothing.
+- A change is sent at once (after a few milliseconds, to gather what else is about to
+  change) instead of at the next round, because a claim the colony hears of late is a Patch
+  two Bees may run.
 - Only Nodes in the colony's own token are gossiped with and accepted from.
 
 The floor does not dial. Whoever makes the mesh (discovery in a real Node, the test
@@ -67,8 +72,9 @@ TLS relay:
 
 ## Not yet
 
-- Dances, soft claims, Heat and the later entry kinds arrive with the steps that use them.
-- Presence is not yet read by the engine, and the V1 heartbeat files still feed the world
-  view. The heartbeat-over-storage logic becomes `StoreFloor`, the fallback when peers are
+- Heat and the later entry kinds arrive with the steps that use them.
+- The V1 heartbeat files still feed the world view (`swarm_status`). A Node in a colony
+  posts its presence on the floor, which is how it knows whether it has peers; the
+  heartbeat-over-storage logic becomes `StoreFloor`, the fallback when peers are
   unreachable, in phase 10.
 - Gossip is a full-mesh push-pull. Partial views and SWIM-style membership are phase 10.

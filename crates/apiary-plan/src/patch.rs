@@ -12,7 +12,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionState;
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool};
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryLimit, MemoryPool};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
@@ -28,6 +28,8 @@ use crate::stages::{Handoff, Stage};
 
 /// What a Patch needs from the Node running it, carried in the task context.
 pub struct PatchEnv {
+    /// The most a Patch holds of its output before writing a chunk of it.
+    pub chunk_bytes: usize,
     query: String,
     node: String,
     exchange: Arc<dyn Exchange>,
@@ -45,6 +47,7 @@ impl PatchEnv {
         held: HashMap<String, Arc<dyn ExecutionPlan>>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            chunk_bytes: 16 * 1024 * 1024,
             query: query.into(),
             node: node.into(),
             exchange,
@@ -170,10 +173,24 @@ pub async fn run_patch(
     let reservation =
         MemoryConsumer::new(format!("Patch[{}/{}]", stage.id, index)).register(ctx.memory_pool());
     let mut parts: Vec<Vec<RecordBatch>> = vec![Vec::new(); outputs];
-    let mut stream = stage
-        .fresh_body()
-        .and_then(|plan| plan.execute(index, Arc::clone(&ctx)))
-        .map_err(to_apiary)?;
+    // The output is written as it is made, a chunk whenever this much is held, so
+    // a Patch's memory does not grow with what it produces.
+    let chunk_limit = match ctx.memory_pool().memory_limit() {
+        MemoryLimit::Finite(limit) => env.chunk_bytes.min(limit / 8).max(256 * 1024),
+        _ => env.chunk_bytes,
+    };
+    let exchange = env.exchange();
+    let mut record = Completion {
+        attempt: attempt.to_string(),
+        node: env.node().to_string(),
+        rows: vec![0; outputs],
+        bytes: vec![0; outputs],
+        chunks: vec![0; outputs],
+    };
+    let plan = stage.fresh_body().map_err(to_apiary)?;
+    // Models the Patch calls are fetched from the comb before it runs.
+    env.scans().models().preload_for(&plan).await?;
+    let mut stream = plan.execute(index, Arc::clone(&ctx)).map_err(to_apiary)?;
     let mut rows = 0u64;
     while let Some(batch) = stream.next().await {
         let batch = batch.map_err(to_apiary)?;
@@ -197,35 +214,52 @@ pub async fn run_patch(
                 parts[0].push(batch);
             }
         }
+        if reservation.size() >= chunk_limit {
+            flush(exchange, &key, attempt, &schema, &mut parts, &mut record).await?;
+            reservation.free();
+        }
     }
-
-    let exchange = env.exchange();
-    let mut record = Completion {
-        attempt: attempt.to_string(),
-        node: env.node().to_string(),
-        rows: Vec::with_capacity(outputs),
-        bytes: Vec::with_capacity(outputs),
-    };
-    for (output, batches) in parts.iter().enumerate() {
-        let data = encode_batches(&schema, batches).map_err(to_apiary)?;
-        record
-            .rows
-            .push(batches.iter().map(|b| b.num_rows() as u64).sum());
-        record.bytes.push(data.len() as u64);
-        exchange.put(&key, attempt, output, data).await?;
-    }
+    flush(exchange, &key, attempt, &schema, &mut parts, &mut record).await?;
     drop(parts);
     drop(reservation);
     let completed = exchange.complete(&key, &record).await?;
     Ok(PatchOutcome { completed, rows })
 }
 
+/// Write what a Patch holds for each output as a chunk, and note it in `record`.
+async fn flush(
+    exchange: &Arc<dyn Exchange>,
+    key: &PatchKey,
+    attempt: &str,
+    schema: &arrow::datatypes::SchemaRef,
+    parts: &mut [Vec<RecordBatch>],
+    record: &mut Completion,
+) -> Result<()> {
+    for (output, batches) in parts.iter_mut().enumerate() {
+        if batches.is_empty() {
+            continue;
+        }
+        let data = encode_batches(schema, batches).map_err(to_apiary)?;
+        record.rows[output] += batches.iter().map(|b| b.num_rows() as u64).sum::<u64>();
+        record.bytes[output] += data.len() as u64;
+        exchange
+            .put(key, attempt, output, record.chunks[output] as usize, data)
+            .await?;
+        record.chunks[output] += 1;
+        batches.clear();
+    }
+    Ok(())
+}
+
 /// Run the result stage: its one Patch's rows are the query's answer.
-pub async fn run_result(stage: &Stage, ctx: Arc<TaskContext>) -> Result<Vec<RecordBatch>> {
-    let stream = stage
-        .fresh_body()
-        .and_then(|plan| plan.execute(0, ctx))
-        .map_err(to_apiary)?;
+pub async fn run_result(
+    stage: &Stage,
+    env: &Arc<PatchEnv>,
+    ctx: Arc<TaskContext>,
+) -> Result<Vec<RecordBatch>> {
+    let plan = stage.fresh_body().map_err(to_apiary)?;
+    env.scans().models().preload_for(&plan).await?;
+    let stream = plan.execute(0, ctx).map_err(to_apiary)?;
     datafusion::physical_plan::common::collect(stream)
         .await
         .map_err(to_apiary)

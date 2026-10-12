@@ -11,6 +11,7 @@ pub mod cache;
 pub mod deposit;
 pub mod duties;
 pub mod heartbeat;
+pub mod ingest;
 pub mod node;
 pub mod upkeep;
 
@@ -24,5 +25,6 @@ pub use duties::{DutiesSettings, NodeDuties};
 pub use heartbeat::{
     Heartbeat, HeartbeatWriter, LoadSource, NodeState, NodeStatus, WorldView, WorldViewBuilder,
 };
-pub use node::{ApiaryNode, BeeStatus, ColonyStatus, IngestResult, SwarmNodeInfo, SwarmStatus};
+pub use ingest::{IngestResult, StandingCounts, StandingQuery};
+pub use node::{ApiaryNode, BeeStatus, ColonyStatus, SwarmNodeInfo, SwarmStatus};
 pub use upkeep::{ClearReport, Upkeep, UpkeepSettings};

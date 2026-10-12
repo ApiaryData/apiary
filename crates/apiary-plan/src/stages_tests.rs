@@ -186,7 +186,7 @@ async fn a_patch_is_completed_once_whoever_finishes_it() {
     let key = PatchKey::new("q1", stage.id, 0);
     let done = exchange.completion(&key).await.unwrap().unwrap();
     assert_eq!(done.attempt, "a");
-    assert!(exchange.get(&key, &done, 0).await.is_ok());
+    assert!(exchange.get(&key, &done, 0, 0).await.is_ok());
     assert!(
         exchange
             .get(
@@ -195,6 +195,7 @@ async fn a_patch_is_completed_once_whoever_finishes_it() {
                     attempt: "b".into(),
                     ..done.clone()
                 },
+                0,
                 0
             )
             .await
@@ -297,5 +298,260 @@ async fn a_scan_pruned_to_nothing_is_still_a_patch() {
                 .unwrap(),
         );
         assert_eq!(staged, whole, "{sql}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model functions
+// ---------------------------------------------------------------------------
+
+async fn with_model(ctx: &crate::ApiaryQueryContext) {
+    let model = serde_json::json!({"weights": [2.0, 0.5], "bias": 1.0});
+    ctx.models()
+        .register("scorer", "linear", model.to_string().into())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_model_function_gives_the_same_rows_whole_and_as_patches() {
+    let env = farm().await;
+    let ctx = env.context();
+    with_model(&ctx).await;
+    for sql in [
+        "SELECT region, sum(predict('scorer', temp, temp * 2.0)) FROM farm.field.sensors GROUP BY region",
+        "SELECT region, temp, predict('scorer', temp, 4.0) AS score FROM farm.field.sensors WHERE temp < 3 ORDER BY temp, region LIMIT 12",
+    ] {
+        let whole = lines(&ctx.sql(sql).await.unwrap());
+        assert!(!whole.is_empty());
+        let (exchange, _dir) = exchange().await;
+        let staged = lines(
+            &ctx.sql_staged(sql, exchange, StagedOptions::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(staged, whole, "{sql}");
+    }
+    // 2*temp + 0.5*(temp*2) + 1, summed.
+    let one = lines(&ctx.sql("SELECT predict('scorer', 3.0, 4.0)").await.unwrap());
+    assert_eq!(one, vec!["9.0"]);
+}
+
+#[tokio::test]
+async fn a_model_function_refuses_what_it_cannot_run() {
+    let env = farm().await;
+    let ctx = env.context();
+    with_model(&ctx).await;
+    let missing = ctx
+        .sql("SELECT predict('nowhere', temp, temp) FROM farm.field.sensors")
+        .await;
+    assert!(missing.is_err());
+    let arity = ctx
+        .sql("SELECT predict('scorer', temp) FROM farm.field.sensors")
+        .await;
+    assert!(arity.is_err(), "a model of two features given one");
+    let named = ctx
+        .sql("SELECT predict(region, temp, temp) FROM farm.field.sensors")
+        .await;
+    assert!(named.is_err(), "the model must be named by a literal");
+    // A file that will not load is refused when it is registered.
+    assert!(
+        ctx.models()
+            .register("bad", "linear", "not json".into())
+            .await
+            .is_err()
+    );
+    assert!(
+        ctx.models().register("x", "onnx", "".into()).await.is_err(),
+        "no backend for onnx in this build"
+    );
+}
+
+#[tokio::test]
+async fn a_new_version_of_a_model_is_picked_up_by_the_next_query() {
+    let env = farm().await;
+    let ctx = env.context();
+    with_model(&ctx).await;
+    let sql = "SELECT predict('scorer', 1.0, 1.0)";
+    assert_eq!(lines(&ctx.sql(sql).await.unwrap()), vec!["3.5"]);
+    let v2 = serde_json::json!({"weights": [10.0, 0.0], "bias": 0.0});
+    let version = ctx
+        .models()
+        .register("scorer", "linear", v2.to_string().into())
+        .await
+        .unwrap();
+    assert_eq!(version, 2);
+    assert_eq!(lines(&ctx.sql(sql).await.unwrap()), vec!["10.0"]);
+    assert_eq!(ctx.models().counts().fetched, 2);
+}
+
+// ---------------------------------------------------------------------------
+// More data than a Bee may hold
+// ---------------------------------------------------------------------------
+
+/// Joins over more data than one Bee may hold, run as Patches under a share of memory
+/// far smaller than the data: every Patch writes its output as it goes and every join
+/// is planned to fit, so nothing fails for want of memory, and the answer is the
+/// answer the query gives with all the memory it likes.
+#[tokio::test]
+async fn joins_over_more_data_than_a_bee_may_hold_complete_as_patches() {
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+
+    use crate::{ApiaryQueryContext, QueryOptions};
+    use apiary_core::{FieldDef, FrameSchema, NodeId};
+
+    let env = env().await;
+    env.registry.create_box("farm", "dim").await.unwrap();
+    for (frame, schema) in [
+        (
+            "events",
+            serde_json::json!({"id": "int64", "grp": "int64", "v": "float64"}),
+        ),
+        (
+            "groups",
+            serde_json::json!({"grp": "int64", "name": "string"}),
+        ),
+    ] {
+        env.registry
+            .create_frame("farm", "dim", frame, schema, vec![])
+            .await
+            .unwrap();
+    }
+    let field = |name: &str, t: &str| FieldDef {
+        name: name.into(),
+        data_type: t.into(),
+        nullable: false,
+    };
+    let events = env
+        .comb
+        .create_frame_table(
+            "farm",
+            "dim",
+            "events",
+            &FrameSchema {
+                fields: vec![
+                    field("id", "int64"),
+                    field("grp", "int64"),
+                    field("v", "float64"),
+                ],
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    let groups = env
+        .comb
+        .create_frame_table(
+            "farm",
+            "dim",
+            "groups",
+            &FrameSchema {
+                fields: vec![field("grp", "int64"), field("name", "string")],
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    const ROWS: i64 = 1_200_000;
+    for part in 0..4 {
+        let ids: Vec<i64> = (part * ROWS / 4..(part + 1) * ROWS / 4).collect();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("grp", DataType::Int64, false),
+                Field::new("v", DataType::Float64, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(ids.clone())),
+                Arc::new(Int64Array::from(
+                    ids.iter().map(|i| i % 1000).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    ids.iter().map(|i| *i as f64).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap();
+        env.comb
+            .append(
+                &events,
+                &batch,
+                64 * 1024 * 1024,
+                apiary_comb::CellState::Nectar,
+            )
+            .await
+            .unwrap();
+    }
+    let names: Vec<String> = (0..1000).map(|g| format!("group-{g}")).collect();
+    let dim = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("grp", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from((0..1000).collect::<Vec<_>>())),
+            Arc::new(StringArray::from(names)),
+        ],
+    )
+    .unwrap();
+    env.comb
+        .append(
+            &groups,
+            &dim,
+            64 * 1024 * 1024,
+            apiary_comb::CellState::Nectar,
+        )
+        .await
+        .unwrap();
+
+    // A Node with a Bee that may hold little: joins are planned to fit it.
+    let small = ApiaryQueryContext::with_options(
+        Arc::clone(&env.comb),
+        Arc::clone(&env.registry),
+        NodeId::from("small"),
+        QueryOptions {
+            memory_pool_bytes: 48 * 1024 * 1024,
+            memory_per_bee: 12 * 1024 * 1024,
+            target_partitions: 4,
+            ..QueryOptions::default()
+        },
+    )
+    .unwrap();
+    let big = ApiaryQueryContext::with_options(
+        Arc::clone(&env.comb),
+        Arc::clone(&env.registry),
+        NodeId::from("big"),
+        QueryOptions {
+            target_partitions: 4,
+            ..QueryOptions::default()
+        },
+    )
+    .unwrap();
+
+    for sql in [
+        "SELECT g.name, count(*), sum(e.v) FROM farm.dim.events e JOIN farm.dim.groups g \
+         ON e.grp = g.grp GROUP BY g.name",
+        "SELECT count(*), sum(a.v + b.v) FROM farm.dim.events a JOIN farm.dim.events b \
+         ON a.id = b.id WHERE a.grp < 50",
+    ] {
+        let whole = lines(&big.sql(sql).await.unwrap());
+        // Each Patch runs under 12 MB, a fraction of what the data would take in memory.
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(12 * 1024 * 1024));
+        let (exchange, _dir) = exchange().await;
+        let patched = small
+            .sql_staged(
+                sql,
+                exchange,
+                StagedOptions {
+                    pool: Some(pool),
+                    // One Bee, one Patch at a time, under its own share.
+                    concurrency: 1,
+                    ..StagedOptions::default()
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        assert_eq!(lines(&patched), whole, "{sql}");
     }
 }

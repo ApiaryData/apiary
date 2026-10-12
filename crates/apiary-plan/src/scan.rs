@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use apiary_comb::Comb;
 
 use crate::exchange::{schema_from_bytes, schema_to_bytes};
+use crate::models::Models;
 use crate::patch::PatchEnv;
 
 /// Everything needed to rebuild a Frame scan on any Node.
@@ -83,12 +84,22 @@ impl ScanSpec {
 pub struct ScanSource {
     comb: Arc<Comb>,
     state: SessionState,
+    models: Arc<Models>,
 }
 
 impl ScanSource {
     /// A source over `comb`, building scans in `state`.
-    pub fn new(comb: Arc<Comb>, state: SessionState) -> Self {
-        Self { comb, state }
+    pub fn new(comb: Arc<Comb>, state: SessionState, models: Arc<Models>) -> Self {
+        Self {
+            comb,
+            state,
+            models,
+        }
+    }
+
+    /// The models a Patch's `predict` calls use.
+    pub fn models(&self) -> &Arc<Models> {
+        &self.models
     }
 
     /// The session state scans are built in; a Patch runs under its runtime.

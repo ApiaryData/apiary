@@ -12,6 +12,9 @@ mod catalog;
 pub mod codec;
 pub mod exchange;
 pub mod join_policy;
+pub mod models;
+#[cfg(feature = "onnx")]
+pub mod onnx;
 pub mod patch;
 pub mod scan;
 mod session;
@@ -45,6 +48,7 @@ use apiary_core::registry_manager::RegistryManager;
 use apiary_core::types::NodeId;
 
 use crate::catalog::{NO_BOX, NO_HIVE, TableIo, into_apiary_error, record_table_io};
+use crate::models::Models;
 
 /// The result of a query: its rows, and how many rows each stage gave it.
 #[derive(Debug)]
@@ -106,6 +110,8 @@ pub struct ApiaryQueryContext {
     session: SessionContext,
     comb: Arc<Comb>,
     registry: Arc<RegistryManager>,
+    /// The models `predict` runs.
+    models: Arc<Models>,
     selection: Mutex<Selection>,
     #[allow(dead_code)] // Node identity, used once Nodes exchange work directly
     node_id: NodeId,
@@ -132,14 +138,29 @@ impl ApiaryQueryContext {
         node_id: NodeId,
         options: QueryOptions,
     ) -> Result<Self> {
-        let session = session::build_session(&options, Arc::clone(&registry), Arc::clone(&comb))?;
+        let models = options
+            .models
+            .clone()
+            .unwrap_or_else(|| Models::new(registry.storage()));
+        let session = session::build_session(
+            &options,
+            Arc::clone(&registry),
+            Arc::clone(&comb),
+            Arc::clone(&models),
+        )?;
         Ok(Self {
             session,
             comb,
             registry,
+            models,
             selection: Mutex::new(Selection::default()),
             node_id,
         })
+    }
+
+    /// The models this Node's queries can run with `predict`.
+    pub fn models(&self) -> &Arc<Models> {
+        &self.models
     }
 
     /// The Node's memory pool, which Bees take shares of.
@@ -242,6 +263,80 @@ impl ApiaryQueryContext {
         self.execute_standard_sql(trimmed, pool).await
     }
 
+    /// A session for a query over data the caller supplies: each of `tables` is
+    /// readable by its bare name. It has the Node's functions and runtime, runs
+    /// under `pool` if given, and can still read Frames by their three-part names.
+    pub fn local_session(
+        &self,
+        pool: Option<Arc<dyn MemoryPool>>,
+        tables: Vec<(&str, RecordBatch)>,
+    ) -> Result<SessionContext> {
+        use datafusion::catalog::{
+            CatalogProvider, CatalogProviderList, MemoryCatalogProvider, MemorySchemaProvider,
+            SchemaProvider,
+        };
+        use datafusion::datasource::MemTable;
+        use datafusion::execution::SessionStateBuilder;
+
+        /// Resolves one catalogue of the caller's own tables, and everything else
+        /// as the Node does.
+        #[derive(Debug)]
+        struct Overlay {
+            local: Arc<MemoryCatalogProvider>,
+            inner: Arc<dyn CatalogProviderList>,
+        }
+        const LOCAL: &str = "__local";
+        impl CatalogProviderList for Overlay {
+            fn register_catalog(
+                &self,
+                name: String,
+                catalog: Arc<dyn CatalogProvider>,
+            ) -> Option<Arc<dyn CatalogProvider>> {
+                self.inner.register_catalog(name, catalog)
+            }
+            fn catalog_names(&self) -> Vec<String> {
+                let mut names = self.inner.catalog_names();
+                names.push(LOCAL.to_string());
+                names
+            }
+            fn catalog(&self, name: &str) -> Option<Arc<dyn CatalogProvider>> {
+                if name == LOCAL {
+                    Some(Arc::clone(&self.local) as Arc<dyn CatalogProvider>)
+                } else {
+                    self.inner.catalog(name)
+                }
+            }
+        }
+
+        let internal = |e: datafusion::error::DataFusionError| ApiaryError::Internal {
+            message: format!("Cannot set up the query's tables: {e}"),
+        };
+        let local = Arc::new(MemoryCatalogProvider::new());
+        let schema = Arc::new(MemorySchemaProvider::new());
+        for (name, batch) in tables {
+            let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).map_err(internal)?;
+            schema
+                .register_table(name.to_string(), Arc::new(table))
+                .map_err(internal)?;
+        }
+        local
+            .register_schema("public", schema as Arc<dyn SchemaProvider>)
+            .map_err(internal)?;
+
+        let mut state = self.query_session(pool)?.state();
+        let overlay = Arc::new(Overlay {
+            local,
+            inner: Arc::clone(state.catalog_list()),
+        });
+        let options = state.config_mut().options_mut();
+        options.catalog.default_catalog = LOCAL.to_string();
+        options.catalog.default_schema = "public".to_string();
+        state = SessionStateBuilder::new_from_existing(state)
+            .with_catalog_list(overlay)
+            .build();
+        Ok(SessionContext::new_with_state(state))
+    }
+
     /// The scans a Patch of this Node's queries needs: the comb, and the session
     /// scans are built in (under `pool`, if one is given).
     pub fn scan_source(&self, pool: Option<Arc<dyn MemoryPool>>) -> Result<scan::ScanSource> {
@@ -249,6 +344,7 @@ impl ApiaryQueryContext {
         Ok(scan::ScanSource::new(
             Arc::clone(&self.comb),
             session.state(),
+            Arc::clone(&self.models),
         ))
     }
 
@@ -294,7 +390,7 @@ impl ApiaryQueryContext {
             for stage in feeders {
                 patch::run_stage(stage, &env, &ctx, "local", options.concurrency).await?;
             }
-            patch::run_result(root, Arc::clone(&ctx)).await
+            patch::run_result(root, &env, Arc::clone(&ctx)).await
         }
         .await;
         exchange.clear(&query_id).await?;
@@ -575,6 +671,8 @@ impl ApiaryQueryContext {
             .create_physical_plan()
             .await
             .map_err(|e| into_apiary_error(e, "DataFusion query error"))?;
+        // Models the query calls are fetched before it runs.
+        self.models.preload_for(&physical).await?;
         let results = datafusion::physical_plan::collect(Arc::clone(&physical), task_ctx)
             .await
             .map_err(|e| into_apiary_error(e, "DataFusion execution error"))?;

@@ -276,7 +276,7 @@ impl SimExecutor {
                     .completion(&key)
                     .await?
                     .ok_or_else(|| internal(format!("{key:?} is not complete yet")))?;
-                self.exchange.get(&key, &record, 0).await?;
+                self.exchange.get(&key, &record, 0, 0).await?;
             }
         }
         Ok(())
@@ -348,13 +348,14 @@ impl Executor for SimExecutor {
             .await;
         let key = PatchKey::new(&plan.query, stage, patch);
         self.exchange
-            .put(&key, attempt, 0, Bytes::from_static(b"patch output"))
+            .put(&key, attempt, 0, 0, Bytes::from_static(b"patch output"))
             .await?;
         let record = Completion {
             attempt: attempt.to_string(),
             node: self.node.clone(),
             rows: vec![work.rows],
             bytes: vec![12],
+            chunks: vec![1],
         };
         let completed = self.exchange.complete(&key, &record).await?;
         if matches!(completed, apiary_plan::exchange::Completed::Won) {

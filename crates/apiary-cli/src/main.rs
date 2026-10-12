@@ -472,11 +472,15 @@ fn run_node(file: FileConfig) -> Result<(), String> {
                     })
                     .await
                     .map_err(|e| e.to_string())?;
+                let forage = match &file.forage {
+                    Some(section) => section.config()?,
+                    None => ForageConfig::default(),
+                };
                 node.join_colony(
                     net.id(),
                     Arc::clone(&floor) as Arc<dyn Floor>,
                     Some(net.mesh().clone()),
-                    ForageConfig::default(),
+                    forage,
                 );
                 Some(floor)
             }

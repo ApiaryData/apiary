@@ -521,7 +521,7 @@ fn an_output_is_fetched_from_its_producer_and_read_from_the_store_once_it_is_gon
 
         let key = PatchKey::new("q", 0, 0);
         let data = Bytes::from_static(b"nectar, in arrow");
-        ex_a.put(&key, "a-1", 0, data.clone()).await.unwrap();
+        ex_a.put(&key, "a-1", 0, 0, data.clone()).await.unwrap();
         ex_a.complete(
             &key,
             &Completion {
@@ -529,6 +529,7 @@ fn an_output_is_fetched_from_its_producer_and_read_from_the_store_once_it_is_gon
                 node: "ignored".into(),
                 rows: vec![1],
                 bytes: vec![16],
+                chunks: vec![1],
             },
         )
         .await
@@ -536,17 +537,17 @@ fn an_output_is_fetched_from_its_producer_and_read_from_the_store_once_it_is_gon
 
         // B finds out where it was made and asks A for it.
         let record = ex_b.completion(&key).await.unwrap().unwrap();
-        assert_eq!(ex_b.get(&key, &record, 0).await.unwrap(), data);
+        assert_eq!(ex_b.get(&key, &record, 0, 0).await.unwrap(), data);
         let c = ex_b.counts();
         assert_eq!((c.peer, c.store, c.fell_back), (1, 0, 0), "{c:?}");
 
         // A is cut off. The output is still in the store.
         net.isolate(a.id());
-        assert_eq!(ex_b.get(&key, &record, 0).await.unwrap(), data);
+        assert_eq!(ex_b.get(&key, &record, 0, 0).await.unwrap(), data);
         let c = ex_b.counts();
         assert_eq!((c.peer, c.store, c.fell_back), (1, 1, 1), "{c:?}");
         // A itself still has it in memory.
-        assert_eq!(ex_a.get(&key, &record, 0).await.unwrap(), data);
+        assert_eq!(ex_a.get(&key, &record, 0, 0).await.unwrap(), data);
         assert_eq!(ex_a.counts().local, 1);
     });
 }

@@ -431,7 +431,7 @@ impl ExecutionPlan for StageInputExec {
                             )
                         })?;
                     let key = PatchKey::new(env.query(), stage, index);
-                    let exchange = env.exchange();
+                    let exchange = Arc::clone(env.exchange());
                     let done = exchange
                         .completion(&key)
                         .await
@@ -439,13 +439,25 @@ impl ExecutionPlan for StageInputExec {
                         .ok_or_else(|| {
                             DataFusionError::External(Box::new(InputNotReady(key.clone())))
                         })?;
-                    let bytes = exchange
-                        .get(&key, &done, output)
-                        .await
-                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                    decode_batches(bytes)
+                    Ok::<_, DataFusionError>((exchange, key, done))
                 }
             })
+            // Each Patch's output comes a chunk at a time, so what is held is one
+            // chunk and not everything the stage above produced.
+            .map_ok(move |(exchange, key, done)| {
+                let chunks = done.chunks.get(output).copied().unwrap_or(0) as usize;
+                futures::stream::iter(0..chunks).then(move |chunk| {
+                    let (exchange, key, done) = (Arc::clone(&exchange), key.clone(), done.clone());
+                    async move {
+                        let bytes = exchange
+                            .get(&key, &done, output, chunk)
+                            .await
+                            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                        decode_batches(bytes)
+                    }
+                })
+            })
+            .try_flatten()
             .map_ok(|batches| futures::stream::iter(batches.into_iter().map(Ok)))
             .try_flatten();
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))

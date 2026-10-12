@@ -32,6 +32,7 @@ struct OutputKey {
     patch: PatchKey,
     attempt: String,
     output: usize,
+    chunk: usize,
 }
 
 /// Outputs this Node produced, kept for others to fetch, up to a budget of bytes.
@@ -80,6 +81,7 @@ struct Request {
     patch: PatchKey,
     attempt: String,
     output: usize,
+    chunk: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -171,14 +173,24 @@ impl NetExchange {
 
 #[async_trait]
 impl Exchange for NetExchange {
-    async fn put(&self, patch: &PatchKey, attempt: &str, output: usize, data: Bytes) -> Result<()> {
+    async fn put(
+        &self,
+        patch: &PatchKey,
+        attempt: &str,
+        output: usize,
+        chunk: usize,
+        data: Bytes,
+    ) -> Result<()> {
         // Durable first, then ready to be fetched.
-        self.inner.put(patch, attempt, output, data.clone()).await?;
+        self.inner
+            .put(patch, attempt, output, chunk, data.clone())
+            .await?;
         self.shared.held.lock().expect("held").insert(
             OutputKey {
                 patch: patch.clone(),
                 attempt: attempt.to_string(),
                 output,
+                chunk,
             },
             data,
         );
@@ -196,11 +208,18 @@ impl Exchange for NetExchange {
         self.inner.completion(patch).await
     }
 
-    async fn get(&self, patch: &PatchKey, done: &Completion, output: usize) -> Result<Bytes> {
+    async fn get(
+        &self,
+        patch: &PatchKey,
+        done: &Completion,
+        output: usize,
+        chunk: usize,
+    ) -> Result<Bytes> {
         let key = OutputKey {
             patch: patch.clone(),
             attempt: done.attempt.clone(),
             output,
+            chunk,
         };
         if let Some(data) = self.shared.held.lock().expect("held").get(&key) {
             self.count(|c| c.local += 1);
@@ -213,6 +232,7 @@ impl Exchange for NetExchange {
                 patch: patch.clone(),
                 attempt: done.attempt.clone(),
                 output,
+                chunk,
             };
             match self.fetch(peer, &request).await {
                 Some(data) => {
@@ -226,7 +246,7 @@ impl Exchange for NetExchange {
             }
         }
         self.count(|c| c.store += 1);
-        self.inner.get(patch, done, output).await
+        self.inner.get(patch, done, output, chunk).await
     }
 
     async fn completed(&self, query: &str, stage: usize) -> Result<Vec<usize>> {
@@ -255,6 +275,7 @@ impl Handler for Serve {
                     patch: request.patch,
                     attempt: request.attempt,
                     output: request.output,
+                    chunk: request.chunk,
                 });
                 let header = Header {
                     len: data.as_ref().map(|d| d.len() as u64),

@@ -18,13 +18,12 @@ use tracing::info;
 use apiary_comb::custom_store::{self, ObjectStoreBackend};
 use apiary_comb::local::{LocalBackend, expand_local_path};
 use apiary_comb::s3::S3Backend;
-use apiary_comb::schema::{conform_batch, delta_schema};
 use apiary_comb::{CapReport, CellState, Comb, Crop, HarvestReport, Recipe};
 use apiary_core::config::NodeConfig;
 use apiary_core::error::ApiaryError;
 use apiary_core::registry_manager::RegistryManager;
 use apiary_core::storage::StorageBackend;
-use apiary_core::{CommitGate, Env, FrameSchema, Result, WriteResult, check_clock};
+use apiary_core::{CommitGate, Env, Result, WriteResult, check_clock};
 use apiary_plan::{ApiaryQueryContext, QueryOptions};
 
 use crate::behavioral::AbandonmentTracker;
@@ -35,28 +34,11 @@ use crate::duties::{DutiesSettings, NodeDuties};
 use crate::heartbeat::{
     HeartbeatLoad, HeartbeatWriter, LoadSource, NodeState, WorldView, WorldViewBuilder,
 };
+use crate::ingest::{IngestResult, Ingestor, StandingCounts, StandingQuery};
 use crate::upkeep::{ClearReport, Upkeep, UpkeepSettings};
 use apiary_colony::{
     BeeParams, Colony, ColonyConfig, NoThermal, SysfsThermal, TemperatureRegulation, ThermalSensor,
 };
-
-/// What one ingest landed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IngestResult {
-    /// Rows landed in the crop.
-    pub rows: u64,
-    /// The crop segment they were written as (`None` for an empty batch).
-    pub segment: Option<u64>,
-    /// Bytes ingested since the crop was last deposited.
-    pub crop_bytes: u64,
-}
-
-/// What ingest needs to know about a Frame, resolved once.
-struct FrameSpec {
-    /// The schema the Frame's table stores.
-    schema: SchemaRef,
-    partition_by: Vec<String>,
-}
 
 /// An Apiary compute node — the runtime for one machine in the swarm.
 ///
@@ -117,11 +99,8 @@ pub struct ApiaryNode {
     /// Asked before every direct commit.
     commit_gate: CommitGate,
 
-    /// Bytes ingested since the crop was last deposited.
-    crop_bytes: Arc<AtomicU64>,
-
-    /// What ingest has learned about each Frame, by Hive, Box and Frame name.
-    frame_specs: RwLock<HashMap<(String, String, String), Arc<FrameSpec>>>,
+    /// Where batches land, and the standing queries that run over them.
+    ingestor: Arc<Ingestor>,
 
     /// Cancellation channel to stop background tasks on shutdown.
     cancel_tx: tokio::sync::watch::Sender<bool>,
@@ -339,6 +318,20 @@ impl ApiaryNode {
         ));
         info!(bees = config.cores, "Bees started");
 
+        // Where batches land, and the rollups that run over them.
+        let ingestor = Arc::new(Ingestor::new(
+            config.node_id.to_string(),
+            Arc::clone(&registry),
+            Arc::clone(&crop),
+            Arc::clone(&storage),
+            Arc::clone(&crop_bytes),
+            config.crop_max_bytes,
+            Arc::clone(&colony),
+            Arc::clone(&duties),
+            Arc::clone(&query_ctx),
+        ));
+        ingestor.load_standing().await?;
+
         // Initialize cell cache
         let cache_dir = config.cache_dir.join("cells");
         let cell_cache = Arc::new(
@@ -423,8 +416,7 @@ impl ApiaryNode {
             depositor,
             upkeep,
             commit_gate: gate,
-            crop_bytes,
-            frame_specs: RwLock::new(HashMap::new()),
+            ingestor,
             cancel_tx,
             env,
         })
@@ -521,6 +513,8 @@ impl ApiaryNode {
     /// synced, before this returns. Unlike [`write_to_frame`](Self::write_to_frame),
     /// which commits to the comb before returning, the rows exist only on this
     /// Node until they are deposited.
+    ///
+    /// Each standing query registered for the Frame queues a Patch over the batch.
     pub async fn ingest(
         &self,
         hive: &str,
@@ -528,31 +522,47 @@ impl ApiaryNode {
         frame_name: &str,
         batch: &RecordBatch,
     ) -> Result<IngestResult> {
-        let spec = self.frame_spec(hive, box_name, frame_name).await?;
-        let conformed = conform_batch(batch, &spec.schema, &spec.partition_by)?;
-        let rows = conformed.num_rows() as u64;
-
-        let log = self.crop.frame(hive, box_name, frame_name)?;
-        let segment = tokio::task::spawn_blocking(move || log.append(&conformed))
+        self.ingestor
+            .ingest(hive, box_name, frame_name, batch)
             .await
-            .map_err(|e| ApiaryError::Internal {
-                message: format!("Ingest task failed: {e}"),
-            })??;
+    }
 
-        let bytes = segment.as_ref().map_or(0, |s| s.bytes);
-        let pending = self.crop_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        if pending >= self.config.crop_max_bytes {
-            self.colony.wake();
-        }
-        self.mark(
-            "ingest",
-            format_args!("{hive}.{box_name}.{frame_name} {rows} rows"),
-        );
-        Ok(IngestResult {
-            rows,
-            segment: segment.map(|s| s.seq),
-            crop_bytes: pending,
-        })
+    /// Register a standing query: a rollup that runs over every batch ingested
+    /// for its source Frame and ingests its result into its target Frame. It is
+    /// kept in the comb store, so it survives a restart.
+    pub async fn register_standing(&self, query: StandingQuery) -> Result<()> {
+        self.ingestor.register_standing(query).await
+    }
+
+    /// Remove a standing query.
+    pub async fn remove_standing(&self, hive: &str, box_name: &str, name: &str) -> Result<()> {
+        self.ingestor.remove_standing(hive, box_name, name).await
+    }
+
+    /// Register a model for `predict('name', feature, ...)`: its file goes into the
+    /// comb store, and every Node of the colony fetches it the first time a query
+    /// calls it. `kind` is how it is run (`linear`, or `onnx` where this build has
+    /// ONNX Runtime). Returns the version it took.
+    pub async fn register_model(&self, name: &str, kind: &str, file: Vec<u8>) -> Result<u64> {
+        self.query_ctx
+            .models()
+            .register(name, kind, bytes::Bytes::from(file))
+            .await
+    }
+
+    /// The models this Node runs.
+    pub fn models(&self) -> &Arc<apiary_plan::models::Models> {
+        self.query_ctx.models()
+    }
+
+    /// The standing queries registered on this Node.
+    pub fn standing_queries(&self) -> Vec<StandingQuery> {
+        self.ingestor.standing_queries()
+    }
+
+    /// How the standing queries have fared.
+    pub fn standing_counts(&self) -> StandingCounts {
+        self.ingestor.standing_counts()
     }
 
     /// Deposit everything in the crop into the comb now, rather than waiting
@@ -575,7 +585,11 @@ impl ApiaryNode {
         frame_name: &str,
     ) -> Result<SchemaRef> {
         Ok(Arc::clone(
-            &self.frame_spec(hive, box_name, frame_name).await?.schema,
+            &self
+                .ingestor
+                .frame_spec(hive, box_name, frame_name)
+                .await?
+                .schema,
         ))
     }
 
@@ -632,34 +646,6 @@ impl ApiaryNode {
     /// A Frame's ripening recipe.
     pub async fn recipe(&self, hive: &str, box_name: &str, frame_name: &str) -> Result<Recipe> {
         self.upkeep.recipe(hive, box_name, frame_name).await
-    }
-
-    /// What ingest needs to know about a Frame, from the registry the first
-    /// time and from memory after.
-    async fn frame_spec(
-        &self,
-        hive: &str,
-        box_name: &str,
-        frame_name: &str,
-    ) -> Result<Arc<FrameSpec>> {
-        let key = (
-            hive.to_string(),
-            box_name.to_string(),
-            frame_name.to_string(),
-        );
-        if let Some(spec) = self.frame_specs.read().await.get(&key) {
-            return Ok(Arc::clone(spec));
-        }
-        let frame = self.registry.get_frame(hive, box_name, frame_name).await?;
-        let spec = Arc::new(FrameSpec {
-            schema: delta_schema(&FrameSchema::from_json_value(&frame.schema)?),
-            partition_by: frame.partition_by.clone(),
-        });
-        self.frame_specs
-            .write()
-            .await
-            .insert(key, Arc::clone(&spec));
-        Ok(spec)
     }
 
     /// Overwrite all data in a frame with new data, in one Delta commit that

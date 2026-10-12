@@ -63,6 +63,9 @@ pub struct Completion {
     pub rows: Vec<u64>,
     /// Bytes in each output partition.
     pub bytes: Vec<u64>,
+    /// How many chunks each output partition was written as. A Patch writes its
+    /// output as it goes, in chunks, so its memory does not grow with its output.
+    pub chunks: Vec<u32>,
 }
 
 /// How an attempt's bid to complete a Patch went.
@@ -80,8 +83,15 @@ pub enum Completed {
 /// Where stages hand batches to each other.
 #[async_trait]
 pub trait Exchange: Send + Sync + 'static {
-    /// Store output partition `output` of an attempt at `patch`.
-    async fn put(&self, patch: &PatchKey, attempt: &str, output: usize, data: Bytes) -> Result<()>;
+    /// Store chunk `chunk` of output partition `output` of an attempt at `patch`.
+    async fn put(
+        &self,
+        patch: &PatchKey,
+        attempt: &str,
+        output: usize,
+        chunk: usize,
+        data: Bytes,
+    ) -> Result<()>;
 
     /// Try to complete `patch` with `record`. Exactly one attempt wins.
     async fn complete(&self, patch: &PatchKey, record: &Completion) -> Result<Completed>;
@@ -89,8 +99,14 @@ pub trait Exchange: Send + Sync + 'static {
     /// How `patch` was completed, if it has been.
     async fn completion(&self, patch: &PatchKey) -> Result<Option<Completion>>;
 
-    /// Read output partition `output` of a completed Patch.
-    async fn get(&self, patch: &PatchKey, done: &Completion, output: usize) -> Result<Bytes>;
+    /// Read chunk `chunk` of output partition `output` of a completed Patch.
+    async fn get(
+        &self,
+        patch: &PatchKey,
+        done: &Completion,
+        output: usize,
+        chunk: usize,
+    ) -> Result<Bytes>;
 
     /// The Patches of `stage` that are complete.
     async fn completed(&self, query: &str, stage: usize) -> Result<Vec<usize>>;
@@ -114,8 +130,8 @@ impl StoreExchange {
         format!("outputs/{}/{}/{}", patch.query, patch.stage, patch.index)
     }
 
-    fn file(patch: &PatchKey, attempt: &str, output: usize) -> String {
-        format!("{}/{attempt}/{output}.arrow", Self::dir(patch))
+    fn file(patch: &PatchKey, attempt: &str, output: usize, chunk: usize) -> String {
+        format!("{}/{attempt}/{output}.{chunk}.arrow", Self::dir(patch))
     }
 
     fn done(patch: &PatchKey) -> String {
@@ -129,10 +145,12 @@ impl StoreExchange {
     }
 
     async fn discard(&self, patch: &PatchKey, record: &Completion) -> Result<()> {
-        for output in 0..record.rows.len() {
-            self.store
-                .delete(&Self::file(patch, &record.attempt, output))
-                .await?;
+        for (output, chunks) in record.chunks.iter().enumerate() {
+            for chunk in 0..*chunks as usize {
+                self.store
+                    .delete(&Self::file(patch, &record.attempt, output, chunk))
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -146,9 +164,16 @@ fn codec(e: serde_json::Error) -> ApiaryError {
 
 #[async_trait]
 impl Exchange for StoreExchange {
-    async fn put(&self, patch: &PatchKey, attempt: &str, output: usize, data: Bytes) -> Result<()> {
+    async fn put(
+        &self,
+        patch: &PatchKey,
+        attempt: &str,
+        output: usize,
+        chunk: usize,
+        data: Bytes,
+    ) -> Result<()> {
         self.store
-            .put(&Self::file(patch, attempt, output), data)
+            .put(&Self::file(patch, attempt, output, chunk), data)
             .await
     }
 
@@ -191,9 +216,15 @@ impl Exchange for StoreExchange {
         }
     }
 
-    async fn get(&self, patch: &PatchKey, done: &Completion, output: usize) -> Result<Bytes> {
+    async fn get(
+        &self,
+        patch: &PatchKey,
+        done: &Completion,
+        output: usize,
+        chunk: usize,
+    ) -> Result<Bytes> {
         self.store
-            .get(&Self::file(patch, &done.attempt, output))
+            .get(&Self::file(patch, &done.attempt, output, chunk))
             .await
     }
 

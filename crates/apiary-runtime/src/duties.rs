@@ -96,6 +96,9 @@ pub struct NodeDuties {
     crop_bytes: Arc<AtomicU64>,
     /// Waiting queries, each with the time it joined the queue.
     queries: Mutex<VecDeque<(Duration, QueryPatch)>>,
+    /// Standing queries' Patches, one per batch ingested: Foragers come back to
+    /// them with every batch.
+    standing: Mutex<VecDeque<QueryPatch>>,
     board: Mutex<Board>,
     /// The colony's foraging, once the Node has joined one: Scouts, Foragers,
     /// Followers and Receivers then also work on Patches of queries run across
@@ -143,6 +146,7 @@ impl NodeDuties {
             upkeep,
             crop_bytes,
             queries: Mutex::default(),
+            standing: Mutex::default(),
             board: Mutex::new(board),
             forage: RwLock::new(None),
         }
@@ -171,6 +175,22 @@ impl NodeDuties {
         }
         queue.push_back((self.clock.monotonic(), patch));
         Ok(())
+    }
+
+    /// Queue a standing query's Patch for a Forager. Refused (and `false`) if
+    /// `limit` Patches already wait.
+    pub fn submit_standing(&self, limit: usize, patch: QueryPatch) -> bool {
+        let mut queue = self.standing.lock().expect("standing queue");
+        if queue.len() >= limit {
+            return false;
+        }
+        queue.push_back(patch);
+        true
+    }
+
+    /// How many standing Patches wait for a Forager.
+    pub fn standing_waiting(&self) -> usize {
+        self.standing.lock().expect("standing queue").len()
     }
 
     /// How many queries wait for a Forager.
@@ -383,7 +403,10 @@ impl Duties for NodeDuties {
             None => (0.0, 0.0, 0.0, 0.0),
         };
         Stimuli::none()
-            .with(Role::Forager, self.forage_stimulus() + c_forager)
+            .with(
+                Role::Forager,
+                self.forage_stimulus() + self.standing_waiting() as f64 + c_forager,
+            )
             .with(Role::Follower, c_follower)
             .with(Role::Receiver, c_receiver)
             .with(Role::Ripener, ripener)
@@ -406,11 +429,22 @@ impl Duties for NodeDuties {
                         patch(bee.pool()).await;
                         true
                     }
-                    // No whole query waits: pull a Patch of one planned here.
-                    None => match self.forage_handle() {
-                        Some(f) => f.forage(bee.index() as u32, Some(bee.pool())).await,
-                        None => false,
-                    },
+                    // No whole query waits: a standing query's Patch, then a Patch of a
+                    // query planned here.
+                    None => {
+                        // (Taken first, so the lock is not held across the await.)
+                        let standing = self.standing.lock().expect("standing queue").pop_front();
+                        match standing {
+                            Some(patch) => {
+                                patch(bee.pool()).await;
+                                true
+                            }
+                            None => match self.forage_handle() {
+                                Some(f) => f.forage(bee.index() as u32, Some(bee.pool())).await,
+                                None => false,
+                            },
+                        }
+                    }
                 }
             }
             Role::Ripener => match self.most_urgent() {

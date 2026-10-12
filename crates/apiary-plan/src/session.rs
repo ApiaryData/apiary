@@ -18,6 +18,7 @@ use apiary_core::{ApiaryError, Result};
 
 use crate::catalog::{ApiaryCatalogList, CatalogShared, NO_BOX, NO_HIVE};
 use crate::join_policy::FitJoinsToBee;
+use crate::models::{Models, predict_udf};
 
 /// The share of a Node's memory given to queries; the rest is left for the
 /// operating system, the crop and the other parts of the Node. Expressed as
@@ -50,6 +51,9 @@ pub struct QueryOptions {
     /// This Node's crop. When set, every Frame includes the rows ingested to it
     /// and not yet deposited into the comb.
     pub crop: Option<Arc<Crop>>,
+    /// The models `predict` runs. Without any, the context keeps its own in the
+    /// registry's store.
+    pub models: Option<Arc<Models>>,
 }
 
 impl Default for QueryOptions {
@@ -62,6 +66,7 @@ impl Default for QueryOptions {
             target_partitions: cores,
             spill_dir: None,
             crop: None,
+            models: None,
         }
     }
 }
@@ -78,6 +83,7 @@ impl QueryOptions {
             target_partitions: config.cores.max(1),
             spill_dir: Some(config.cache_dir.join("spill")),
             crop: None,
+            models: None,
         }
     }
 }
@@ -87,6 +93,7 @@ pub(crate) fn build_session(
     options: &QueryOptions,
     registry: Arc<RegistryManager>,
     comb: Arc<Comb>,
+    models: Arc<Models>,
 ) -> Result<SessionContext> {
     let mut runtime = RuntimeEnvBuilder::new();
     if options.memory_pool_bytes > 0 {
@@ -173,7 +180,9 @@ pub(crate) fn build_session(
         .with_catalog_list(catalogs)
         .with_physical_optimizer_rules(rules)
         .build();
-    Ok(SessionContext::new_with_state(state))
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_udf(predict_udf(models));
+    Ok(ctx)
 }
 
 #[cfg(test)]
@@ -217,6 +226,7 @@ mod tests {
             target_partitions: 4,
             spill_dir: Some(dir.path().to_path_buf()),
             crop: None,
+            models: None,
         };
         let registry_dir = tempfile::tempdir().unwrap();
         let backend: Arc<dyn apiary_core::StorageBackend> = Arc::new(
@@ -226,7 +236,8 @@ mod tests {
         );
         let registry = Arc::new(RegistryManager::new(backend));
         let comb = Arc::new(Comb::from_local_path(registry_dir.path()).unwrap());
-        let ctx = build_session(&options, registry, comb).unwrap();
+        let models = Models::new(registry.storage());
+        let ctx = build_session(&options, registry, comb, models).unwrap();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("k", DataType::Int64, false),

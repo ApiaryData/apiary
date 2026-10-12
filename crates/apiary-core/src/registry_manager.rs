@@ -28,6 +28,12 @@ pub struct RegistryManager {
 }
 
 impl RegistryManager {
+    /// The store the registry lives in, which the rest of the comb's small files
+    /// (plans, models, standing queries) live beside.
+    pub fn storage(&self) -> Arc<dyn StorageBackend> {
+        Arc::clone(&self.storage)
+    }
+
     /// Create a new registry manager, on the system clock.
     pub fn new(storage: Arc<dyn StorageBackend>) -> Self {
         Self {

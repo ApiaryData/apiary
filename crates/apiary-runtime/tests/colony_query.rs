@@ -331,3 +331,90 @@ async fn a_small_query_stays_on_the_node_that_was_asked() {
     a.node.shutdown().await;
     b.node.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_model_registered_on_one_node_is_run_by_the_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let apiary = ApiaryKey::generate();
+    let net = MemNetwork::new();
+    let share_everything = ForageConfig {
+        local_bytes: 0,
+        ..ForageConfig::default()
+    };
+    let a = join(
+        &apiary,
+        &net,
+        start_node(dir.path(), "a").await,
+        share_everything.clone(),
+    )
+    .await;
+    let b = join(
+        &apiary,
+        &net,
+        start_node(dir.path(), "b").await,
+        share_everything,
+    )
+    .await;
+    a.mesh
+        .connect(&PeerAddr::id_only(b.id), Protocol::Control)
+        .await
+        .unwrap();
+    a.node.registry.create_hive("farm").await.unwrap();
+    a.node.registry.create_box("farm", "field").await.unwrap();
+    a.node
+        .registry
+        .create_frame(
+            "farm",
+            "field",
+            "sensors",
+            serde_json::json!({"region": "string", "temp": "float64"}),
+            vec![],
+        )
+        .await
+        .unwrap();
+    for (region, offset) in [("north", 0), ("south", 10), ("east", 20), ("west", 30)] {
+        a.node
+            .write_to_frame("farm", "field", "sensors", &rows(region, 20_000, offset))
+            .await
+            .unwrap();
+    }
+    eventually("the Nodes to see each other", || {
+        a.node.colony_peers() >= 1 && b.node.colony_peers() >= 1
+    })
+    .await;
+
+    // The model is registered on A. B has never heard of it.
+    let version = a
+        .node
+        .register_model(
+            "scorer",
+            "linear",
+            serde_json::json!({"weights": [2.0, 0.5], "bias": 1.0})
+                .to_string()
+                .into_bytes(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(version, 1);
+    assert_eq!(b.node.models().counts().fetched, 0);
+
+    let sql = "SELECT region, sum(predict('scorer', temp, temp * 2.0)) \
+               FROM farm.field.sensors GROUP BY region";
+    let whole = lines(&a.node.query_ctx.sql(sql).await.unwrap());
+    for _ in 0..6 {
+        assert_eq!(lines(&a.node.sql(sql).await.unwrap()), whole);
+        if b.node.models().counts().fetched > 0 {
+            break;
+        }
+    }
+    // B ran some of the Patches, so it fetched the model from the comb store.
+    assert_eq!(
+        b.node.models().counts().fetched,
+        1,
+        "{:?}",
+        b.node.models().counts()
+    );
+    assert!(b.node.models().counts().rows > 0);
+    a.node.shutdown().await;
+    b.node.shutdown().await;
+}

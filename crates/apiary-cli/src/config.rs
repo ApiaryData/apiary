@@ -5,6 +5,10 @@
 //! storage = "local:///mnt/drive/apiary"      # the site's comb (the cluster drive)
 //! harvest = "s3://site-harvest/apiary"       # optional: where capped Cells go
 //!
+//! [forage]                                   # optional: how the colony shares queries
+//! mode = "dances"                            # or "pull": every dance counts the same
+//! local_query_mb = 64                        # a query reading less runs whole where it was planned
+//!
 //! [flight]
 //! listen = "0.0.0.0:50051"
 //! token_env = "APIARY_TOKEN"                 # optional shared bearer token
@@ -28,6 +32,7 @@ use serde::Deserialize;
 
 use apiary_core::config::NodeConfig;
 use apiary_entrance::MqttConfig;
+use apiary_forage::{ForageConfig, Mode};
 use apiary_net::NetConfig;
 
 /// The whole file.
@@ -41,6 +46,37 @@ pub struct FileConfig {
     pub mqtt: Option<MqttConfig>,
     #[serde(default)]
     pub net: Option<NetConfig>,
+    #[serde(default)]
+    pub forage: Option<ForageSection>,
+}
+
+/// `[forage]`: how a Node in a colony shares queries.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForageSection {
+    /// `dances` (the default) or `pull`.
+    pub mode: Option<String>,
+    /// A query that reads no more than this many megabytes runs whole on the Bee
+    /// that planned it (default 64).
+    pub local_query_mb: Option<u64>,
+}
+
+impl ForageSection {
+    /// The foraging configuration this section describes.
+    pub fn config(&self) -> Result<ForageConfig, String> {
+        let mut config = ForageConfig::default();
+        match self.mode.as_deref() {
+            None | Some("dances") => config.mode = Mode::Dances,
+            Some("pull") => config.mode = Mode::Pull,
+            Some(other) => {
+                return Err(format!("[forage] mode '{other}' is not 'dances' or 'pull'"));
+            }
+        }
+        if let Some(mb) = self.local_query_mb {
+            config.local_bytes = mb * 1024 * 1024;
+        }
+        Ok(config)
+    }
 }
 
 /// `[node]`: storage and cadences.
@@ -111,6 +147,9 @@ impl FileConfig {
             if flight.token.is_some() && flight.token_env.is_some() {
                 return Err("[flight] set token or token_env, not both".into());
             }
+        }
+        if let Some(forage) = &self.forage {
+            forage.config()?;
         }
         if let Some(mqtt) = &self.mqtt
             && mqtt.subscriptions.is_empty()
@@ -296,5 +335,31 @@ frame = "f.l.readings"
         .unwrap();
         let err = file.flight.unwrap().resolve_token().unwrap_err();
         assert!(err.contains("APIARY_TEST_TOKEN_UNSET"));
+    }
+
+    #[test]
+    fn forage_settings_are_read_and_checked() {
+        let with = |forage: &str| {
+            FileConfig::parse(&format!(
+                r#"
+[node]
+storage = "local:///tmp/x"
+{forage}"#
+            ))
+        };
+        let config = with(
+            r#"
+[forage]
+mode = "pull"
+local_query_mb = 8
+"#,
+        )
+        .unwrap();
+        let forage = config.forage.unwrap().config().unwrap();
+        assert_eq!(forage.mode, Mode::Pull);
+        assert_eq!(forage.local_bytes, 8 * 1024 * 1024);
+        assert!(with("[forage]\nmode = \"swarm\"\n").is_err());
+        assert!(with("[forage]\ncolour = \"yellow\"\n").is_err());
+        assert!(with("").unwrap().forage.is_none());
     }
 }

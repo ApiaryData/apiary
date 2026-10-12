@@ -188,6 +188,7 @@ impl Executor for PlanExecutor {
             .whole
             .as_ref()
             .ok_or_else(|| internal("No whole plan", "this plan was read from the comb"))?;
+        self.ctx.models().preload_for(physical).await?;
         datafusion::physical_plan::collect(Arc::clone(physical), Arc::clone(task_ctx))
             .await
             .map_err(|e| internal("Query failed", e))
@@ -243,7 +244,7 @@ impl Executor for PlanExecutor {
             .env
             .task_context(pool)
             .map_err(|e| internal("Cannot build the Patch context", e))?;
-        run_result(q.staged.root(), task).await
+        run_result(q.staged.root(), &q.env, task).await
     }
 
     fn exchange(&self) -> &Arc<dyn Exchange> {
